@@ -2,12 +2,20 @@
   #error AppVersion must be supplied by the release build
 #endif
 
-#ifndef RuntimeUrl
-  #error RuntimeUrl must be supplied by the release build
+#ifndef CoreRuntimeUrl
+  #error CoreRuntimeUrl must be supplied by the release build
 #endif
 
-#ifndef RuntimeSHA256
-  #error RuntimeSHA256 must be supplied by the release build
+#ifndef CoreRuntimeSHA256
+  #error CoreRuntimeSHA256 must be supplied by the release build
+#endif
+
+#ifndef DesktopRuntimeUrl
+  #error DesktopRuntimeUrl must be supplied by the release build
+#endif
+
+#ifndef DesktopRuntimeSHA256
+  #error DesktopRuntimeSHA256 must be supplied by the release build
 #endif
 
 [Setup]
@@ -105,7 +113,8 @@ begin
   RuntimeRoot := ExpandConstant('{app}\.dotnet');
   StagingRoot := ExpandConstant('{app}\.dotnet-staging');
   DownloadPage.Clear;
-  DownloadPage.Add('{#RuntimeUrl}', 'desktop-runtime.zip', '{#RuntimeSHA256}');
+  DownloadPage.Add('{#CoreRuntimeUrl}', 'core-runtime.zip', '{#CoreRuntimeSHA256}');
+  DownloadPage.Add('{#DesktopRuntimeUrl}', 'desktop-runtime.zip', '{#DesktopRuntimeSHA256}');
   DownloadPage.Show;
   try
     try
@@ -113,7 +122,9 @@ begin
       if not ForceDirectories(StagingRoot) then
         RaiseException('Could not create the local runtime staging folder.');
       if not Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
-        '-NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "Expand-Archive -LiteralPath ''' +
+        '-NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "$ErrorActionPreference = ''Stop''; Expand-Archive -LiteralPath ''' +
+        ExpandConstant('{tmp}\core-runtime.zip') + ''' -DestinationPath ''' + StagingRoot + ''' -Force; ' +
+        'Expand-Archive -LiteralPath ''' +
         ExpandConstant('{tmp}\desktop-runtime.zip') + ''' -DestinationPath ''' + StagingRoot + ''' -Force"',
         '', SW_HIDE, ewWaitUntilTerminated, ExitCode) or (ExitCode <> 0) then
         RaiseException(Format('Could not extract the local .NET Desktop Runtime (exit code %d).', [ExitCode]));
