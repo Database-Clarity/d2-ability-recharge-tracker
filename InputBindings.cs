@@ -38,6 +38,9 @@ internal readonly record struct InputBinding(InputDevice Device, int Code, Input
 {
     public static InputBinding DefaultPause => new(InputDevice.Keyboard, (int)Keys.F8, InputModifiers.None);
 
+    /// <summary>Plain Escape clears a shortcut while recording one.</summary>
+    public bool IsClearRequest => Device == InputDevice.Keyboard && Code == (int)Keys.Escape && Modifiers == InputModifiers.None;
+
     public override string ToString()
     {
         var modifiers = new List<string>(4);
@@ -98,6 +101,7 @@ internal sealed class GlobalInputListener : IDisposable
     private IntPtr _keyboardHook;
     private IntPtr _mouseHook;
     private Action<InputBinding>? _captureCallback;
+    private bool _captureAllowsMouse;
     private Control? _hookDispatcher;
 
     public GlobalInputListener()
@@ -175,12 +179,14 @@ internal sealed class GlobalInputListener : IDisposable
         }
     }
 
-    public void BeginCapture(Action<InputBinding> callback)
+    /// <summary>Captures the next input. Mouse input is ignored (capture stays armed) unless <paramref name="allowMouse"/>.</summary>
+    public void BeginCapture(Action<InputBinding> callback, bool allowMouse = true)
     {
         ArgumentNullException.ThrowIfNull(callback);
         lock (_captureLock)
         {
             _captureCallback = callback;
+            _captureAllowsMouse = allowMouse;
         }
     }
 
@@ -270,6 +276,11 @@ internal sealed class GlobalInputListener : IDisposable
         Action<InputBinding>? captureCallback;
         lock (_captureLock)
         {
+            if (_captureCallback is not null && binding.Device == InputDevice.Mouse && !_captureAllowsMouse)
+            {
+                return;
+            }
+
             captureCallback = _captureCallback;
             _captureCallback = null;
         }

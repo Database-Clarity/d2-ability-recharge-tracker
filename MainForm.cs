@@ -1,5 +1,7 @@
 using System.Diagnostics;
 using System.Drawing;
+using System.Globalization;
+using System.Text;
 using System.Text.Json;
 using System.Windows.Forms;
 
@@ -42,7 +44,9 @@ internal sealed class MainForm : Form
     private readonly Dictionary<AbilityKind, Label> _regionLabels = [];
     private readonly Dictionary<AbilityKind, Label> _statusLabels = [];
     private readonly Dictionary<AbilityKind, Button> _selectButtons = [];
-    private readonly Dictionary<AbilityKind, Button> _selectionBindingButtons = [];
+    private readonly Dictionary<AbilityKind, Button> _soloBindingButtons = [];
+    private readonly Dictionary<AbilityKind, CheckBox> _soloToggles = [];
+    private readonly ToolTip _toolTip = new();
     private readonly Dictionary<AbilityKind, string> _captureErrors = [];
     private readonly Queue<CaptureBatch> _retiredCaptureBatches = [];
     private CaptureBatch[] _captureBatches = [];
@@ -58,7 +62,8 @@ internal sealed class MainForm : Form
     private int _uiRefreshPending;
     private bool _selectingRegion;
     private ScreenCapture.GameWindowTarget? _currentGameWindow;
-    private CancellationTokenSource? _hudRecordingCancellation;
+    private AbilityHudRecorder? _hudRecorder;
+    private ScreenCaptureSurface? _hudRecordingSurface;
     private Task<AbilityHudRecordingResult>? _hudRecordingTask;
     private bool _closingAfterHudRecording;
     private UpdateRelease? _availableUpdate;
@@ -121,7 +126,7 @@ internal sealed class MainForm : Form
             _closingAfterHudRecording = true;
             if (!recordingTask.IsCompleted)
             {
-                _hudRecordingCancellation?.Cancel();
+                _hudRecorder?.Stop();
             }
 
             _recordHudButton.Enabled = false;
@@ -146,7 +151,7 @@ internal sealed class MainForm : Form
         _captureThread = new Thread(CaptureLoop)
         {
             IsBackground = true,
-            Priority = ThreadPriority.BelowNormal,
+            Priority = ThreadPriority.AboveNormal,
             Name = "D2 ability HUD capture"
         };
         _captureThread.Start();
@@ -204,7 +209,7 @@ internal sealed class MainForm : Form
             Size = new Size(90, 30)
         };
         resetSelectionsButton.Click += (_, _) => ResetSelections();
-        _recordHudButton.Text = "Record HUD…";
+        _recordHudButton.Text = "Record HUD";
         _recordHudButton.SetBounds(665, 106, 105, 30);
         _recordHudButton.Click += (_, _) => ToggleHudRecording();
 
@@ -226,15 +231,28 @@ internal sealed class MainForm : Form
                 Size = new Size(120, 32)
             };
             selectButton.Click += (_, _) => SelectRegion(kind);
-            var selectionBindingButton = new Button
+            var soloToggle = new CheckBox
             {
-                Text = _settings.SelectionBindings.TryGetValue(kind, out var selectionBinding) ? selectionBinding.ToString() : "Shortcut…",
+                Text = "Solo",
+                Appearance = Appearance.Button,
+                TextAlign = ContentAlignment.MiddleCenter,
                 Location = new Point(630, y + 2),
-                Size = new Size(140, 32),
+                Size = new Size(50, 32),
+                Checked = _settings.SoloAbility == kind
+            };
+            _toolTip.SetToolTip(soloToggle, "Track only this ability (captures one slot for best performance). Click again to track all.");
+            soloToggle.Click += (_, _) => ToggleSolo(kind);
+            _soloToggles.Add(kind, soloToggle);
+            var soloBindingButton = new Button
+            {
+                Text = _settings.SoloBindings.TryGetValue(kind, out var soloBinding) ? soloBinding.ToString() : "Solo shortcut…",
+                Location = new Point(684, y + 2),
+                Size = new Size(86, 32),
                 AutoEllipsis = true
             };
-            selectionBindingButton.Click += (_, _) => ToggleBindingCapture(SelectionCaptureTarget(kind));
-            _selectionBindingButtons.Add(kind, selectionBindingButton);
+            _toolTip.SetToolTip(soloBindingButton, "Keyboard shortcut that toggles solo tracking of this ability. Press Esc while recording to clear it.");
+            soloBindingButton.Click += (_, _) => ToggleBindingCapture(SoloCaptureTarget(kind));
+            _soloBindingButtons.Add(kind, soloBindingButton);
             var regionLabel = new Label
             {
                 AutoEllipsis = true,
@@ -251,7 +269,7 @@ internal sealed class MainForm : Form
             _selectButtons.Add(kind, selectButton);
             _regionLabels.Add(kind, regionLabel);
             _statusLabels.Add(kind, statusLabel);
-            Controls.AddRange([name, selectButton, regionLabel, statusLabel, selectionBindingButton]);
+            Controls.AddRange([name, selectButton, regionLabel, statusLabel, soloToggle, soloBindingButton]);
         }
 
         var testGroup = new GroupBox
@@ -321,6 +339,10 @@ internal sealed class MainForm : Form
         _hudRecordingStatus.SetBounds(345, 112, 385, 30);
         _hudRecordingStatus.AutoEllipsis = true;
         _hudRecordingStatus.ForeColor = Color.DimGray;
+        _hudRecordingStatus.Cursor = Cursors.Hand;
+        _hudRecordingStatus.Text = "HUD recordings are saved to Documents\\D2AbilityTracker (click to open)";
+        _hudRecordingStatus.Click += (_, _) => OpenHudRecordingsFolder();
+        _toolTip.SetToolTip(_hudRecordingStatus, AbilityHudRecorder.DefaultFolder);
         testGroup.Controls.AddRange([
             testAbilityLabel, _testAbilityPicker, cyclesLabel, _testCyclesPicker,
             delayLabel, _testDelayPicker, secondsLabel, abilityInputLabel,
@@ -332,7 +354,7 @@ internal sealed class MainForm : Form
         _toggleButton.Click += (_, _) => SetMonitoring(!_monitoring);
         var hotkeyLabel = new Label { Text = "Pause / resume", AutoSize = true, Location = new Point(224, 613) };
         _pauseBindingButton.SetBounds(335, 607, 140, 30);
-        _pauseBindingButton.Text = PauseBinding.ToString();
+        _pauseBindingButton.Text = PauseBinding?.ToString() ?? "Record input…";
         _pauseBindingButton.Click += (_, _) => TogglePauseBindingCapture();
 
         var anchorLabel = new Label { Text = "Overlay position", AutoSize = true, Location = new Point(495, 613) };
@@ -373,63 +395,69 @@ internal sealed class MainForm : Form
 
     private async void ToggleHudRecording()
     {
-        if (_hudRecordingCancellation is { } activeRecording)
+        if (_hudRecorder is { } activeRecording)
         {
-            activeRecording.Cancel();
+            activeRecording.Stop();
             _recordHudButton.Enabled = false;
             _recordHudButton.Text = "Finishing…";
             _hudRecordingStatus.Text = "Finishing the recording and writing its timestamp index…";
             return;
         }
 
-        Rectangle bounds;
+        AbilityHudRecorder recorder;
         try
         {
-            bounds = AbilityHudRecorder.GetCaptureBounds(_settings.Slots);
+            Rectangle bounds;
+            lock (_captureSync)
+            {
+                var areas = AbilityKinds
+                    .Where(IsTracked)
+                    .Select(GetSlot)
+                    .Where(slot => slot.Region is not null)
+                    .Select(slot =>
+                    {
+                        var region = ResolveCaptureRegion(slot, slot.Region!.Value);
+                        return (region, Screen.FromRectangle(region).Bounds);
+                    })
+                    .ToArray();
+                bounds = AbilityHudRecorder.GetCaptureBounds(areas);
+            }
+
+            Task<AbilityHudRecordingResult>? recordingTask = null;
+            recorder = new AbilityHudRecorder(bounds, Screen.FromRectangle(bounds).DeviceName,
+                AbilityHudRecorder.DefaultPath(DateTime.Now),
+                progress => QueueHudRecordingProgress(progress, recordingTask));
+            recordingTask = recorder.Completion;
         }
-        catch (InvalidOperationException exception)
+        catch (Exception exception) when (exception is InvalidOperationException or IOException or UnauthorizedAccessException or ArgumentException)
         {
-            MessageBox.Show(this, exception.Message, Text, MessageBoxButtons.OK, MessageBoxIcon.Information);
+            MessageBox.Show(this, $"Couldn't start the HUD recording: {exception.Message}", Text, MessageBoxButtons.OK, MessageBoxIcon.Information);
             return;
         }
 
-        using var dialog = new SaveFileDialog
+        lock (_captureSync)
         {
-            Title = "Save ability HUD debug recording",
-            Filter = "Ability HUD recording (*.zip)|*.zip",
-            DefaultExt = "zip",
-            AddExtension = true,
-            FileName = $"D2Ability-HUD-{DateTime.Now:yyyyMMdd-HHmmss}.zip",
-            OverwritePrompt = true
-        };
-        if (dialog.ShowDialog(this) != DialogResult.OK)
-        {
-            return;
+            _hudRecorder = recorder;
         }
 
-        var cancellation = new CancellationTokenSource();
-        _hudRecordingCancellation = cancellation;
+        _hudRecordingTask = recorder.Completion;
+        if (!_monitoring)
+        {
+            SetMonitoring(true);
+        }
+
         _recordHudButton.Text = "Stop recording";
-        _hudRecordingStatus.Text = "Recording the selected HUD crop at 15 FPS (50 MB / 10-minute maximum)…";
+        _hudRecordingStatus.Text = $"Recording the HUD at {AbilityHudRecorder.FramesPerSecond} FPS…";
         _overlay.Hide();
-        var recordingTask = Task.Run(() => AbilityHudRecorder.Record(
-            bounds,
-            dialog.FileName,
-            cancellation.Token,
-            progress => QueueHudRecordingProgress(progress, cancellation)));
-        _hudRecordingTask = recordingTask;
-
         try
         {
-            var result = await recordingTask;
+            var result = await recorder.Completion;
             if (!_closingAfterHudRecording)
             {
-                var stopReason = result.SizeLimitReached
-                    ? "Stopped at the 50 MB limit"
-                    : result.DurationLimitReached ? "Stopped at the 10-minute limit"
-                    : cancellation.IsCancellationRequested ? "Recording stopped" : "Recording complete";
+                var dropped = result.DroppedFrames > 0 ? $", {result.DroppedFrames} dropped" : string.Empty;
                 _hudRecordingStatus.Text =
-                    $"{stopReason}: {result.Frames} frames, {result.Bytes / 1_000_000d:F1} MB. Upload the ZIP here.";
+                    $"{result.StopReason ?? "Saved"}: {result.Frames} frames{dropped}, {result.Bytes / 1_000_000d:F1} MB → {Path.GetFileName(result.Path)}";
+                _toolTip.SetToolTip(_hudRecordingStatus, $"{result.Path}\nClick to open the recordings folder.");
             }
         }
         catch (Exception exception)
@@ -442,20 +470,40 @@ internal sealed class MainForm : Form
         }
         finally
         {
-            cancellation.Dispose();
+            lock (_captureSync)
+            {
+                if (ReferenceEquals(_hudRecorder, recorder))
+                {
+                    _hudRecorder = null;
+                }
+            }
+
+            recorder.Dispose();
             if (!_closingAfterHudRecording)
             {
                 _hudRecordingTask = null;
-                _hudRecordingCancellation = null;
                 _recordHudButton.Enabled = true;
-                _recordHudButton.Text = "Record HUD…";
+                _recordHudButton.Text = "Record HUD";
                 ShowOverlayIfEnabled();
                 UpdateOverlay();
             }
         }
     }
 
-    private void QueueHudRecordingProgress(AbilityHudRecordingProgress progress, CancellationTokenSource recording)
+    private void OpenHudRecordingsFolder()
+    {
+        try
+        {
+            Directory.CreateDirectory(AbilityHudRecorder.DefaultFolder);
+            Process.Start(new ProcessStartInfo { FileName = AbilityHudRecorder.DefaultFolder, UseShellExecute = true });
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or System.ComponentModel.Win32Exception)
+        {
+            MessageBox.Show(this, $"Couldn't open {AbilityHudRecorder.DefaultFolder}: {exception.Message}", Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+    }
+
+    private void QueueHudRecordingProgress(AbilityHudRecordingProgress progress, Task<AbilityHudRecordingResult>? recording)
     {
         if (IsDisposed || !IsHandleCreated)
         {
@@ -466,13 +514,14 @@ internal sealed class MainForm : Form
         {
             BeginInvoke((Action)(() =>
             {
-                if (!ReferenceEquals(_hudRecordingCancellation, recording))
+                if (recording is null || !ReferenceEquals(_hudRecordingTask, recording))
                 {
                     return;
                 }
 
+                var dropped = progress.DroppedFrames > 0 ? $" · {progress.DroppedFrames} dropped" : string.Empty;
                 _hudRecordingStatus.Text =
-                    $"Recording HUD · {progress.Elapsed:mm\\:ss} · {progress.Frames} frames · {progress.BytesWritten / 1_000_000d:F1} MB / 50 MB";
+                    $"Recording HUD · {progress.Elapsed:mm\\:ss} · {progress.Frames} frames{dropped} · {progress.BytesWritten / 1_000_000d:F1} MB";
             }));
         }
         catch (InvalidOperationException) when (IsDisposed)
@@ -480,11 +529,72 @@ internal sealed class MainForm : Form
         }
     }
 
+    private string RecordingTrackerState()
+    {
+        var builder = new StringBuilder();
+        foreach (var kind in AbilityKinds)
+        {
+            if (builder.Length > 0)
+            {
+                builder.Append(',');
+            }
+
+            if (IsTracked(kind) && _trackers.TryGetValue(kind, out var tracker))
+            {
+                builder.Append(tracker.State).Append(',')
+                    .Append(tracker.DisplayProgress?.ToString("F4", CultureInfo.InvariantCulture));
+            }
+            else
+            {
+                builder.Append(',');
+            }
+        }
+
+        return builder.ToString();
+    }
+
+    private void CaptureHudRecordingFrame(IntPtr desktopDeviceContext, DesktopDuplicationCapture duplication, DateTime tickTimestamp)
+    {
+        var recorder = _hudRecorder;
+        if (recorder is null || !recorder.IsDue(tickTimestamp))
+        {
+            if (recorder is null && _hudRecordingSurface is not null)
+            {
+                _hudRecordingSurface.Dispose();
+                _hudRecordingSurface = null;
+            }
+
+            return;
+        }
+
+        try
+        {
+            var bounds = recorder.Bounds;
+            if (_hudRecordingSurface is not { } surface || surface.Width != bounds.Width || surface.Height != bounds.Height)
+            {
+                _hudRecordingSurface?.Dispose();
+                surface = new ScreenCaptureSurface(bounds.Width, bounds.Height, desktopDeviceContext);
+                _hudRecordingSurface = surface;
+            }
+
+            if (!duplication.TryCapture(recorder.DeviceName, bounds, surface, out var timestamp))
+            {
+                surface.Capture(desktopDeviceContext, bounds);
+                timestamp = DateTime.UtcNow;
+            }
+
+            recorder.Submit(surface.Pixels, surface.Stride, timestamp, RecordingTrackerState());
+        }
+        catch (Exception exception) when (exception is InvalidOperationException or ArgumentException)
+        {
+            recorder.Stop($"Stopped: {exception.Message}");
+        }
+    }
     private void ResetSelections()
     {
         var result = MessageBox.Show(
             this,
-            "Clear the saved screen areas for grenade, melee, and class ability? You can select them again at any time. Selection shortcuts will be kept.",
+            "Clear the saved screen areas for grenade, melee, and class ability? You can select them again at any time. Shortcuts will be kept.",
             Text,
             MessageBoxButtons.YesNo,
             MessageBoxIcon.Warning);
@@ -755,6 +865,9 @@ internal sealed class MainForm : Form
                 {
                     batch.Dispose();
                 }
+
+                _hudRecordingSurface?.Dispose();
+                _hudRecordingSurface = null;
             }
         }
     }
@@ -836,6 +949,8 @@ internal sealed class MainForm : Form
                 }
 
             }
+
+            CaptureHudRecordingFrame(desktopDeviceContext, duplication, timestamp);
 
             if (testAbilityCaptured &&
                 _repeatTest.IsUseDue(timestamp) &&
@@ -920,6 +1035,14 @@ internal sealed class MainForm : Form
                     continue;
                 }
 
+                _soloToggles[kind].Checked = _settings.SoloAbility == kind;
+                if (!IsTracked(kind))
+                {
+                    _statusLabels[kind].Text = $"Not tracked · solo: {KindName(_settings.SoloAbility!.Value)}";
+                    _statusLabels[kind].ForeColor = Color.DimGray;
+                    continue;
+                }
+
                 if (!_monitoring)
                 {
                     _statusLabels[kind].Text = "Paused";
@@ -966,7 +1089,7 @@ internal sealed class MainForm : Form
                 ? $"Input shortcuts unavailable: {inputListenerError}"
                 : _monitoring
                 ? $"Starts on the bottom-border flash · {_captureBackend} capture {_captureRate:F0}/{_targetCaptureRate} Hz (load-limited)"
-                : $"Paused · {PauseBinding} to resume";
+                : PauseBinding is { } pause ? $"Paused · {pause} to resume" : "Paused";
             _testStatus.Text = _repeatTest.Status(DateTime.UtcNow);
             _testAbilityPicker.Enabled = !_repeatTest.IsActive;
             _testCyclesPicker.Enabled = !_repeatTest.IsActive;
@@ -982,7 +1105,7 @@ internal sealed class MainForm : Form
         }
     }
 
-    private InputBinding PauseBinding => _settings.PauseBinding ?? InputBinding.DefaultPause;
+    private InputBinding? PauseBinding => _settings.PauseShortcutCleared ? null : _settings.PauseBinding ?? InputBinding.DefaultPause;
 
     private InputBinding? OverlayToggleBinding
     {
@@ -991,6 +1114,11 @@ internal sealed class MainForm : Form
             if (_settings.OverlayToggleBinding is { } configured)
             {
                 return configured;
+            }
+
+            if (_settings.OverlayShortcutCleared)
+            {
+                return null;
             }
 
             // F9 is the default only while no other shortcut already uses it.
@@ -1162,7 +1290,8 @@ internal sealed class MainForm : Form
         }
 
         _bindingCaptureTarget = target;
-        GetBindingButton(target).Text = "Press a key/button…";
+        var allowMouse = target == BindingCaptureTarget.AbilityUse;
+        GetBindingButton(target).Text = allowMouse ? "Press a key/button… (Esc clears)" : "Press a key… (Esc clears)";
         UpdateStatus();
         _inputListener.BeginCapture(binding =>
         {
@@ -1176,6 +1305,15 @@ internal sealed class MainForm : Form
                 BeginInvoke((Action)(() =>
                 {
                     _bindingCaptureTarget = null;
+                    if (binding.IsClearRequest)
+                    {
+                        ClearBinding(target);
+                        UpdateBindingButtonText(target);
+                        SaveSettings();
+                        UpdateStatus();
+                        return;
+                    }
+
                     var conflicts = Enum.GetValues<BindingCaptureTarget>()
                         .Any(other => other != target && GetConfiguredBinding(other) == binding);
                     if (conflicts)
@@ -1189,6 +1327,7 @@ internal sealed class MainForm : Form
                     if (target == BindingCaptureTarget.Pause)
                     {
                         _settings.PauseBinding = binding;
+                        _settings.PauseShortcutCleared = false;
                         _settings.Hotkey = binding.Device == InputDevice.Keyboard && binding.Modifiers == InputModifiers.None
                             ? ((Keys)binding.Code).ToString()
                             : binding.ToString();
@@ -1204,10 +1343,11 @@ internal sealed class MainForm : Form
                     else if (target == BindingCaptureTarget.ToggleOverlay)
                     {
                         _settings.OverlayToggleBinding = binding;
+                        _settings.OverlayShortcutCleared = false;
                     }
                     else
                     {
-                        _settings.SelectionBindings[SelectionAbility(target)] = binding;
+                        _settings.SoloBindings[SoloAbility(target)] = binding;
                     }
 
                     UpdateBindingButtonText(target);
@@ -1218,7 +1358,31 @@ internal sealed class MainForm : Form
             catch (InvalidOperationException) when (IsDisposed)
             {
             }
-        });
+        }, allowMouse);
+    }
+
+    private void ClearBinding(BindingCaptureTarget target)
+    {
+        switch (target)
+        {
+            case BindingCaptureTarget.Pause:
+                _settings.PauseBinding = null;
+                _settings.PauseShortcutCleared = true;
+                break;
+            case BindingCaptureTarget.AbilityUse:
+                _settings.AbilityUseBinding = null;
+                break;
+            case BindingCaptureTarget.RepeatTest:
+                _settings.RepeatTestBinding = null;
+                break;
+            case BindingCaptureTarget.ToggleOverlay:
+                _settings.OverlayToggleBinding = null;
+                _settings.OverlayShortcutCleared = true;
+                break;
+            default:
+                _settings.SoloBindings.Remove(SoloAbility(target));
+                break;
+        }
     }
 
     private Button GetBindingButton(BindingCaptureTarget target) => target switch
@@ -1227,14 +1391,14 @@ internal sealed class MainForm : Form
         BindingCaptureTarget.AbilityUse => _abilityUseBindingButton,
         BindingCaptureTarget.RepeatTest => _repeatTestBindingButton,
         BindingCaptureTarget.ToggleOverlay => _overlayBindingButton,
-        BindingCaptureTarget.SelectGrenade or BindingCaptureTarget.SelectMelee or BindingCaptureTarget.SelectClass =>
-            _selectionBindingButtons[SelectionAbility(target)],
+        BindingCaptureTarget.SoloGrenade or BindingCaptureTarget.SoloMelee or BindingCaptureTarget.SoloClass =>
+            _soloBindingButtons[SoloAbility(target)],
         _ => throw new ArgumentOutOfRangeException(nameof(target))
     };
 
     private void UpdateBindingButtonText(BindingCaptureTarget target)
     {
-        GetBindingButton(target).Text = GetConfiguredBinding(target)?.ToString() ?? "Record input…";
+        GetBindingButton(target).Text = GetConfiguredBinding(target)?.ToString() ?? (target is BindingCaptureTarget.SoloGrenade or BindingCaptureTarget.SoloMelee or BindingCaptureTarget.SoloClass ? "Solo shortcut…" : "Record input…");
     }
 
     private InputBinding? GetConfiguredBinding(BindingCaptureTarget target) => target switch
@@ -1243,22 +1407,22 @@ internal sealed class MainForm : Form
         BindingCaptureTarget.AbilityUse => _settings.AbilityUseBinding,
         BindingCaptureTarget.RepeatTest => _settings.RepeatTestBinding,
         BindingCaptureTarget.ToggleOverlay => OverlayToggleBinding,
-        _ => _settings.SelectionBindings.TryGetValue(SelectionAbility(target), out var binding) ? binding : null
+        _ => _settings.SoloBindings.TryGetValue(SoloAbility(target), out var binding) ? binding : null
     };
 
-    private static BindingCaptureTarget SelectionCaptureTarget(AbilityKind kind) => kind switch
+    private static BindingCaptureTarget SoloCaptureTarget(AbilityKind kind) => kind switch
     {
-        AbilityKind.Grenade => BindingCaptureTarget.SelectGrenade,
-        AbilityKind.Melee => BindingCaptureTarget.SelectMelee,
-        AbilityKind.ClassAbility => BindingCaptureTarget.SelectClass,
+        AbilityKind.Grenade => BindingCaptureTarget.SoloGrenade,
+        AbilityKind.Melee => BindingCaptureTarget.SoloMelee,
+        AbilityKind.ClassAbility => BindingCaptureTarget.SoloClass,
         _ => throw new ArgumentOutOfRangeException(nameof(kind))
     };
 
-    private static AbilityKind SelectionAbility(BindingCaptureTarget target) => target switch
+    private static AbilityKind SoloAbility(BindingCaptureTarget target) => target switch
     {
-        BindingCaptureTarget.SelectGrenade => AbilityKind.Grenade,
-        BindingCaptureTarget.SelectMelee => AbilityKind.Melee,
-        BindingCaptureTarget.SelectClass => AbilityKind.ClassAbility,
+        BindingCaptureTarget.SoloGrenade => AbilityKind.Grenade,
+        BindingCaptureTarget.SoloMelee => AbilityKind.Melee,
+        BindingCaptureTarget.SoloClass => AbilityKind.ClassAbility,
         _ => throw new ArgumentOutOfRangeException(nameof(target))
     };
 
@@ -1298,6 +1462,11 @@ internal sealed class MainForm : Form
             _settings.TestAbility = ability;
             _settings.TestCycles = decimal.ToInt32(_testCyclesPicker.Value);
             _settings.TestDelaySeconds = _testDelayPicker.Value;
+        }
+
+        if (_settings.SoloAbility is { } solo && solo != _settings.TestAbility)
+        {
+            SetSolo(_settings.TestAbility);
         }
 
         SaveSettings();
@@ -1370,7 +1539,7 @@ internal sealed class MainForm : Form
                 SetOverlayVisible(!_settings.OverlayVisible);
                 break;
             default:
-                SelectRegion(SelectionAbility(action.Value));
+                ToggleSolo(SoloAbility(action.Value));
                 break;
         }
     }
@@ -1379,7 +1548,7 @@ internal sealed class MainForm : Form
     {
         lock (_captureSync)
         {
-            var rows = AbilityKinds.Select(kind =>
+            var rows = AbilityKinds.Where(IsTracked).Select(kind =>
             {
                 var tracker = _trackers.GetValueOrDefault(kind);
                 var slot = _settings.Slots.FirstOrDefault(item => item.Kind == kind);
@@ -1470,6 +1639,36 @@ internal sealed class MainForm : Form
         UpdateOverlay();
     }
 
+    private bool IsTracked(AbilityKind kind) => _settings.SoloAbility is not { } solo || solo == kind;
+
+    private void ToggleSolo(AbilityKind kind) => SetSolo(_settings.SoloAbility == kind ? null : kind);
+
+    private void SetSolo(AbilityKind? kind)
+    {
+        lock (_captureSync)
+        {
+            if (_settings.SoloAbility == kind)
+            {
+                return;
+            }
+
+            _settings.SoloAbility = kind;
+            foreach (var other in AbilityKinds)
+            {
+                if (!IsTracked(other))
+                {
+                    _trackers[other].ResetCycle();
+                }
+            }
+
+            RefreshCaptureRegions();
+        }
+
+        SaveSettings();
+        UpdateStatus();
+        UpdateOverlay();
+    }
+
     private void RefreshCaptureRegions()
     {
         _currentGameWindow = _settings.Slots.Any(slot => slot.GameWindowBounds is not null)
@@ -1480,6 +1679,12 @@ internal sealed class MainForm : Form
         {
             var kind = AbilityKinds[index];
             var slot = GetSlot(kind);
+            if (!IsTracked(kind))
+            {
+                _captureErrors.Remove(kind);
+                continue;
+            }
+
             try
             {
                 if (slot.Region is { } region)
@@ -1646,8 +1851,25 @@ internal sealed class MainForm : Form
     private void EnsureSlotSettings()
     {
         _settings.Slots ??= [];
-        _settings.SelectionBindings ??= [];
-        if (_settings.PauseBinding is null)
+        _settings.SoloBindings ??= [];
+        // Shortcuts are keyboard-only; drop mouse shortcuts saved by earlier versions.
+        static InputBinding? KeyboardOnly(InputBinding? binding) => binding is { Device: InputDevice.Mouse } ? null : binding;
+        _settings.RepeatTestBinding = KeyboardOnly(_settings.RepeatTestBinding);
+        _settings.OverlayToggleBinding = KeyboardOnly(_settings.OverlayToggleBinding);
+        foreach (var (kind, binding) in _settings.SoloBindings.ToArray())
+        {
+            if (binding.Device == InputDevice.Mouse)
+            {
+                _settings.SoloBindings.Remove(kind);
+            }
+        }
+
+        if (_settings.PauseBinding is { Device: InputDevice.Mouse })
+        {
+            _settings.PauseBinding = InputBinding.DefaultPause;
+        }
+
+        if (_settings.PauseBinding is null && !_settings.PauseShortcutCleared)
         {
             var legacyKey = Enum.TryParse<Keys>(_settings.Hotkey, true, out var parsedKey)
                 ? parsedKey
@@ -1737,9 +1959,9 @@ internal sealed class MainForm : Form
         Pause,
         AbilityUse,
         RepeatTest,
-        SelectGrenade,
-        SelectMelee,
-        SelectClass,
+        SoloGrenade,
+        SoloMelee,
+        SoloClass,
         ToggleOverlay
     }
 

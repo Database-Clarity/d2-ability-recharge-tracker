@@ -77,8 +77,9 @@ internal sealed class DesktopDuplicationCapture : IDisposable
         private readonly ID3D11DeviceContext _context;
         private readonly IDXGIOutputDuplication _duplication;
         private readonly Rectangle _desktopBounds;
-        private ID3D11Texture2D? _latest;
-        private readonly Dictionary<Size, ID3D11Texture2D> _staging = [];
+        private ID3D11Texture2D? _frame;
+        private bool _frameHeld;
+        private readonly Dictionary<Rectangle, StagedRegion> _staging = [];
         private long _acquiredTick = -1;
         private DateTime _tickTimestamp;
 
@@ -156,24 +157,30 @@ internal sealed class DesktopDuplicationCapture : IDisposable
                 AcquireLatest();
             }
 
-            if (_latest is null)
+            var staging = Staging(bounds);
+            if (_frame is not null)
             {
+                // Copy only this region straight out of the held desktop frame; no full-frame GPU copy.
+                var left = bounds.Left - _desktopBounds.Left;
+                var top = bounds.Top - _desktopBounds.Top;
+                _context.CopySubresourceRegion(staging.Texture, 0, 0, 0, 0, _frame, 0,
+                    new Vortice.Mathematics.Box(left, top, 0, left + bounds.Width, top + bounds.Height, 1));
+                staging.HasData = true;
+            }
+            else if (!staging.HasData)
+            {
+                // Nothing changed since this region was last copied, but it was never copied: use GDI once.
                 return false;
             }
 
-            var staging = Staging(bounds.Size);
-            var left = bounds.Left - _desktopBounds.Left;
-            var top = bounds.Top - _desktopBounds.Top;
-            _context.CopySubresourceRegion(staging, 0, 0, 0, 0, _latest, 0,
-                new Vortice.Mathematics.Box(left, top, 0, left + bounds.Width, top + bounds.Height, 1));
-            var mapped = _context.Map(staging, 0, MapMode.Read, Vortice.Direct3D11.MapFlags.None);
+            var mapped = _context.Map(staging.Texture, 0, MapMode.Read, Vortice.Direct3D11.MapFlags.None);
             try
             {
                 surface.CopyFrom(mapped.DataPointer, (int)mapped.RowPitch);
             }
             finally
             {
-                _context.Unmap(staging, 0);
+                _context.Unmap(staging.Texture, 0);
             }
 
             timestamp = _tickTimestamp;
@@ -182,6 +189,7 @@ internal sealed class DesktopDuplicationCapture : IDisposable
 
         private void AcquireLatest()
         {
+            ReleaseHeldFrame();
             var timestamp = AcquireFrame();
             // Keep timestamps strictly monotonic even if present times arrive slightly out of order.
             _tickTimestamp = timestamp > _tickTimestamp ? timestamp : _tickTimestamp.AddTicks(1);
@@ -192,47 +200,41 @@ internal sealed class DesktopDuplicationCapture : IDisposable
             var result = _duplication.AcquireNextFrame(0, out var info, out var resource);
             if (result.Code == Vortice.DXGI.ResultCode.WaitTimeout.Code)
             {
-                // Nothing on the display changed since the last frame, so the retained copy is still current.
+                // Nothing on the display changed since the last frame, so the staged copies are still current.
                 return DateTime.UtcNow;
             }
 
             result.CheckError();
+            _frameHeld = true;
             try
             {
                 if (info.LastPresentTime == 0)
                 {
                     // Pointer-only update, or the initial frame before anything presented (which can be blank).
+                    ReleaseHeldFrame();
                     return DateTime.UtcNow;
                 }
 
-                using var texture = resource!.QueryInterface<ID3D11Texture2D>();
-                if (_latest is null)
-                {
-                    var description = texture.Description;
-                    _latest = _device.CreateTexture2D(new Texture2DDescription
-                    {
-                        Width = description.Width,
-                        Height = description.Height,
-                        MipLevels = 1,
-                        ArraySize = 1,
-                        Format = description.Format,
-                        SampleDescription = new SampleDescription(1, 0),
-                        Usage = ResourceUsage.Default,
-                        BindFlags = BindFlags.None,
-                        CPUAccessFlags = CpuAccessFlags.None
-                    });
-                }
-
-                _context.CopyResource(_latest, texture);
+                // Hold the frame for this tick so every region copies directly from it.
+                _frame = resource!.QueryInterface<ID3D11Texture2D>();
                 return PresentTimestamp(info.LastPresentTime);
             }
             finally
             {
                 resource?.Dispose();
-                _duplication.ReleaseFrame();
             }
         }
 
+        private void ReleaseHeldFrame()
+        {
+            _frame?.Dispose();
+            _frame = null;
+            if (_frameHeld)
+            {
+                _frameHeld = false;
+                _duplication.ReleaseFrame();
+            }
+        }
         private static DateTime PresentTimestamp(long presentQpc)
         {
             var now = DateTime.UtcNow;
@@ -245,27 +247,27 @@ internal sealed class DesktopDuplicationCapture : IDisposable
             return now - TimeSpan.FromSeconds(Math.Clamp(age, 0, 0.1));
         }
 
-        private ID3D11Texture2D Staging(Size size)
+        private StagedRegion Staging(Rectangle bounds)
         {
-            if (_staging.TryGetValue(size, out var existing))
+            if (_staging.TryGetValue(bounds, out var existing))
             {
                 return existing;
             }
 
             if (_staging.Count >= 8)
             {
-                foreach (var texture in _staging.Values)
+                foreach (var region in _staging.Values)
                 {
-                    texture.Dispose();
+                    region.Texture.Dispose();
                 }
 
                 _staging.Clear();
             }
 
-            var staging = _device.CreateTexture2D(new Texture2DDescription
+            var staging = new StagedRegion(_device.CreateTexture2D(new Texture2DDescription
             {
-                Width = (uint)size.Width,
-                Height = (uint)size.Height,
+                Width = (uint)bounds.Width,
+                Height = (uint)bounds.Height,
                 MipLevels = 1,
                 ArraySize = 1,
                 Format = Format.B8G8R8A8_UNorm,
@@ -273,23 +275,36 @@ internal sealed class DesktopDuplicationCapture : IDisposable
                 Usage = ResourceUsage.Staging,
                 BindFlags = BindFlags.None,
                 CPUAccessFlags = CpuAccessFlags.Read
-            });
-            _staging.Add(size, staging);
+            }));
+            _staging.Add(bounds, staging);
             return staging;
         }
 
         public void Dispose()
         {
-            foreach (var texture in _staging.Values)
+            try
             {
-                texture.Dispose();
+                ReleaseHeldFrame();
+            }
+            catch (Exception exception) when (exception is SharpGenException or COMException)
+            {
+            }
+
+            foreach (var region in _staging.Values)
+            {
+                region.Texture.Dispose();
             }
 
             _staging.Clear();
-            _latest?.Dispose();
             _duplication.Dispose();
             _context.Dispose();
             _device.Dispose();
+        }
+
+        private sealed class StagedRegion(ID3D11Texture2D texture)
+        {
+            public ID3D11Texture2D Texture { get; } = texture;
+            public bool HasData { get; set; }
         }
     }
 }

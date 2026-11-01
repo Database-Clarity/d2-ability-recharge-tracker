@@ -47,7 +47,12 @@ internal sealed class TrackerSettings
     public InputBinding? PauseBinding { get; set; }
     public InputBinding? AbilityUseBinding { get; set; }
     public InputBinding? RepeatTestBinding { get; set; }
-    public Dictionary<AbilityKind, InputBinding> SelectionBindings { get; set; } = [];
+    /// <summary>Shortcuts that track only one ability (pressing again tracks all).</summary>
+    public Dictionary<AbilityKind, InputBinding> SoloBindings { get; set; } = [];
+    /// <summary>When set, only this ability is captured and tracked.</summary>
+    public AbilityKind? SoloAbility { get; set; }
+    public bool PauseShortcutCleared { get; set; }
+    public bool OverlayShortcutCleared { get; set; }
     public InputBinding? OverlayToggleBinding { get; set; }
     public bool OverlayVisible { get; set; } = true;
     public bool CheckForUpdatesOnStartup { get; set; } = true;

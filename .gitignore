@@ -12,3 +12,4 @@ endpoint-*.jpg
 *.user
 *.suo
 .vs/
+captures/

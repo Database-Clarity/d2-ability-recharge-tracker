@@ -224,18 +224,24 @@ var settings = new TrackerSettings
     PauseBinding = useBinding,
     AbilityUseBinding = new InputBinding(InputDevice.Mouse, MouseInputCode.X2, InputModifiers.Shift),
     RepeatTestBinding = repeatShortcut,
-    SelectionBindings = new() { [AbilityKind.Melee] = useBinding },
+    SoloBindings = new() { [AbilityKind.Melee] = useBinding },
+    SoloAbility = AbilityKind.Melee,
+    OverlayShortcutCleared = true,
     CaptureRate = 60
 };
 var restoredSettings = JsonSerializer.Deserialize<TrackerSettings>(JsonSerializer.Serialize(settings));
 Assert(restoredSettings?.PauseBinding == useBinding, "Modified pause bindings should round-trip in settings.");
 Assert(restoredSettings?.AbilityUseBinding == settings.AbilityUseBinding, "Modified ability-use bindings should round-trip in settings.");
-Assert(restoredSettings?.RepeatTestBinding == repeatShortcut && restoredSettings.SelectionBindings[AbilityKind.Melee] == useBinding,
+Assert(restoredSettings?.RepeatTestBinding == repeatShortcut && restoredSettings.SoloBindings[AbilityKind.Melee] == useBinding &&
+    restoredSettings.SoloAbility == AbilityKind.Melee && restoredSettings.OverlayShortcutCleared,
     "Task shortcuts should round-trip in settings.");
 Assert(restoredSettings?.CaptureRate == 60, "The configured capture target should persist.");
 Assert(useBinding.ToString() == "Ctrl+Shift+G", "Key names and modifiers should be presented clearly.");
 var mouseBinding = new InputBinding(InputDevice.Mouse, MouseInputCode.X1, InputModifiers.Alt);
 Assert(mouseBinding.ToString() == "Alt+Mouse X1", "Mouse buttons should retain their modifier and readable label.");
+Assert(new InputBinding(InputDevice.Keyboard, (int)Keys.Escape, InputModifiers.None).IsClearRequest &&
+    !new InputBinding(InputDevice.Keyboard, (int)Keys.Escape, InputModifiers.Shift).IsClearRequest,
+    "Plain Escape should clear a shortcut while recording it.");
 Assert(Marshal.SizeOf<InputBindingSender.InputEvent>() == (IntPtr.Size == 8 ? 40 : 28), "SendInput structure must match the Windows ABI.");
 
 var viewport = new RectangleF(0, 86, 1080, 900);
@@ -314,26 +320,37 @@ var recordingSlots = new[]
         }
     };
 Assert(AbilityHudRecorder.GetCaptureBounds(recordingSlots) == new Rectangle(284, 174, 232, 102),
-    "The debug recording should capture all three ability areas with a small surrounding margin.");
+    "The debug recording should capture the tracked ability areas with a small surrounding margin.");
+Assert(AbilityHudRecorder.GetCaptureBounds(recordingSlots.Where(slot => slot.Kind == AbilityKind.Melee)) == new Rectangle(354, 179, 92, 92),
+    "A solo recording should capture only the tracked ability area.");
 var recordingPath = Path.Combine(Path.GetTempPath(), $"ability-hud-test-{Guid.NewGuid():N}.zip");
-using (var recordingCancellation = new CancellationTokenSource())
+using (var recorder = new AbilityHudRecorder(new Rectangle(0, 0, 8, 8), "DISPLAY1", recordingPath))
 {
-    var recordingResult = AbilityHudRecorder.Record(
-        new Rectangle(0, 0, 8, 8),
-        recordingPath,
-        recordingCancellation.Token,
-        captureFrame: _ =>
+    var magenta = Enumerable.Repeat(unchecked((int)0xFFFF00FF), 64).ToArray();
+    var recordingStart = DateTime.UtcNow;
+    var handle = System.Runtime.InteropServices.GCHandle.Alloc(magenta, System.Runtime.InteropServices.GCHandleType.Pinned);
+    try
+    {
+        for (var frame = 0; frame < 6; frame++)
         {
-            recordingCancellation.Cancel();
-            var frame = new Bitmap(8, 8);
-            using var frameGraphics = Graphics.FromImage(frame);
-            frameGraphics.Clear(Color.Magenta);
-            return frame;
-        });
-    Assert(recordingResult.Frames == 1 && recordingResult.Bytes <= AbilityHudRecorder.MaximumArchiveBytes,
-        "A stopped recording should produce a complete archive under the size limit.");
-}
+            // 120 Hz capture ticks must be thinned to the 60 FPS recording rate.
+            var timestamp = recordingStart.AddSeconds(frame / 120d);
+            if (recorder.IsDue(timestamp))
+            {
+                recorder.Submit(handle.AddrOfPinnedObject(), 32, timestamp, "Ready,,,,,");
+            }
+        }
+    }
+    finally
+    {
+        handle.Free();
+    }
 
+    recorder.Stop();
+    var recordingResult = recorder.Completion.GetAwaiter().GetResult();
+    Assert(recordingResult.Frames == 3 && recordingResult.DroppedFrames == 0 && File.Exists(recordingPath),
+        "A stopped recording should keep 60 FPS frames from the capture loop and produce a complete archive.");
+}
 try
 {
     using var recordingArchive = ZipFile.OpenRead(recordingPath);

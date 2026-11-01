@@ -1,177 +1,264 @@
+using System.Buffers;
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Drawing;
+using System.Drawing.Imaging;
 using System.Globalization;
 using System.IO.Compression;
+using System.Runtime.InteropServices;
 using System.Text;
 
 namespace D2AbilityTracker;
 
-internal static class AbilityHudRecorder
+/// <summary>
+/// Records the ability HUD as lossless PNG frames inside a ZIP. Frames are fed by the tracker's own capture
+/// loop (so recording never competes with detection for captures) and encoded on a background thread.
+/// </summary>
+internal sealed class AbilityHudRecorder : IDisposable
 {
-    public const long MaximumArchiveBytes = 50_000_000;
-    private const int FramesPerSecond = 15;
-    private const int MaximumFrames = FramesPerSecond * 60 * 10;
-    private const long ArchiveOverheadReserve = 3_000_000;
+    public const int FramesPerSecond = 60;
+    public const long MinimumFreeDiskBytes = 1_000_000_000;
     private const int CaptureMargin = 16;
+    private const int QueueCapacity = 240;
+    private static readonly TimeSpan MinimumFrameSpacing = TimeSpan.FromSeconds(0.75 / FramesPerSecond);
+    private readonly BlockingCollection<PendingFrame> _queue = new(QueueCapacity);
+    private readonly Action<AbilityHudRecordingProgress>? _reportProgress;
+    private readonly string _path;
+    private readonly string _temporaryPath;
+    private readonly Thread _encoder;
+    private readonly TaskCompletionSource<AbilityHudRecordingResult> _completion =
+        new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly Stopwatch _stopwatch = new();
+    private DateTime _lastFrame = DateTime.MinValue;
+    private DateTime? _firstFrame;
+    private int _droppedFrames;
+    private volatile string? _stopReason;
 
-    public static Rectangle GetCaptureBounds(IEnumerable<AbilitySlotSettings> slots)
+    public AbilityHudRecorder(Rectangle bounds, string deviceName, string path,
+        Action<AbilityHudRecordingProgress>? reportProgress = null)
     {
-        var configuredSlots = slots
-            .Where(slot => slot.Kind is AbilityKind.Grenade or AbilityKind.Melee or AbilityKind.ClassAbility)
-            .OrderBy(slot => slot.Kind)
-            .ToArray();
-        if (configuredSlots.Length != 3 || configuredSlots.Any(slot =>
-                slot.Region is not { Width: > 0, Height: > 0 } ||
-                slot.MonitorBounds is not { Width: > 0, Height: > 0 } ||
-                string.IsNullOrWhiteSpace(slot.MonitorDeviceName)))
+        ScreenCapture.ValidateBounds(bounds);
+        Bounds = bounds;
+        DeviceName = deviceName;
+        _path = Path.GetFullPath(path);
+        Directory.CreateDirectory(Path.GetDirectoryName(_path)!);
+        _temporaryPath = Path.Combine(Path.GetDirectoryName(_path)!, $".{Path.GetFileName(_path)}.{Guid.NewGuid():N}.tmp");
+        _reportProgress = reportProgress;
+        _encoder = new Thread(EncodeFrames) { IsBackground = true, Name = "HUD recording encoder", Priority = ThreadPriority.BelowNormal };
+        _stopwatch.Start();
+        _encoder.Start();
+    }
+
+    public Rectangle Bounds { get; }
+    public string DeviceName { get; }
+    public string OutputPath => _path;
+    public Task<AbilityHudRecordingResult> Completion => _completion.Task;
+    public bool IsAccepting => !_queue.IsAddingCompleted;
+
+    public static string DefaultFolder => System.IO.Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "D2AbilityTracker", "HUD recordings");
+
+    public static string DefaultPath(DateTime localTime) =>
+        System.IO.Path.Combine(DefaultFolder, $"D2Ability-HUD-{localTime:yyyyMMdd-HHmmss}.zip");
+
+    public static Rectangle GetCaptureBounds(IEnumerable<AbilitySlotSettings> slots) =>
+        GetCaptureBounds(slots
+            .Where(slot => slot.Region is { Width: > 0, Height: > 0 } && slot.MonitorBounds is { Width: > 0, Height: > 0 })
+            .Select(slot => (slot.Region!.Value, slot.MonitorBounds!.Value)));
+
+    /// <summary>Returns the padded union of the given ability areas, which must all be on one display.</summary>
+    public static Rectangle GetCaptureBounds(IEnumerable<(Rectangle Region, Rectangle MonitorBounds)> areas)
+    {
+        var selected = areas.ToArray();
+        if (selected.Length == 0)
         {
-            throw new InvalidOperationException("Select all three ability areas before recording the HUD.");
+            throw new InvalidOperationException("Select at least one tracked ability area before recording the HUD.");
         }
 
-        var firstSlot = configuredSlots[0];
-        if (configuredSlots.Any(slot =>
-                !string.Equals(slot.MonitorDeviceName, firstSlot.MonitorDeviceName, StringComparison.OrdinalIgnoreCase) ||
-                slot.MonitorBounds != firstSlot.MonitorBounds))
+        var monitor = selected[0].MonitorBounds;
+        if (selected.Any(area => area.MonitorBounds != monitor))
         {
-            throw new InvalidOperationException("All three ability areas must be on the same display to record the HUD.");
+            throw new InvalidOperationException("The tracked ability areas must be on the same display to record the HUD.");
         }
 
-        var union = configuredSlots
-            .Select(slot => slot.Region!.Value)
-            .Aggregate(Rectangle.Union);
-        var padded = Rectangle.FromLTRB(
-            union.Left - CaptureMargin,
-            union.Top - CaptureMargin,
-            union.Right + CaptureMargin,
-            union.Bottom + CaptureMargin);
-        var captureBounds = Rectangle.Intersect(padded, firstSlot.MonitorBounds!.Value);
+        var union = selected.Select(area => area.Region).Aggregate(Rectangle.Union);
+        var padded = Rectangle.FromLTRB(union.Left - CaptureMargin, union.Top - CaptureMargin,
+            union.Right + CaptureMargin, union.Bottom + CaptureMargin);
+        var captureBounds = Rectangle.Intersect(padded, monitor);
         ScreenCapture.ValidateBounds(captureBounds);
         return captureBounds;
     }
 
-    public static AbilityHudRecordingResult Record(
-        Rectangle bounds,
-        string path,
-        CancellationToken cancellationToken,
-        Action<AbilityHudRecordingProgress>? reportProgress = null,
-        Func<Rectangle, Bitmap>? captureFrame = null)
+    /// <summary>True when a frame captured at <paramref name="timestamp"/> keeps the recording at about 60 FPS.</summary>
+    public bool IsDue(DateTime timestamp) => IsAccepting && timestamp - _lastFrame >= MinimumFrameSpacing;
+
+    /// <summary>Copies a captured frame and queues it for encoding; never blocks the capture loop.</summary>
+    public unsafe void Submit(IntPtr pixels, int stride, DateTime timestamp, string trackerState)
     {
-        ScreenCapture.ValidateBounds(bounds);
-        captureFrame ??= ScreenCapture.Capture;
-        var frames = new StringBuilder("frame,elapsed_ms,utc\r\n");
-        var stopwatch = Stopwatch.StartNew();
-        var intervalTicks = Stopwatch.Frequency / FramesPerSecond;
-        var nextFrameAt = Stopwatch.GetTimestamp();
-        var frameCount = 0;
-        var sizeLimitReached = false;
-        var lastProgressAt = TimeSpan.FromSeconds(-1);
-        var fullPath = Path.GetFullPath(path);
-        var temporaryPath = Path.Combine(
-            Path.GetDirectoryName(fullPath)!,
-            $".{Path.GetFileName(fullPath)}.{Guid.NewGuid():N}.tmp");
+        if (!IsAccepting)
+        {
+            return;
+        }
+
+        _lastFrame = timestamp;
+        _firstFrame ??= timestamp;
+        var rowBytes = Bounds.Width * 4;
+        var buffer = ArrayPool<byte>.Shared.Rent(rowBytes * Bounds.Height);
+        fixed (byte* destination = buffer)
+        {
+            for (var y = 0; y < Bounds.Height; y++)
+            {
+                Buffer.MemoryCopy((byte*)pixels + (long)y * stride, destination + (long)y * rowBytes, rowBytes, rowBytes);
+            }
+        }
+
+        var frame = new PendingFrame(buffer, timestamp, timestamp - _firstFrame.Value, trackerState);
         try
         {
-            using (var file = new FileStream(temporaryPath, FileMode.CreateNew, FileAccess.ReadWrite, FileShare.None))
+            if (!_queue.TryAdd(frame))
+            {
+                ArrayPool<byte>.Shared.Return(buffer);
+                Interlocked.Increment(ref _droppedFrames);
+            }
+        }
+        catch (InvalidOperationException)
+        {
+            ArrayPool<byte>.Shared.Return(buffer);
+        }
+    }
+
+    public void Stop(string? reason = null)
+    {
+        _stopReason ??= reason;
+        try
+        {
+            _queue.CompleteAdding();
+        }
+        catch (ObjectDisposedException)
+        {
+        }
+    }
+
+    private void EncodeFrames()
+    {
+        var frameCount = 0;
+        var index = new StringBuilder("frame,elapsed_ms,utc,grenade_state,grenade_progress,melee_state,melee_progress,class_state,class_progress\r\n");
+        var lastProgress = TimeSpan.FromSeconds(-1);
+        try
+        {
+            using (var file = new FileStream(_temporaryPath, FileMode.CreateNew, FileAccess.ReadWrite, FileShare.None))
             using (var archive = new ZipArchive(file, ZipArchiveMode.Create, leaveOpen: true))
             {
-                while (!cancellationToken.IsCancellationRequested && frameCount < MaximumFrames)
+                var drive = new DriveInfo(System.IO.Path.GetPathRoot(_path)!);
+                foreach (var frame in _queue.GetConsumingEnumerable())
                 {
-                    var elapsedTicks = Stopwatch.GetTimestamp() - nextFrameAt;
-                    if (elapsedTicks < 0)
+                    try
                     {
-                        var waitMilliseconds = Math.Max(1, (int)Math.Ceiling(-elapsedTicks * 1000d / Stopwatch.Frequency));
-                        cancellationToken.WaitHandle.WaitOne(waitMilliseconds);
-                        continue;
+                        WriteFrame(archive, ++frameCount, frame.Pixels);
+                    }
+                    finally
+                    {
+                        ArrayPool<byte>.Shared.Return(frame.Pixels);
                     }
 
-                    var frameTimestamp = stopwatch.Elapsed;
-                    using var bitmap = captureFrame(bounds);
-                    using var png = new MemoryStream();
-                    bitmap.Save(png, System.Drawing.Imaging.ImageFormat.Png);
-                    if (file.Position + png.Length + ArchiveOverheadReserve > MaximumArchiveBytes)
+                    index.Append(frameCount.ToString(CultureInfo.InvariantCulture)).Append(',')
+                        .Append(frame.Elapsed.TotalMilliseconds.ToString("F3", CultureInfo.InvariantCulture)).Append(',')
+                        .Append(frame.Timestamp.ToString("O", CultureInfo.InvariantCulture)).Append(',')
+                        .Append(frame.TrackerState).Append("\r\n");
+                    if (frame.Elapsed - lastProgress >= TimeSpan.FromSeconds(1))
                     {
-                        sizeLimitReached = true;
-                        break;
-                    }
-
-                    var frameName = $"frames/{frameCount + 1:D6}.png";
-                    var entry = archive.CreateEntry(frameName, CompressionLevel.NoCompression);
-                    using (var entryStream = entry.Open())
-                    {
-                        png.Position = 0;
-                        png.CopyTo(entryStream);
-                    }
-
-                    frameCount++;
-                    frames.Append(frameCount.ToString(CultureInfo.InvariantCulture)).Append(',')
-                        .Append(frameTimestamp.TotalMilliseconds.ToString("F3", CultureInfo.InvariantCulture)).Append(',')
-                        .Append(DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture)).Append("\r\n");
-                    nextFrameAt += intervalTicks;
-                    if (nextFrameAt < Stopwatch.GetTimestamp())
-                    {
-                        nextFrameAt = Stopwatch.GetTimestamp() + intervalTicks;
-                    }
-
-                    if (frameTimestamp - lastProgressAt >= TimeSpan.FromSeconds(1))
-                    {
-                        lastProgressAt = frameTimestamp;
-                        reportProgress?.Invoke(new AbilityHudRecordingProgress(
-                            frameCount,
-                            frameTimestamp,
-                            file.Position));
+                        lastProgress = frame.Elapsed;
+                        _reportProgress?.Invoke(new AbilityHudRecordingProgress(frameCount, frame.Elapsed, file.Position, Volatile.Read(ref _droppedFrames)));
+                        if (drive.IsReady && drive.AvailableFreeSpace < MinimumFreeDiskBytes)
+                        {
+                            Stop("Stopped because less than 1 GB of disk space is left");
+                        }
                     }
                 }
 
-                var durationLimitReached = frameCount >= MaximumFrames &&
-                    !cancellationToken.IsCancellationRequested && !sizeLimitReached;
                 var manifest = archive.CreateEntry("recording.txt", CompressionLevel.Fastest);
-                using (var manifestWriter = new StreamWriter(manifest.Open(), new UTF8Encoding(false)))
+                using (var writer = new StreamWriter(manifest.Open(), new UTF8Encoding(false)))
                 {
-                    manifestWriter.WriteLine("Lossless PNG frames captured from the ability HUD.");
-                    manifestWriter.WriteLine($"Bounds: {bounds.X},{bounds.Y},{bounds.Width},{bounds.Height} screen pixels");
-                    manifestWriter.WriteLine($"Target frame rate: {FramesPerSecond} FPS");
-                    manifestWriter.WriteLine($"Frames: {frameCount}");
-                    manifestWriter.WriteLine($"Stopped at size limit: {sizeLimitReached}");
-                    manifestWriter.WriteLine($"Stopped at 10-minute limit: {durationLimitReached}");
-                    manifestWriter.WriteLine("frames.csv lists each frame's elapsed time and UTC capture time.");
+                    writer.WriteLine("Lossless PNG frames captured from the ability HUD by the tracker's capture loop.");
+                    writer.WriteLine($"Bounds: {Bounds.X},{Bounds.Y},{Bounds.Width},{Bounds.Height} screen pixels on {DeviceName}");
+                    writer.WriteLine($"Target frame rate: {FramesPerSecond} FPS");
+                    writer.WriteLine($"Frames: {frameCount}");
+                    writer.WriteLine($"Frames dropped (encoder busy): {Volatile.Read(ref _droppedFrames)}");
+                    writer.WriteLine($"App version: {UpdateChecker.CurrentVersion}");
+                    writer.WriteLine("frames.csv lists each frame's capture time and the tracker's live state and progress.");
                 }
 
-                var index = archive.CreateEntry("frames.csv", CompressionLevel.Fastest);
-                using (var indexWriter = new StreamWriter(index.Open(), new UTF8Encoding(false)))
+                var indexEntry = archive.CreateEntry("frames.csv", CompressionLevel.Fastest);
+                using (var writer = new StreamWriter(indexEntry.Open(), new UTF8Encoding(false)))
                 {
-                    indexWriter.Write(frames.ToString());
+                    writer.Write(index.ToString());
                 }
             }
 
-            var fileSize = new FileInfo(temporaryPath).Length;
-            if (fileSize > MaximumArchiveBytes)
+            File.Move(_temporaryPath, _path, overwrite: true);
+            _completion.TrySetResult(new AbilityHudRecordingResult(frameCount, new FileInfo(_path).Length, _stopwatch.Elapsed,
+                Volatile.Read(ref _droppedFrames), _stopReason, _path));
+        }
+        catch (Exception exception)
+        {
+            _queue.CompleteAdding();
+            while (_queue.TryTake(out var pending))
             {
-                throw new InvalidOperationException("The recording exceeded the 50 MB size limit.");
+                ArrayPool<byte>.Shared.Return(pending.Pixels);
             }
 
-            File.Move(temporaryPath, fullPath, overwrite: true);
-            return new AbilityHudRecordingResult(
-                frameCount,
-                fileSize,
-                stopwatch.Elapsed,
-                sizeLimitReached,
-                frameCount >= MaximumFrames && !cancellationToken.IsCancellationRequested && !sizeLimitReached);
+            _completion.TrySetException(exception);
         }
         finally
         {
-            if (File.Exists(temporaryPath))
+            try
             {
-                File.Delete(temporaryPath);
+                if (File.Exists(_temporaryPath))
+                {
+                    File.Delete(_temporaryPath);
+                }
+            }
+            catch (IOException)
+            {
             }
         }
     }
+
+    private void WriteFrame(ZipArchive archive, int frameNumber, byte[] pixels)
+    {
+        var handle = GCHandle.Alloc(pixels, GCHandleType.Pinned);
+        try
+        {
+            using var bitmap = new Bitmap(Bounds.Width, Bounds.Height, Bounds.Width * 4, PixelFormat.Format32bppRgb, handle.AddrOfPinnedObject());
+            var entry = archive.CreateEntry($"frames/{frameNumber:D6}.png", CompressionLevel.NoCompression);
+            using var stream = entry.Open();
+            using var png = new MemoryStream();
+            bitmap.Save(png, ImageFormat.Png);
+            png.Position = 0;
+            png.CopyTo(stream);
+        }
+        finally
+        {
+            handle.Free();
+        }
+    }
+
+    public void Dispose()
+    {
+        Stop();
+        _encoder.Join();
+        _queue.Dispose();
+    }
+
+    private readonly record struct PendingFrame(byte[] Pixels, DateTime Timestamp, TimeSpan Elapsed, string TrackerState);
 }
 
-internal readonly record struct AbilityHudRecordingProgress(int Frames, TimeSpan Elapsed, long BytesWritten);
+internal readonly record struct AbilityHudRecordingProgress(int Frames, TimeSpan Elapsed, long BytesWritten, int DroppedFrames);
 
 internal readonly record struct AbilityHudRecordingResult(
     int Frames,
     long Bytes,
     TimeSpan Elapsed,
-    bool SizeLimitReached,
-    bool DurationLimitReached);
+    int DroppedFrames,
+    string? StopReason,
+    string Path);
