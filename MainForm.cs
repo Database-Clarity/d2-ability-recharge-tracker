@@ -52,6 +52,7 @@ internal sealed class MainForm : Form
     private bool _inputListenerAvailable;
     private double _captureRate;
     private string? _captureLoopError;
+    private volatile string _captureBackend = "GDI";
     private string? _inputListenerError;
     private int _targetCaptureRate;
     private int _uiRefreshPending;
@@ -677,6 +678,8 @@ internal sealed class MainForm : Form
         try
         {
             using var desktop = ScreenCapture.OpenDesktop();
+            using var duplication = new DesktopDuplicationCapture();
+            using var wait = new PrecisionWait();
             while (!cancellationToken.IsCancellationRequested)
             {
                 DisposeRetiredCaptureBatches();
@@ -693,13 +696,12 @@ internal sealed class MainForm : Form
                 var now = Stopwatch.GetTimestamp();
                 if (now < nextFrame)
                 {
-                    var remainingMilliseconds = (nextFrame - now) * 1000d / Stopwatch.Frequency;
-                    cancellationToken.WaitHandle.WaitOne(Math.Max(1, (int)Math.Ceiling(remainingMilliseconds)));
+                    wait.Wait(TimeSpan.FromSeconds((nextFrame - now) / (double)Stopwatch.Frequency), cancellationToken.WaitHandle);
                     continue;
                 }
 
                 var captureStarted = Stopwatch.GetTimestamp();
-                if (CaptureFrame(desktop.DeviceContext))
+                if (CaptureFrame(desktop.DeviceContext, duplication))
                 {
                     capturedFrames++;
                 }
@@ -757,9 +759,11 @@ internal sealed class MainForm : Form
         }
     }
 
-    private bool CaptureFrame(IntPtr desktopDeviceContext)
+    private bool CaptureFrame(IntPtr desktopDeviceContext, DesktopDuplicationCapture duplication)
     {
         var capturedAny = false;
+        var duplicatedAll = true;
+        duplication.BeginTick();
         var testAbilityCaptured = false;
         var timestamp = DateTime.UtcNow;
         lock (_captureSync)
@@ -782,8 +786,13 @@ internal sealed class MainForm : Form
                         batch.Surface = surface;
                     }
 
-                    surface.Capture(desktopDeviceContext, bounds);
-                    timestamp = DateTime.UtcNow;
+                    if (!duplication.TryCapture(batch.DeviceName, bounds, surface, out timestamp))
+                    {
+                        duplicatedAll = false;
+                        surface.Capture(desktopDeviceContext, bounds);
+                        timestamp = DateTime.UtcNow;
+                    }
+
                     capturedAny = true;
                     foreach (var slot in batch.Slots)
                     {
@@ -800,7 +809,9 @@ internal sealed class MainForm : Form
                                 region.Height,
                                 slot.BottomPadding,
                                 tracker.ChargeProgress,
-                                tracker.ProgressSearchTolerance(timestamp)),
+                                tracker.ProgressSearchTolerance(timestamp),
+                                slot.TopPadding,
+                                tracker.Guide(timestamp)),
                             timestamp);
                         _repeatTest.ObserveState(slot.Kind, tracker.State, timestamp);
                         if (completed && tracker.LastDuration is { } duration)
@@ -844,6 +855,11 @@ internal sealed class MainForm : Form
                     }
                 }
             }
+        }
+
+        if (capturedAny)
+        {
+            _captureBackend = duplicatedAll ? "DXGI" : "GDI";
         }
 
         return capturedAny;
@@ -916,7 +932,7 @@ internal sealed class MainForm : Form
                     AbilityState.Ready => $"Ready{DurationSuffix(tracker.LastDuration)}",
                     AbilityState.Consumed => "Used · waiting for the bottom-border flash",
                     AbilityState.Recharging => $"Recharging · {FormatDuration(tracker.CurrentDuration)}",
-                    AbilityState.Complete => $"Recharge complete · {FormatDuration(tracker.LastDuration)}",
+                    AbilityState.Complete => $"Recharge complete · {FormatDuration(tracker.LastDuration)}{MeasurementSuffix(tracker)}",
                     _ => slot.Region is null
                         ? "Select this ability slot to track it"
                         : slot.RegionAutoDetected ? "Auto-detected · click to refine" : "Watching slot background and bottom border…"
@@ -933,12 +949,12 @@ internal sealed class MainForm : Form
                     _statusLabels[kind].Text = $"{FormatDuration(tracker.CurrentDuration)} · {warning}";
                     _statusLabels[kind].ForeColor = Color.DarkOrange;
                 }
-                else if (tracker.State == AbilityState.Recharging && tracker.ChargeProgress is { } progress)
+                else if (tracker.State == AbilityState.Recharging && tracker.DisplayProgress is { } progress)
                 {
                     _statusLabels[kind].Text += $" · {progress:P0}";
-                    if (tracker.EstimatedDuration is { } estimated)
+                    if (tracker.EstimatedDuration is { } estimated && tracker.EstimateUncertainty is { } spread)
                     {
-                        _statusLabels[kind].Text += $" · est. {estimated.TotalSeconds:F2} s";
+                        _statusLabels[kind].Text += $" · est. {estimated.TotalSeconds:F2} ± {spread.TotalSeconds:F2} s";
                     }
                 }
             }
@@ -949,7 +965,7 @@ internal sealed class MainForm : Form
                 : _inputListenerError is { } inputListenerError
                 ? $"Input shortcuts unavailable: {inputListenerError}"
                 : _monitoring
-                ? $"Starts on the bottom-border flash · capture {_captureRate:F0}/{_targetCaptureRate} Hz (load-limited)"
+                ? $"Starts on the bottom-border flash · {_captureBackend} capture {_captureRate:F0}/{_targetCaptureRate} Hz (load-limited)"
                 : $"Paused · {PauseBinding} to resume";
             _testStatus.Text = _repeatTest.Status(DateTime.UtcNow);
             _testAbilityPicker.Enabled = !_repeatTest.IsActive;
@@ -1382,10 +1398,10 @@ internal sealed class MainForm : Form
                 {
                     var progressText = tracker.TrackingWarning is not null
                         ? "recovering"
-                        : tracker.ChargeProgress is { } progress ? $"{progress:P0}" : "acquiring progress";
-                    var estimateText = tracker.EstimatedDuration is { } estimate && tracker.EstimateConfidence is { } confidence
-                        ? $"Est. total {estimate.TotalSeconds:F2} s · fit confidence {confidence:P0}"
-                        : "Est. total unavailable";
+                        : tracker.DisplayProgress is { } progress ? $"{progress:P0}" : "acquiring progress";
+                    var estimateText = tracker.EstimatedDuration is { } estimate && tracker.EstimateUncertainty is { } spread
+                        ? $"Est. total {estimate.TotalSeconds:F2} ± {spread.TotalSeconds:F2} s"
+                        : "Est. total: measuring…";
                     return $"{label}  {FormatDuration(tracker.CurrentDuration)} · {progressText}\n          {estimateText}";
                 }
 
@@ -1403,7 +1419,7 @@ internal sealed class MainForm : Form
                 {
                     AbilityState.Ready => $"{label}  Ready{DurationSuffix(tracker.LastDuration)}",
                     AbilityState.Consumed => $"{label}  Used · waiting",
-                    AbilityState.Complete => $"{label}  Complete · {FormatDuration(tracker.LastDuration)}",
+                    AbilityState.Complete => $"{label}  Complete · {FormatDuration(tracker.LastDuration)}{MeasurementSuffix(tracker)}",
                     _ => $"{label}  Watching"
                 };
             }).ToArray();
@@ -1479,7 +1495,9 @@ internal sealed class MainForm : Form
                     var monitorBounds = Screen.FromRectangle(resolvedRegion).Bounds;
                     var bottomPadding = Math.Min(AbilitySignalDetector.BottomPadding(resolvedRegion.Height),
                         monitorBounds.Bottom - resolvedRegion.Bottom);
-                    regions.Add(new CaptureSlot(kind, resolvedRegion, Math.Max(0, bottomPadding)));
+                    var topPadding = Math.Min(AbilitySignalDetector.TopPadding(resolvedRegion.Height),
+                        resolvedRegion.Top - monitorBounds.Top);
+                    regions.Add(new CaptureSlot(kind, resolvedRegion, Math.Max(0, bottomPadding), Math.Max(0, topPadding)));
                 }
 
                 _captureErrors.Remove(kind);
@@ -1491,20 +1509,22 @@ internal sealed class MainForm : Form
             }
         }
 
-        var batches = groups.Values.SelectMany(slots =>
+        var batches = groups.SelectMany(group =>
         {
+            var slots = group.Value;
             var batchesForDisplay = new List<CaptureBatch>();
             var pending = new List<CaptureSlot>();
             var bounds = Rectangle.Empty;
             long totalArea = 0;
             foreach (var slot in slots)
             {
-                var captureBounds = new Rectangle(slot.Bounds.X, slot.Bounds.Y, slot.Bounds.Width, slot.Bounds.Height + slot.BottomPadding);
+                var captureBounds = new Rectangle(slot.Bounds.X, slot.Bounds.Y - slot.TopPadding, slot.Bounds.Width,
+                    slot.Bounds.Height + slot.TopPadding + slot.BottomPadding);
                 var union = pending.Count == 0 ? captureBounds : Rectangle.Union(bounds, captureBounds);
                 var area = (long)captureBounds.Width * captureBounds.Height;
                 if (pending.Count > 0 && (long)union.Width * union.Height > (totalArea + area) * 4)
                 {
-                    batchesForDisplay.Add(new CaptureBatch(bounds, pending.ToArray()));
+                    batchesForDisplay.Add(new CaptureBatch(group.Key, bounds, pending.ToArray()));
                     pending.Clear();
                     bounds = captureBounds;
                     totalArea = 0;
@@ -1520,7 +1540,7 @@ internal sealed class MainForm : Form
 
             if (pending.Count > 0)
             {
-                batchesForDisplay.Add(new CaptureBatch(bounds, pending.ToArray()));
+                batchesForDisplay.Add(new CaptureBatch(group.Key, bounds, pending.ToArray()));
             }
 
             return batchesForDisplay;
@@ -1528,6 +1548,7 @@ internal sealed class MainForm : Form
         var unchanged = _captureBatches.Length == batches.Length &&
             _captureBatches.Zip(batches).All(pair =>
                 pair.First.Bounds == pair.Second.Bounds &&
+                pair.First.DeviceName == pair.Second.DeviceName &&
                 pair.First.Slots.SequenceEqual(pair.Second.Slots));
         if (unchanged)
         {
@@ -1689,6 +1710,15 @@ internal sealed class MainForm : Form
     private static string DurationSuffix(TimeSpan? duration) =>
         duration is { } value ? $" · last {FormatDuration(value)}" : string.Empty;
 
+    private static string MeasurementSuffix(AbilitySlotTracker tracker) =>
+        (tracker.LastUncertainty, tracker.LastSource) switch
+        {
+            ({ } spread, MeasurementSource.Event) => $" ± {spread.TotalSeconds:F3} s",
+            ({ } spread, MeasurementSource.EventRefinedByModel) => $" ± {spread.TotalSeconds:F3} s (refined)",
+            ({ } spread, MeasurementSource.Model) => $" ± {spread.TotalSeconds:F2} s (endpoint inferred)",
+            _ => string.Empty
+        };
+
     private static string FormatDuration(TimeSpan? duration) =>
         DurationDisplay.Format(duration);
 
@@ -1713,10 +1743,11 @@ internal sealed class MainForm : Form
         ToggleOverlay
     }
 
-    private sealed record CaptureSlot(AbilityKind Kind, Rectangle Bounds, int BottomPadding);
+    private sealed record CaptureSlot(AbilityKind Kind, Rectangle Bounds, int BottomPadding, int TopPadding);
 
-    private sealed class CaptureBatch(Rectangle bounds, CaptureSlot[] slots) : IDisposable
+    private sealed class CaptureBatch(string deviceName, Rectangle bounds, CaptureSlot[] slots) : IDisposable
     {
+        public string DeviceName { get; } = deviceName;
         public Rectangle Bounds { get; } = bounds;
         public CaptureSlot[] Slots { get; } = slots;
         public ScreenCaptureSurface? Surface { get; set; }

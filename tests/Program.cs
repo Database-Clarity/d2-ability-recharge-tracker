@@ -178,37 +178,42 @@ Assert(MainForm.MapRegion(new Rectangle(100, 100, 40, 40), new Rectangle(0, 0, 1
     new Rectangle(200, 300, 500, 500)) == new Rectangle(250, 350, 20, 20),
     "Window-relative regions should follow movement and resizing.");
 
-var forecast = new RechargeEstimate();
-for (var sample = 0; sample < 20; sample++)
+var model = new RechargeModel();
+var noise = new Random(7);
+for (var sample = 0; sample < 200; sample++)
 {
-    forecast.Observe(TimeSpan.FromSeconds(sample * 0.2), sample * 0.02f);
+    var seconds = sample * 0.05;
+    var outlier = sample % 23 == 5 ? 0.3 : 0;
+    model.Add(seconds, 0.01 + seconds / 50 + (noise.NextDouble() - 0.5) * 0.004 + outlier);
 }
-Assert(forecast.TotalDuration is { } total && Math.Abs(total.TotalSeconds - 10) < 0.001 &&
-    forecast.Confidence is > 0.9 and <= 0.95,
-    "Stable observed progress should estimate the total duration with capped fit confidence.");
-forecast.Observe(TimeSpan.FromSeconds(4), 0.8f);
-Assert(forecast.TotalDuration is null && forecast.Confidence is null,
-    "An energy jump should invalidate a previously stable estimate.");
-forecast.Reset();
-Assert(forecast.TotalDuration is null && forecast.Confidence is null, "Signal loss should clear the prediction.");
-for (var sample = 0; sample < 20; sample++)
+Assert(model.IsReady && model.SecondsAt(1) is { } modelEnd && Math.Abs(modelEnd - 49.5) < 0.6 &&
+    model.SecondsUncertaintyAt(1) is { } modelSpread && modelSpread > 0 && modelSpread < 2 &&
+    Math.Abs(modelEnd - 49.5) < 3 * modelSpread + 0.05,
+    "The robust model should reject outliers and predict the end within its stated uncertainty.");
+model.Reset();
+Assert(!model.IsReady && model.SecondsAt(1) is null, "Resetting the model should clear the prediction.");
+for (var sample = 0; sample < 40; sample++)
 {
-    forecast.Observe(TimeSpan.FromSeconds(sample * 0.2), 0.1f);
+    model.Add(sample * 0.1, 0.1);
 }
-Assert(forecast.TotalDuration is null, "Stationary progress must not produce a finish estimate.");
+Assert(model.SecondsAt(1) is null, "Stationary progress must not produce a finish estimate.");
 var estimatingTracker = new AbilitySlotTracker(ability);
 estimatingTracker.Observe(charged, start);
 estimatingTracker.Observe(flash, start.AddSeconds(1));
-for (var sample = 1; sample <= 20; sample++)
+for (var sample = 1; sample <= 40; sample++)
 {
-    estimatingTracker.Observe(line with { ChargeProgress = sample * 0.02f },
-        start.AddSeconds(1 + sample * 0.2));
+    estimatingTracker.Observe(line with { ChargeProgress = sample * 0.01f },
+        start.AddSeconds(1 + sample * 0.1));
 }
-Assert(estimatingTracker.EstimatedDuration is not null, "The active tracker should expose its fitted estimate.");
+Assert(estimatingTracker.EstimatedDuration is { } trackerEstimate && Math.Abs(trackerEstimate.TotalSeconds - 10) < 0.1 &&
+    estimatingTracker.EstimateUncertainty is { } trackerSpread && trackerSpread < TimeSpan.FromSeconds(1),
+    "The active tracker should expose its fitted estimate with an uncertainty.");
 estimatingTracker.MarkSignalLost(start.AddSeconds(6));
-Assert(estimatingTracker.EstimatedDuration is null && estimatingTracker.CurrentDuration == TimeSpan.FromSeconds(5),
-    "Recovery should retain elapsed time but hide stale estimates.");
-
+Assert(estimatingTracker.EstimatedDuration is not null && estimatingTracker.CurrentDuration == TimeSpan.FromSeconds(5),
+    "Signal loss should retain elapsed time and the whole-cycle estimate for fast recovery.");
+Assert(estimatingTracker.Observe(line with { ChargeProgress = 0.55f }, start.AddSeconds(6.5)) == false &&
+    estimatingTracker.TrackingWarning is null,
+    "A single consistent progress sample should end recovery.");
 Assert(CaptureSchedule.NextFrame(0, 10, 120, 1000) == 40, "Slow capture must get three times its work duration as rest.");
 Assert(CaptureSchedule.NextFrame(100, 101, 120, 1000) == 108, "Fast captures should respect the configured target.");
 Assert(CaptureSchedule.NextFrame(100, 150, 240, 1000) == 300, "Overruns must not cause a burst of catch-up captures.");
@@ -412,23 +417,75 @@ if (args.Contains("--update-smoke"))
 
 if (args.Contains("--capture-benchmark"))
 {
+    var benchmarkScreen = Screen.PrimaryScreen!;
+    var benchmarkBounds = new Rectangle(benchmarkScreen.Bounds.Left + 200, benchmarkScreen.Bounds.Top + 200, 400, 170);
     using var desktop = ScreenCapture.OpenDesktop();
-    using var surface = new ScreenCaptureSurface(400, 170, desktop.DeviceContext);
+    using var duplication = new DesktopDuplicationCapture();
+    using var gdiSurface = new ScreenCaptureSurface(400, 170, desktop.DeviceContext);
+    using var dxgiSurface = new ScreenCaptureSurface(400, 170, desktop.DeviceContext);
+    gdiSurface.Capture(desktop.DeviceContext, benchmarkBounds);
+    var before = new byte[gdiSurface.Stride * 170];
+    Marshal.Copy(gdiSurface.Pixels, before, 0, before.Length);
+    var duplicated = false;
+    for (var attempt = 0; attempt < 100 && !duplicated; attempt++)
+    {
+        // Duplication only serves frames once something has presented after it started.
+        duplication.BeginTick();
+        duplicated = duplication.TryCapture(benchmarkScreen.DeviceName, benchmarkBounds, dxgiSurface, out _);
+        Thread.Sleep(duplicated ? 0 : 20);
+    }
+
+    if (duplicated)
+    {
+        gdiSurface.Capture(desktop.DeviceContext, benchmarkBounds);
+        int stable = 0, differing = 0;
+        for (var offset = 0; offset < before.Length; offset++)
+        {
+            if (offset % 4 != 3 && Marshal.ReadByte(gdiSurface.Pixels, offset) == before[offset])
+            {
+                stable++;
+                differing += Marshal.ReadByte(dxgiSurface.Pixels, offset) != before[offset] ? 1 : 0;
+            }
+        }
+
+        Console.WriteLine($"DXGI duplication available; {differing} of {stable} stable color bytes differ from GDI.");
+        RunCaptureBenchmark("DXGI", () =>
+        {
+            duplication.BeginTick();
+            return duplication.TryCapture(benchmarkScreen.DeviceName, benchmarkBounds, dxgiSurface, out _) ? dxgiSurface : null;
+        });
+    }
+    else
+    {
+        Console.WriteLine($"DXGI duplication unavailable or no frame presented within 2 s: {duplication.LastError}");
+    }
+
+    RunCaptureBenchmark("GDI", () =>
+    {
+        gdiSurface.Capture(desktop.DeviceContext, benchmarkBounds);
+        return gdiSurface;
+    });
+}
+
+static void RunCaptureBenchmark(string name, Func<ScreenCaptureSurface?> capture)
+{
     var clock = Stopwatch.StartNew();
     var captures = 0;
     long workTicks = 0;
     var nextFrame = Stopwatch.GetTimestamp();
+    using var wait = new PrecisionWait();
+    using var never = new ManualResetEvent(false);
     while (clock.Elapsed < TimeSpan.FromSeconds(2))
     {
         var now = Stopwatch.GetTimestamp();
         if (now < nextFrame)
         {
-            Thread.Sleep(Math.Max(1, (int)Math.Ceiling((nextFrame - now) * 1000d / Stopwatch.Frequency)));
+            wait.Wait(TimeSpan.FromSeconds((nextFrame - now) / (double)Stopwatch.Frequency), never);
             continue;
         }
 
         var started = Stopwatch.GetTimestamp();
-        surface.Capture(desktop.DeviceContext, new Rectangle(0, 0, 400, 170));
+        var surface = capture() ?? throw new InvalidOperationException($"{name} capture failed.");
         AbilitySignalDetector.Read(surface.Pixels, surface.Stride, 0, 0, 60, 60, 6);
         var finished = Stopwatch.GetTimestamp();
         workTicks += finished - started;
@@ -436,10 +493,9 @@ if (args.Contains("--capture-benchmark"))
         captures++;
     }
 
-    Console.WriteLine($"Load-limited 400x170 capture: {captures / clock.Elapsed.TotalSeconds:F1} Hz, " +
+    Console.WriteLine($"Load-limited 400x170 {name} capture: {captures / clock.Elapsed.TotalSeconds:F1} Hz, " +
         $"{workTicks / (double)Stopwatch.Frequency / clock.Elapsed.TotalSeconds:P1} capture duty.");
 }
-
 static AbilitySignal ReadSyntheticSlot(int size, bool thickBorder, bool interiorLine = false)
 {
     var padding = AbilitySignalDetector.BottomPadding(size);

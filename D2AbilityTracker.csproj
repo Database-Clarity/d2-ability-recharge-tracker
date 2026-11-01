@@ -14,4 +14,7 @@
     <Compile Remove="tests\**\*.cs" />
     <InternalsVisibleTo Include="D2AbilityTracker.Tests" />
   </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Vortice.Direct3D11" Version="3.8.3" />
+  </ItemGroup>
 </Project>

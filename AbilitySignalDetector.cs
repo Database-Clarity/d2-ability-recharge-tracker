@@ -16,15 +16,18 @@ internal static class AbilitySignalDetector
         int height,
         int bottomPadding = 0,
         float? previousProgress = null,
-        float progressTolerance = 0.12f)
+        float progressTolerance = 0.12f,
+        int topPadding = 0,
+        TwinGuide? guide = null)
     {
         if (pixels == IntPtr.Zero || stride <= 0 || cropX < 0 || cropY < 0 || width <= 0 || height <= 0 ||
-            (long)cropX + width > stride / 4 || bottomPadding < 0)
+            (long)cropX + width > stride / 4 || bottomPadding < 0 || topPadding < 0 || topPadding > cropY)
         {
             throw new ArgumentOutOfRangeException(nameof(pixels), "The captured pixel buffer is invalid.");
         }
 
         pixels = IntPtr.Add(pixels, checked(cropY * stride + cropX * 4));
+        var twin = HudTwin.Read((byte*)pixels, stride, width, height, topPadding, bottomPadding, guide);
         var leftInner = Math.Clamp((int)(width * 0.12f), 0, width - 1);
         var leftOuter = Math.Clamp((int)(width * 0.3f), leftInner + 1, width);
         var rightInner = Math.Clamp((int)(width * 0.7f), 0, width - 1);
@@ -115,10 +118,13 @@ internal static class AbilitySignalDetector
             fillPixels > 0 && flashPixels / (float)fillPixels > 0.65f,
             true,
             fillPixels > 0 && blankPixels / (float)fillPixels > 0.65f,
-            fillPixels == 0 ? null : fillLuminance / fillPixels);
+            fillPixels == 0 ? null : fillLuminance / fillPixels,
+            twin);
     }
 
     public static int BottomPadding(int height) => Math.Max(3, (int)Math.Ceiling(height * 0.1));
+
+    public static int TopPadding(int height) => Math.Max(3, (int)Math.Ceiling(height * 0.1));
 
     private static unsafe float ReadBottomBorderThickness(byte* pixels, int stride, int width, int height, int padding)
     {

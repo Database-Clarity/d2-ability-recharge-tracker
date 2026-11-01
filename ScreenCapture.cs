@@ -174,6 +174,15 @@ internal sealed class ScreenCaptureSurface : IDisposable
     public int Stride { get; }
     public IntPtr Pixels { get; private set; }
 
+    public unsafe void CopyFrom(IntPtr source, int sourceStride)
+    {
+        ObjectDisposedException.ThrowIf(_memoryContext == IntPtr.Zero, this);
+        for (var y = 0; y < Height; y++)
+        {
+            Buffer.MemoryCopy((byte*)source + (long)y * sourceStride, (byte*)Pixels + (long)y * Stride, Stride, Stride);
+        }
+    }
+
     public void Capture(IntPtr sourceDeviceContext, Rectangle bounds)
     {
         ObjectDisposedException.ThrowIf(_memoryContext == IntPtr.Zero, this);
