@@ -46,7 +46,7 @@ Name: "{group}\Destiny 2 Ability Recharge Tracker"; Filename: "{sys}\wscript.exe
 
 [Run]
 Filename: "{sys}\wscript.exe"; Parameters: """{app}\Launch Tracker.vbs"""; Description: "Launch the ability tracker"; Flags: nowait postinstall skipifsilent runasoriginaluser; Check: RuntimeAvailable
-
+Filename: "{sys}\wscript.exe"; Parameters: """{app}\Launch Tracker.vbs"""; Flags: nowait; Check: RelaunchAfterUpdate
 [Code]
 var
   DownloadPage: TDownloadWizardPage;
@@ -152,6 +152,11 @@ end;
 function RuntimeAvailable: Boolean;
 begin
   Result := HasDesktopRuntime or HasLocalDesktopRuntime;
+end;
+
+function RelaunchAfterUpdate: Boolean;
+begin
+  Result := (ExpandConstant('{param:relaunch|0}') = '1') and RuntimeAvailable;
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);

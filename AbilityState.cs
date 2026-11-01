@@ -48,6 +48,9 @@ internal sealed class TrackerSettings
     public InputBinding? AbilityUseBinding { get; set; }
     public InputBinding? RepeatTestBinding { get; set; }
     public Dictionary<AbilityKind, InputBinding> SelectionBindings { get; set; } = [];
+    public InputBinding? OverlayToggleBinding { get; set; }
+    public bool OverlayVisible { get; set; } = true;
+    public bool CheckForUpdatesOnStartup { get; set; } = true;
     public int CaptureRate { get; set; } = 120;
     public AbilityKind TestAbility { get; set; } = AbilityKind.Grenade;
     public int TestCycles { get; set; } = 5;

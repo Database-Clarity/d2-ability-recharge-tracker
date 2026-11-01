@@ -26,6 +26,9 @@ internal sealed class MainForm : Form
     private readonly Button _stopTestButton = new();
     private readonly Button _repeatTestBindingButton = new();
     private readonly Button _recordHudButton = new();
+    private readonly Button _overlayToggleButton = new();
+    private readonly Button _overlayBindingButton = new();
+    private readonly Button _updateButton = new();
     private readonly NumericUpDown _captureRatePicker = new();
     private readonly ComboBox _anchorPicker = new();
     private readonly ComboBox _monitorPicker = new();
@@ -57,22 +60,22 @@ internal sealed class MainForm : Form
     private CancellationTokenSource? _hudRecordingCancellation;
     private Task<AbilityHudRecordingResult>? _hudRecordingTask;
     private bool _closingAfterHudRecording;
+    private UpdateRelease? _availableUpdate;
+    private bool _updateBusy;
 
     public MainForm()
     {
         _settings = LoadSettings();
         EnsureSlotSettings();
-        Text = "D2 Ability Recharge Tracker";
+        Text = $"D2 Ability Recharge Tracker v{UpdateChecker.CurrentVersion.ToString(3)}";
         _targetCaptureRate = Math.Clamp(_settings.CaptureRate, 30, 240);
-        ClientSize = new Size(790, 690);
-        MinimumSize = new Size(790, 690);
-        MaximumSize = new Size(790, 690);
+        ClientSize = new Size(790, 735);
         FormBorderStyle = FormBorderStyle.FixedDialog;
         MaximizeBox = false;
         StartPosition = FormStartPosition.CenterScreen;
         Font = new Font("Segoe UI", 9);
         BuildControls();
-        _overlay.Show();
+        ShowOverlayIfEnabled();
         UpdateOverlay();
         UpdateStatus();
         _inputListener.BindingPressed += OnGlobalBindingPressed;
@@ -93,6 +96,13 @@ internal sealed class MainForm : Form
         }
 
         SetMonitoring(true);
+        Shown += async (_, _) =>
+        {
+            if (UpdateChecker.IsReleaseBuild && _settings.CheckForUpdatesOnStartup)
+            {
+                await CheckForUpdateAsync(interactive: false);
+            }
+        };
         FormClosing += async (_, args) =>
         {
             if (_hudRecordingTask is not { } recordingTask)
@@ -341,11 +351,23 @@ internal sealed class MainForm : Form
             SaveSettings();
         };
 
-        _stateStatus.SetBounds(20, 650, 750, 24);
+        _overlayToggleButton.SetBounds(20, 648, 185, 34);
+        _overlayToggleButton.Click += (_, _) => SetOverlayVisible(!_settings.OverlayVisible);
+        var overlayHotkeyLabel = new Label { Text = "Show / hide overlay", AutoSize = true, Location = new Point(224, 657) };
+        _overlayBindingButton.SetBounds(335, 651, 140, 30);
+        _overlayBindingButton.Text = OverlayToggleBinding?.ToString() ?? "Record input…";
+        _overlayBindingButton.Click += (_, _) => ToggleBindingCapture(BindingCaptureTarget.ToggleOverlay);
+        _updateButton.SetBounds(610, 651, 150, 30);
+        _updateButton.Text = "Check for updates";
+        _updateButton.Click += (_, _) => CheckOrInstallUpdate();
+        UpdateOverlayToggleText();
+
+        _stateStatus.SetBounds(20, 697, 750, 24);
         _stateStatus.ForeColor = Color.FromArgb(90, 90, 90);
         Controls.AddRange([title, intro, monitorLabel, _monitorPicker, captureLabel, _captureRatePicker, help, selectionGuideButton, resetSelectionsButton,
             _recordHudButton, divider, testGroup, _toggleButton,
-            hotkeyLabel, _pauseBindingButton, anchorLabel, _anchorPicker, _stateStatus]);
+            hotkeyLabel, _pauseBindingButton, anchorLabel, _anchorPicker, _overlayToggleButton, overlayHotkeyLabel,
+            _overlayBindingButton, _updateButton, _stateStatus]);
     }
 
     private async void ToggleHudRecording()
@@ -426,7 +448,7 @@ internal sealed class MainForm : Form
                 _hudRecordingCancellation = null;
                 _recordHudButton.Enabled = true;
                 _recordHudButton.Text = "Record HUD…";
-                _overlay.Show();
+                ShowOverlayIfEnabled();
                 UpdateOverlay();
             }
         }
@@ -629,7 +651,7 @@ internal sealed class MainForm : Form
             _selectingRegion = false;
             Show();
             Activate();
-            _overlay.Show();
+            ShowOverlayIfEnabled();
             UpdateOverlay();
             if (wasMonitoring)
             {
@@ -946,6 +968,155 @@ internal sealed class MainForm : Form
 
     private InputBinding PauseBinding => _settings.PauseBinding ?? InputBinding.DefaultPause;
 
+    private InputBinding? OverlayToggleBinding
+    {
+        get
+        {
+            if (_settings.OverlayToggleBinding is { } configured)
+            {
+                return configured;
+            }
+
+            // F9 is the default only while no other shortcut already uses it.
+            var fallback = new InputBinding(InputDevice.Keyboard, (int)Keys.F9, InputModifiers.None);
+            var taken = Enum.GetValues<BindingCaptureTarget>()
+                .Where(target => target != BindingCaptureTarget.ToggleOverlay)
+                .Any(target => GetConfiguredBinding(target) == fallback);
+            return taken ? null : fallback;
+        }
+    }
+
+    private void ShowOverlayIfEnabled()
+    {
+        if (_settings.OverlayVisible)
+        {
+            _overlay.Show();
+            UpdateOverlay();
+        }
+        else
+        {
+            _overlay.Hide();
+        }
+    }
+
+    private void SetOverlayVisible(bool visible)
+    {
+        _settings.OverlayVisible = visible;
+        SaveSettings();
+        UpdateOverlayToggleText();
+        if (!_selectingRegion && _hudRecordingTask is null)
+        {
+            ShowOverlayIfEnabled();
+        }
+    }
+
+    private void UpdateOverlayToggleText()
+    {
+        _overlayToggleButton.Text = _settings.OverlayVisible ? "Hide overlay" : "Show overlay";
+    }
+
+    private async void CheckOrInstallUpdate()
+    {
+        if (_updateBusy)
+        {
+            return;
+        }
+
+        if (_availableUpdate is null)
+        {
+            await CheckForUpdateAsync(interactive: true);
+        }
+
+        if (_availableUpdate is { } release)
+        {
+            await InstallUpdateAsync(release);
+        }
+    }
+
+    private async Task CheckForUpdateAsync(bool interactive)
+    {
+        _updateBusy = true;
+        _updateButton.Enabled = false;
+        _updateButton.Text = "Checking…";
+        try
+        {
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+            _availableUpdate = await UpdateChecker.CheckAsync(timeout.Token);
+            if (_availableUpdate is null && interactive)
+            {
+                MessageBox.Show(this, $"You're on the latest version (v{UpdateChecker.CurrentVersion.ToString(3)}).", Text,
+                    MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+        }
+        catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException or System.Text.Json.JsonException)
+        {
+            if (interactive)
+            {
+                MessageBox.Show(this, $"Couldn't check for updates: {exception.Message}", Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
+        }
+        finally
+        {
+            _updateBusy = false;
+            if (!IsDisposed)
+            {
+                _updateButton.Enabled = true;
+                _updateButton.Text = _availableUpdate is { } release ? $"Update to {release.Tag}…" : "Check for updates";
+                _updateButton.Font = _availableUpdate is null ? Font : new Font(Font, FontStyle.Bold);
+            }
+        }
+    }
+
+    private async Task InstallUpdateAsync(UpdateRelease release)
+    {
+        var answer = MessageBox.Show(
+            this,
+            $"Version {release.Tag} is available (you have v{UpdateChecker.CurrentVersion.ToString(3)}).{Environment.NewLine}{Environment.NewLine}" +
+            "Download and install it now? The tracker closes during the update and restarts automatically; your settings are kept.",
+            Text,
+            MessageBoxButtons.YesNoCancel,
+            MessageBoxIcon.Question,
+            MessageBoxDefaultButton.Button1);
+        if (answer != DialogResult.Yes)
+        {
+            return;
+        }
+
+        if (_hudRecordingTask is not null)
+        {
+            MessageBox.Show(this, "Stop the HUD recording before updating.", Text, MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
+        _updateBusy = true;
+        _updateButton.Enabled = false;
+        _updateButton.Text = "Downloading…";
+        try
+        {
+            var progress = new Progress<double>(fraction => _updateButton.Text = $"Downloading… {fraction:P0}");
+            var installer = await UpdateChecker.DownloadAsync(release, progress, CancellationToken.None);
+            _updateButton.Text = "Installing…";
+            UpdateChecker.LaunchInstaller(installer);
+            Close();
+        }
+        catch (Exception exception)
+        {
+            _updateBusy = false;
+            _updateButton.Enabled = true;
+            _updateButton.Text = $"Update to {release.Tag}…";
+            var openPage = MessageBox.Show(
+                this,
+                $"The update couldn't be installed automatically: {exception.Message}{Environment.NewLine}{Environment.NewLine}Open the release page to download it manually?",
+                Text,
+                MessageBoxButtons.YesNo,
+                MessageBoxIcon.Warning);
+            if (openPage == DialogResult.Yes)
+            {
+                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(release.PageUrl.ToString()) { UseShellExecute = true });
+            }
+        }
+    }
+
     private void TogglePauseBindingCapture()
     {
         ToggleBindingCapture(BindingCaptureTarget.Pause);
@@ -1014,6 +1185,10 @@ internal sealed class MainForm : Form
                     {
                         _settings.RepeatTestBinding = binding;
                     }
+                    else if (target == BindingCaptureTarget.ToggleOverlay)
+                    {
+                        _settings.OverlayToggleBinding = binding;
+                    }
                     else
                     {
                         _settings.SelectionBindings[SelectionAbility(target)] = binding;
@@ -1035,6 +1210,7 @@ internal sealed class MainForm : Form
         BindingCaptureTarget.Pause => _pauseBindingButton,
         BindingCaptureTarget.AbilityUse => _abilityUseBindingButton,
         BindingCaptureTarget.RepeatTest => _repeatTestBindingButton,
+        BindingCaptureTarget.ToggleOverlay => _overlayBindingButton,
         BindingCaptureTarget.SelectGrenade or BindingCaptureTarget.SelectMelee or BindingCaptureTarget.SelectClass =>
             _selectionBindingButtons[SelectionAbility(target)],
         _ => throw new ArgumentOutOfRangeException(nameof(target))
@@ -1050,6 +1226,7 @@ internal sealed class MainForm : Form
         BindingCaptureTarget.Pause => PauseBinding,
         BindingCaptureTarget.AbilityUse => _settings.AbilityUseBinding,
         BindingCaptureTarget.RepeatTest => _settings.RepeatTestBinding,
+        BindingCaptureTarget.ToggleOverlay => OverlayToggleBinding,
         _ => _settings.SelectionBindings.TryGetValue(SelectionAbility(target), out var binding) ? binding : null
     };
 
@@ -1172,6 +1349,9 @@ internal sealed class MainForm : Form
             case BindingCaptureTarget.RepeatTest:
                 if (_repeatTest.IsActive) StopRepeatabilityTest();
                 else StartRepeatabilityTest();
+                break;
+            case BindingCaptureTarget.ToggleOverlay:
+                SetOverlayVisible(!_settings.OverlayVisible);
                 break;
             default:
                 SelectRegion(SelectionAbility(action.Value));
@@ -1529,7 +1709,8 @@ internal sealed class MainForm : Form
         RepeatTest,
         SelectGrenade,
         SelectMelee,
-        SelectClass
+        SelectClass,
+        ToggleOverlay
     }
 
     private sealed record CaptureSlot(AbilityKind Kind, Rectangle Bounds, int BottomPadding);

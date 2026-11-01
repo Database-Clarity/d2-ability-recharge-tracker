@@ -347,6 +347,37 @@ finally
     File.Delete(recordingPath);
 }
 
+const string releaseJson = """
+{
+  "tag_name": "v0.1.12",
+  "draft": false,
+  "prerelease": false,
+  "html_url": "https://github.com/Database-Clarity/d2-ability-recharge-tracker/releases/tag/v0.1.12",
+  "assets": [
+    { "name": "notes.txt", "browser_download_url": "https://example.com/notes.txt", "size": 4 },
+    {
+      "name": "D2AbilityTracker-v0.1.12-Setup.exe",
+      "browser_download_url": "https://github.com/Database-Clarity/d2-ability-recharge-tracker/releases/download/v0.1.12/D2AbilityTracker-v0.1.12-Setup.exe",
+      "size": 1234,
+      "digest": "sha256:ABCDEF"
+    }
+  ]
+}
+""";
+var newerRelease = UpdateChecker.ParseLatestRelease(releaseJson, new Version(0, 1, 9));
+Assert(newerRelease is { Tag: "v0.1.12", AssetName: "D2AbilityTracker-v0.1.12-Setup.exe", Size: 1234, Sha256: "abcdef" } &&
+    newerRelease.Version == new Version(0, 1, 12),
+    "The updater should pick the setup asset and digest from a newer GitHub release.");
+Assert(UpdateChecker.ParseLatestRelease(releaseJson, new Version(0, 1, 12)) is null &&
+    UpdateChecker.ParseLatestRelease(releaseJson, new Version(0, 2, 0)) is null,
+    "The updater should ignore releases that are not newer than the running build.");
+Assert(UpdateChecker.ParseLatestRelease(releaseJson.Replace("\"prerelease\": false", "\"prerelease\": true"), new Version(0, 1, 0)) is null &&
+    UpdateChecker.ParseLatestRelease(releaseJson.Replace("D2AbilityTracker-v0.1.12-Setup.exe\",", "Other.exe\","), new Version(0, 1, 0)) is null,
+    "The updater should skip prereleases and releases without the expected installer.");
+Assert(UpdateChecker.TryParseTag("v0.1.10", out var parsedTag) && parsedTag > new Version(0, 1, 9) &&
+    !UpdateChecker.TryParseTag("latest", out _),
+    "Release tags should compare numerically rather than as text.");
+
 using (var listener = new GlobalInputListener())
 using (var hookThreadResponded = new ManualResetEventSlim())
 {
@@ -361,6 +392,23 @@ using (var hookThreadResponded = new ManualResetEventSlim())
 }
 
 Console.WriteLine("All bottom-flash detection, capture scheduling, selection, repeat-test, and input-hook checks passed.");
+
+if (args.Contains("--update-smoke"))
+{
+    Task.Run(async () =>
+    {
+        var latest = await UpdateChecker.CheckAsync(CancellationToken.None);
+        Console.WriteLine(latest is null ? "Running build is current." : $"Latest update: {latest.Tag} ({latest.AssetName})");
+        using var smokeClient = new HttpClient();
+        smokeClient.DefaultRequestHeaders.UserAgent.ParseAdd("D2AbilityTracker-tests");
+        var smokeRelease = UpdateChecker.ParseLatestRelease(
+            await smokeClient.GetStringAsync($"https://api.github.com/repos/{UpdateChecker.Repository}/releases/latest"),
+            new Version(0, 0, 0)) ?? throw new InvalidOperationException("The latest release has no installer asset.");
+        var downloaded = await UpdateChecker.DownloadAsync(smokeRelease, null, CancellationToken.None);
+        Console.WriteLine($"Downloaded and verified {new FileInfo(downloaded).Length} bytes to {downloaded}.");
+        File.Delete(downloaded);
+    }).GetAwaiter().GetResult();
+}
 
 if (args.Contains("--capture-benchmark"))
 {
