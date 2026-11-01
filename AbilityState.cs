@@ -55,6 +55,9 @@ internal sealed class TrackerSettings
     public bool OverlayShortcutCleared { get; set; }
     public InputBinding? OverlayToggleBinding { get; set; }
     public bool OverlayVisible { get; set; } = true;
+    public bool OverlayTwoLines { get; set; } = true;
+    /// <summary>Custom overlay top-left in screen pixels; null uses <see cref="OverlayAnchor"/>.</summary>
+    public Point? OverlayLocation { get; set; }
     public bool CheckForUpdatesOnStartup { get; set; } = true;
     public int CaptureRate { get; set; } = 120;
     public AbilityKind TestAbility { get; set; } = AbilityKind.Grenade;
