@@ -156,6 +156,7 @@ end;
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
   if (CurStep = ssDone) and (RuntimeWarning <> '') then
-    MsgBox('Setup completed. The .NET 9 Desktop Runtime is not installed yet, so the tracker cannot start.' +
-      #13#10 + 'Rerun this setup when the download is available.', mbInformation, MB_OK);
+    MsgBox(
+      'Setup completed. The .NET 9 Desktop Runtime is not installed yet, so the tracker cannot start.' + #13#10 +
+      'Rerun this setup when the download is available.', mbInformation, MB_OK);
 end;
