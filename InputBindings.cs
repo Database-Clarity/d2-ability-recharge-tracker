@@ -98,6 +98,7 @@ internal sealed class GlobalInputListener : IDisposable
     private IntPtr _keyboardHook;
     private IntPtr _mouseHook;
     private Action<InputBinding>? _captureCallback;
+    private Control? _hookDispatcher;
 
     public GlobalInputListener()
     {
@@ -106,8 +107,51 @@ internal sealed class GlobalInputListener : IDisposable
     }
 
     public event EventHandler<InputBindingEventArgs>? BindingPressed;
+    public event Action<string>? Failed;
 
     public void Start()
+    {
+        if (_hookDispatcher is not null)
+        {
+            return;
+        }
+
+        var ready = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var hookThread = new Thread(() =>
+        {
+            try
+            {
+                using var dispatcher = new Control();
+                dispatcher.CreateControl();
+                _hookDispatcher = dispatcher;
+                InstallHooks();
+                ready.SetResult();
+                Application.Run();
+            }
+            catch (Exception exception)
+            {
+                if (!ready.TrySetException(exception))
+                {
+                    Trace.TraceError($"Global input listener stopped: {exception}");
+                    Failed?.Invoke(exception.Message);
+                }
+            }
+            finally
+            {
+                UninstallHooks();
+                _hookDispatcher = null;
+            }
+        })
+        {
+            IsBackground = true,
+            Name = "D2 input hooks"
+        };
+        hookThread.SetApartmentState(ApartmentState.STA);
+        hookThread.Start();
+        ready.Task.GetAwaiter().GetResult();
+    }
+
+    private void InstallHooks()
     {
         if (_keyboardHook != IntPtr.Zero || _mouseHook != IntPtr.Zero)
         {
@@ -269,6 +313,21 @@ internal sealed class GlobalInputListener : IDisposable
     public void Dispose()
     {
         CancelCapture();
+        var dispatcher = _hookDispatcher;
+        if (dispatcher is not null && !dispatcher.IsDisposed)
+        {
+            try
+            {
+                dispatcher.BeginInvoke((Action)Application.ExitThread);
+            }
+            catch (InvalidOperationException) when (dispatcher.IsDisposed)
+            {
+            }
+        }
+    }
+
+    private void UninstallHooks()
+    {
         if (_keyboardHook != IntPtr.Zero)
         {
             InputNativeMethods.UnhookWindowsHookEx(_keyboardHook);

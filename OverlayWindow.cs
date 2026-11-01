@@ -24,6 +24,7 @@ internal sealed class OverlayWindow : Form
 
     public void SetStatus(string title, string detail, Color accent, Rectangle? monitorBounds = null)
     {
+        var changed = _title != title || _detail != detail || _accent != accent;
         _title = title;
         _detail = detail;
         _accent = accent;
@@ -34,7 +35,10 @@ internal sealed class OverlayWindow : Form
             UpdatePosition(_anchor, bounds);
         }
 
-        Invalidate();
+        if (changed)
+        {
+            Invalidate();
+        }
     }
 
     private string _anchor = "Bottom right";

@@ -167,7 +167,7 @@ internal sealed class RepeatTestSession
     }
 
     private static bool IsAbilityUsed(AbilityState state) =>
-        state is AbilityState.Consumed or AbilityState.Recharging;
+        state == AbilityState.Recharging;
 
     private static string FormatDuration(TimeSpan? duration) =>
         duration is { } value

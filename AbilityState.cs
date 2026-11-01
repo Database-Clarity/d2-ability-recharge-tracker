@@ -44,21 +44,27 @@ internal sealed class TrackerSettings
     public string Hotkey { get; set; } = "F8";
     public InputBinding? PauseBinding { get; set; }
     public InputBinding? AbilityUseBinding { get; set; }
+    public InputBinding? RepeatTestBinding { get; set; }
+    public Dictionary<AbilityKind, InputBinding> SelectionBindings { get; set; } = [];
+    public int CaptureRate { get; set; } = 120;
     public AbilityKind TestAbility { get; set; } = AbilityKind.Grenade;
     public int TestCycles { get; set; } = 5;
     public decimal TestDelaySeconds { get; set; } = 1;
     public string OverlayAnchor { get; set; } = "Bottom right";
 }
 
-internal readonly record struct AbilitySignal(bool Charged, bool CooldownLine, float ChargedBackgroundRatio, float CooldownLineRatio);
+internal readonly record struct AbilitySignal(
+    bool Charged,
+    bool CooldownLine,
+    float ChargedBackgroundRatio,
+    float CooldownLineRatio,
+    float BottomBorderThickness = 0);
 
 internal sealed class AbilitySlotTracker
 {
-    private DateTime? _lineCandidateSince;
-    private int _lineCandidateSamples;
     private DateTime? _rechargeStarted;
     private DateTime? _completionCandidateSince;
-    private bool _hasSeenRechargeLine;
+    private float? _bottomBorderBaseline;
 
     public AbilityKind Kind { get; }
     public AbilityState State { get; private set; } = AbilityState.Unknown;
@@ -73,11 +79,9 @@ internal sealed class AbilitySlotTracker
 
     public void ResetCycle()
     {
-        _lineCandidateSince = null;
-        _lineCandidateSamples = 0;
         _rechargeStarted = null;
         _completionCandidateSince = null;
-        _hasSeenRechargeLine = false;
+        _bottomBorderBaseline = null;
         IsCharged = false;
         CurrentDuration = null;
         State = AbilityState.Unknown;
@@ -86,46 +90,43 @@ internal sealed class AbilitySlotTracker
     public bool Observe(AbilitySignal signal, DateTime timestamp)
     {
         IsCharged = signal.Charged;
-        var completed = false;
-        if (signal.CooldownLine && !signal.Charged)
+        var startFlash = _bottomBorderBaseline is { } baseline &&
+            signal.BottomBorderThickness > baseline + 0.012f;
+        if (_rechargeStarted is null && startFlash)
         {
+            _rechargeStarted = timestamp;
             _completionCandidateSince = null;
-            _lineCandidateSince ??= timestamp;
-            _lineCandidateSamples++;
-            if (!_hasSeenRechargeLine && _lineCandidateSamples >= 2)
-            {
-                _rechargeStarted = _lineCandidateSince;
-                _hasSeenRechargeLine = true;
-                State = AbilityState.Recharging;
-            }
-        }
-        else
-        {
-            _lineCandidateSince = null;
-            _lineCandidateSamples = 0;
-            if (_hasSeenRechargeLine)
-            {
-                _completionCandidateSince ??= timestamp;
-                if (signal.Charged)
-                {
-                    LastDuration = _completionCandidateSince.Value - _rechargeStarted!.Value;
-                    CurrentDuration = null;
-                    _rechargeStarted = null;
-                    _completionCandidateSince = null;
-                    _hasSeenRechargeLine = false;
-                    State = AbilityState.Complete;
-                    completed = true;
-                }
-            }
         }
 
-        if (_hasSeenRechargeLine)
+        if (_rechargeStarted is { } started)
         {
-            CurrentDuration = timestamp - _rechargeStarted!.Value;
+            // Start flashes can precede the ready fill disappearing; only a later blank frame is an endpoint.
+            if (signal.CooldownLine || startFlash)
+            {
+                _completionCandidateSince = null;
+            }
+            else if (!signal.Charged)
+            {
+                _completionCandidateSince ??= timestamp;
+            }
+
+            if (signal.Charged && !startFlash && _completionCandidateSince is { } blank)
+            {
+                LastDuration = blank - started;
+                CurrentDuration = null;
+                _rechargeStarted = null;
+                _completionCandidateSince = null;
+                _bottomBorderBaseline = signal.BottomBorderThickness;
+                State = AbilityState.Complete;
+                return true;
+            }
+
+            CurrentDuration = timestamp - started;
             State = AbilityState.Recharging;
         }
         else if (signal.Charged)
         {
+            _bottomBorderBaseline = signal.BottomBorderThickness;
             if (State != AbilityState.Complete)
             {
                 State = AbilityState.Ready;
@@ -136,6 +137,6 @@ internal sealed class AbilitySlotTracker
             State = AbilityState.Consumed;
         }
 
-        return completed;
+        return false;
     }
 }

@@ -13,10 +13,11 @@ internal static class AbilitySignalDetector
         int cropX,
         int cropY,
         int width,
-        int height)
+        int height,
+        int bottomPadding = 0)
     {
         if (pixels == IntPtr.Zero || stride <= 0 || cropX < 0 || cropY < 0 || width <= 0 || height <= 0 ||
-            (long)cropX + width > stride / 4)
+            (long)cropX + width > stride / 4 || bottomPadding < 0)
         {
             throw new ArgumentOutOfRangeException(nameof(pixels), "The captured pixel buffer is invalid.");
         }
@@ -76,7 +77,41 @@ internal static class AbilitySignalDetector
             chargedRatio >= MinimumChargedBackgroundRatio,
             lineRatio >= MinimumLineContrast,
             chargedRatio,
-            lineRatio);
+            lineRatio,
+            ReadBottomBorderThickness(pixelData, stride, width, height, bottomPadding));
+    }
+
+    public static int BottomPadding(int height) => Math.Max(3, (int)Math.Ceiling(height * 0.1));
+
+    private static unsafe float ReadBottomBorderThickness(byte* pixels, int stride, int width, int height, int padding)
+    {
+        var left = (int)(width * 0.12f);
+        var right = Math.Max(left + 1, (int)(width * 0.88f));
+        var runLength = 0;
+        var bottommostRunLength = 0;
+        for (var y = (int)(height * 0.85f); y < height + padding; y++)
+        {
+            var brightPixels = 0;
+            for (var x = left; x < right; x++)
+            {
+                if (GetLuminance(pixels + y * stride + x * 4) >= 0.55f)
+                {
+                    brightPixels++;
+                }
+            }
+
+            if (brightPixels >= (right - left) * 0.65f)
+            {
+                runLength++;
+                bottommostRunLength = runLength;
+            }
+            else
+            {
+                runLength = 0;
+            }
+        }
+
+        return bottommostRunLength / (float)height;
     }
 
     private static unsafe float FindCooldownLineContrast(

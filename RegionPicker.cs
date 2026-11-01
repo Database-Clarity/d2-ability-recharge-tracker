@@ -99,7 +99,7 @@ internal sealed class RegionPicker : Form
         _footer.Padding = new Padding(18, 8, 18, 8);
         var footerHint = new Label
         {
-            Text = "Include the slot background, border, and cooldown-line path; avoid selecting only the icon.",
+            Text = "Include the full square border; the strip below it is sampled automatically.",
             ForeColor = Color.FromArgb(205, 215, 225),
             AutoEllipsis = true
         };
@@ -119,6 +119,14 @@ internal sealed class RegionPicker : Form
         _selectionApplyButton.Visible = false;
         _selectionApplyButton.Click += (_, _) => ApplySelection();
         Controls.Add(_selectionApplyButton);
+        foreach (var button in new[] { _zoomOutButton, _zoomInButton, _guideButton, _applyButton, cancelButton, _selectionApplyButton })
+        {
+            button.ForeColor = Color.White;
+            button.BackColor = Color.FromArgb(42, 48, 60);
+            button.FlatStyle = FlatStyle.Flat;
+            button.FlatAppearance.BorderColor = Color.FromArgb(170, 185, 205);
+            button.UseVisualStyleBackColor = false;
+        }
 
         _scale = FitScale();
         if (initialSelection is { } existing)
@@ -404,8 +412,8 @@ internal sealed class RegionPicker : Form
         MessageBox.Show(
             this,
             "1. Keep Destiny 2 visible while selecting; the frozen preview is taken from its window when available.\n" +
-            "2. Select the full square ability slot, including its border and the space where the cooldown line travels.\n" +
-            "3. Do not select only the ability artwork. The tracker reads the slot background and cooldown line.\n" +
+            "2. Select the full square ability slot tightly, including its border. A small strip below it is captured automatically.\n" +
+            "3. The brief thickening/flash underneath the bottom border starts timing. Do not select only the artwork; no manual flash calibration is needed.\n" +
             "4. Scroll or use +/- to zoom. Right- or middle-drag to pan. Drag inside the selection to move it, or drag a corner to resize it.\n" +
             "5. Review the outline, then choose Use selection. Escape or Cancel leaves the saved area unchanged.",
             "Region selection guide",

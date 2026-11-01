@@ -7,7 +7,6 @@ namespace D2AbilityTracker;
 
 internal sealed class MainForm : Form
 {
-    private const int TargetCaptureRate = 240;
     private static readonly AbilityKind[] AbilityKinds = Enum.GetValues<AbilityKind>();
     private readonly string _settingsPath = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
@@ -25,6 +24,8 @@ internal sealed class MainForm : Form
     private readonly Button _abilityUseBindingButton = new();
     private readonly Button _startTestButton = new();
     private readonly Button _stopTestButton = new();
+    private readonly Button _repeatTestBindingButton = new();
+    private readonly NumericUpDown _captureRatePicker = new();
     private readonly ComboBox _anchorPicker = new();
     private readonly ComboBox _monitorPicker = new();
     private readonly ComboBox _testAbilityPicker = new();
@@ -36,6 +37,7 @@ internal sealed class MainForm : Form
     private readonly Dictionary<AbilityKind, Label> _regionLabels = [];
     private readonly Dictionary<AbilityKind, Label> _statusLabels = [];
     private readonly Dictionary<AbilityKind, Button> _selectButtons = [];
+    private readonly Dictionary<AbilityKind, Button> _selectionBindingButtons = [];
     private readonly Dictionary<AbilityKind, string> _captureErrors = [];
     private readonly Queue<CaptureBatch> _retiredCaptureBatches = [];
     private CaptureBatch[] _captureBatches = [];
@@ -46,17 +48,19 @@ internal sealed class MainForm : Form
     private double _captureRate;
     private string? _captureLoopError;
     private string? _inputListenerError;
-    private long _lastGameFocusCheck;
-    private bool _destiny2Foreground;
+    private int _targetCaptureRate;
+    private int _uiRefreshPending;
+    private bool _selectingRegion;
 
     public MainForm()
     {
         _settings = LoadSettings();
         EnsureSlotSettings();
         Text = "D2 Ability Recharge Tracker";
-        ClientSize = new Size(790, 640);
-        MinimumSize = new Size(790, 640);
-        MaximumSize = new Size(790, 640);
+        _targetCaptureRate = Math.Clamp(_settings.CaptureRate, 30, 240);
+        ClientSize = new Size(790, 690);
+        MinimumSize = new Size(790, 690);
+        MaximumSize = new Size(790, 690);
         FormBorderStyle = FormBorderStyle.FixedDialog;
         MaximizeBox = false;
         StartPosition = FormStartPosition.CenterScreen;
@@ -66,6 +70,12 @@ internal sealed class MainForm : Form
         UpdateOverlay();
         UpdateStatus();
         _inputListener.BindingPressed += OnGlobalBindingPressed;
+        _inputListener.Failed += error => QueueInputAction(() =>
+        {
+            _inputListenerAvailable = false;
+            _inputListenerError = error;
+            StopRepeatabilityTest();
+        });
         try
         {
             _inputListener.Start();
@@ -86,6 +96,7 @@ internal sealed class MainForm : Form
         _captureThread = new Thread(CaptureLoop)
         {
             IsBackground = true,
+            Priority = ThreadPriority.BelowNormal,
             Name = "D2 ability HUD capture"
         };
         _captureThread.Start();
@@ -102,7 +113,7 @@ internal sealed class MainForm : Form
         };
         var intro = new Label
         {
-            Text = "Tracks the cooldown line and slot background only; ability icons and element colours are not matched.",
+            Text = "Starts timing on the brief bottom-border flash; ability icons and element colours are not matched.",
             AutoSize = true,
             Location = new Point(20, 44)
         };
@@ -110,10 +121,21 @@ internal sealed class MainForm : Form
         _monitorPicker.SetBounds(78, 74, 350, 28);
         _monitorPicker.DropDownStyle = ComboBoxStyle.DropDownList;
         RefreshDisplays();
+        var captureLabel = new Label { Text = "Capture target (Hz)", AutoSize = true, Location = new Point(460, 79) };
+        _captureRatePicker.SetBounds(590, 74, 80, 28);
+        _captureRatePicker.Minimum = 30;
+        _captureRatePicker.Maximum = 240;
+        _captureRatePicker.Value = _targetCaptureRate;
+        _captureRatePicker.ValueChanged += (_, _) =>
+        {
+            Volatile.Write(ref _targetCaptureRate, decimal.ToInt32(_captureRatePicker.Value));
+            _settings.CaptureRate = _targetCaptureRate;
+            SaveSettings();
+        };
 
         var help = new Label
         {
-            Text = "Select each square slot tightly, including its border and cooldown-line path.",
+            Text = "Select the full square border tightly; pixels below it are captured automatically.",
             AutoEllipsis = true,
             Location = new Point(20, 112),
             Size = new Size(620, 22)
@@ -144,30 +166,39 @@ internal sealed class MainForm : Form
                 Size = new Size(120, 32)
             };
             selectButton.Click += (_, _) => SelectRegion(kind);
+            var selectionBindingButton = new Button
+            {
+                Text = _settings.SelectionBindings.TryGetValue(kind, out var selectionBinding) ? selectionBinding.ToString() : "Shortcut…",
+                Location = new Point(630, y + 2),
+                Size = new Size(140, 32),
+                AutoEllipsis = true
+            };
+            selectionBindingButton.Click += (_, _) => ToggleBindingCapture(SelectionCaptureTarget(kind));
+            _selectionBindingButtons.Add(kind, selectionBindingButton);
             var regionLabel = new Label
             {
                 AutoEllipsis = true,
                 Location = new Point(250, y + 1),
-                Size = new Size(420, 22)
+                Size = new Size(370, 22)
             };
             var statusLabel = new Label
             {
                 AutoEllipsis = true,
                 ForeColor = Color.DimGray,
                 Location = new Point(250, y + 23),
-                Size = new Size(420, 22)
+                Size = new Size(370, 22)
             };
             _selectButtons.Add(kind, selectButton);
             _regionLabels.Add(kind, regionLabel);
             _statusLabels.Add(kind, statusLabel);
-            Controls.AddRange([name, selectButton, regionLabel, statusLabel]);
+            Controls.AddRange([name, selectButton, regionLabel, statusLabel, selectionBindingButton]);
         }
 
         var testGroup = new GroupBox
         {
             Text = "Repeatability test",
             Location = new Point(20, 360),
-            Size = new Size(750, 175)
+            Size = new Size(750, 215)
         };
         var testAbilityLabel = new Label { Text = "Ability", AutoSize = true, Location = new Point(15, 30) };
         _testAbilityPicker.SetBounds(75, 25, 150, 28);
@@ -220,24 +251,28 @@ internal sealed class MainForm : Form
         _stopTestButton.SetBounds(415, 68, 100, 32);
         _stopTestButton.Text = "Stop test";
         _stopTestButton.Click += (_, _) => StopRepeatabilityTest();
-        _testStatus.SetBounds(15, 112, 715, 48);
+        var repeatShortcutLabel = new Label { Text = "Start / stop shortcut", AutoSize = true, Location = new Point(15, 117) };
+        _repeatTestBindingButton.SetBounds(150, 110, 180, 30);
+        _repeatTestBindingButton.Text = _settings.RepeatTestBinding?.ToString() ?? "Record shortcut…";
+        _repeatTestBindingButton.Click += (_, _) => ToggleBindingCapture(BindingCaptureTarget.RepeatTest);
+        _testStatus.SetBounds(15, 152, 715, 48);
         _testStatus.AutoEllipsis = true;
         _testStatus.ForeColor = Color.DimGray;
         testGroup.Controls.AddRange([
             testAbilityLabel, _testAbilityPicker, cyclesLabel, _testCyclesPicker,
             delayLabel, _testDelayPicker, secondsLabel, abilityInputLabel,
-            _abilityUseBindingButton, _startTestButton, _stopTestButton, _testStatus
+            _abilityUseBindingButton, _startTestButton, _stopTestButton, repeatShortcutLabel, _repeatTestBindingButton, _testStatus
         ]);
 
-        _toggleButton.SetBounds(20, 553, 185, 36);
+        _toggleButton.SetBounds(20, 603, 185, 36);
         _toggleButton.Click += (_, _) => SetMonitoring(!_monitoring);
-        var hotkeyLabel = new Label { Text = "Pause / resume", AutoSize = true, Location = new Point(224, 563) };
-        _pauseBindingButton.SetBounds(335, 557, 140, 30);
+        var hotkeyLabel = new Label { Text = "Pause / resume", AutoSize = true, Location = new Point(224, 613) };
+        _pauseBindingButton.SetBounds(335, 607, 140, 30);
         _pauseBindingButton.Text = PauseBinding.ToString();
         _pauseBindingButton.Click += (_, _) => TogglePauseBindingCapture();
 
-        var anchorLabel = new Label { Text = "Overlay position", AutoSize = true, Location = new Point(495, 563) };
-        _anchorPicker.SetBounds(610, 557, 150, 28);
+        var anchorLabel = new Label { Text = "Overlay position", AutoSize = true, Location = new Point(495, 613) };
+        _anchorPicker.SetBounds(610, 607, 150, 28);
         _anchorPicker.DropDownStyle = ComboBoxStyle.DropDownList;
         _anchorPicker.Items.AddRange(["Top left", "Top right", "Bottom left", "Bottom right"]);
         _anchorPicker.SelectedItem = _settings.OverlayAnchor;
@@ -253,9 +288,9 @@ internal sealed class MainForm : Form
             SaveSettings();
         };
 
-        _stateStatus.SetBounds(20, 600, 750, 24);
+        _stateStatus.SetBounds(20, 650, 750, 24);
         _stateStatus.ForeColor = Color.FromArgb(90, 90, 90);
-        Controls.AddRange([title, intro, monitorLabel, _monitorPicker, help, selectionGuideButton, divider, testGroup, _toggleButton,
+        Controls.AddRange([title, intro, monitorLabel, _monitorPicker, captureLabel, _captureRatePicker, help, selectionGuideButton, divider, testGroup, _toggleButton,
             hotkeyLabel, _pauseBindingButton, anchorLabel, _anchorPicker, _stateStatus]);
     }
 
@@ -272,6 +307,11 @@ internal sealed class MainForm : Form
 
     private void SelectRegion(AbilityKind kind)
     {
+        if (_selectingRegion)
+        {
+            return;
+        }
+
         RefreshDisplays();
         var target = ScreenCapture.FindDestiny2Window();
         DisplayChoice? display;
@@ -317,6 +357,7 @@ internal sealed class MainForm : Form
         }
 
         var wasMonitoring = _monitoring;
+        _selectingRegion = true;
         SetMonitoring(false);
         try
         {
@@ -351,6 +392,7 @@ internal sealed class MainForm : Form
         }
         finally
         {
+            _selectingRegion = false;
             Show();
             Activate();
             _overlay.Show();
@@ -367,8 +409,8 @@ internal sealed class MainForm : Form
         MessageBox.Show(
             this,
             "1. Keep Destiny 2 visible, then choose Select area. The app looks for its window and opens a frozen preview of it automatically.\n" +
-            "2. Select the full square ability slot, including its border and the path where the cooldown line travels.\n" +
-            "3. Avoid selecting only the icon. Detection uses the slot background and cooldown line, not the artwork.\n" +
+            "2. Select the full square ability slot tightly, including its border. The app also samples a small strip below your selection automatically.\n" +
+            "3. Timing starts when the bottom border briefly thickens/flashes underneath the square, not when a line moves inside the icon. No flash capture or manual calibration is needed.\n" +
             "4. Zoom with the mouse wheel or +/-; right- or middle-drag to pan. Drag inside the outline to move it, or drag a corner to resize it.\n" +
             "5. Review and adjust the outline, then click Use selection. If Destiny 2 is not found, you can choose the selected display preview instead.",
             "Region selection guide",
@@ -383,7 +425,6 @@ internal sealed class MainForm : Form
         var rateWindowStart = Stopwatch.GetTimestamp();
         var lastUiUpdate = rateWindowStart;
         var capturedFrames = 0;
-        var frameInterval = Stopwatch.Frequency / (double)TargetCaptureRate;
         var nextFrame = Stopwatch.GetTimestamp();
         try
         {
@@ -397,7 +438,7 @@ internal sealed class MainForm : Form
                     capturedFrames = 0;
                     rateWindowStart = Stopwatch.GetTimestamp();
                     cancellationToken.WaitHandle.WaitOne(50);
-                    nextFrame = Stopwatch.GetTimestamp() + (long)frameInterval;
+                    nextFrame = Stopwatch.GetTimestamp();
                     continue;
                 }
 
@@ -409,17 +450,15 @@ internal sealed class MainForm : Form
                     continue;
                 }
 
+                var captureStarted = Stopwatch.GetTimestamp();
                 if (CaptureFrame(desktop.DeviceContext))
                 {
                     capturedFrames++;
                 }
 
                 now = Stopwatch.GetTimestamp();
-                nextFrame += (long)frameInterval;
-                if (now - nextFrame > frameInterval * 3)
-                {
-                    nextFrame = now;
-                }
+                // Never catch up missed captures in bursts. Limit capture work to 25% duty under load.
+                nextFrame = CaptureSchedule.NextFrame(captureStarted, now, Volatile.Read(ref _targetCaptureRate), Stopwatch.Frequency);
 
                 if (now - rateWindowStart >= Stopwatch.Frequency)
                 {
@@ -495,6 +534,7 @@ internal sealed class MainForm : Form
                     }
 
                     surface.Capture(desktopDeviceContext, bounds);
+                    timestamp = DateTime.UtcNow;
                     capturedAny = true;
                     foreach (var slot in batch.Slots)
                     {
@@ -508,7 +548,8 @@ internal sealed class MainForm : Form
                                 region.Left - bounds.Left,
                                 region.Top - bounds.Top,
                                 region.Width,
-                                region.Height),
+                                region.Height,
+                                slot.BottomPadding),
                             timestamp);
                         _repeatTest.ObserveState(slot.Kind, tracker.State, timestamp);
                         if (completed && tracker.LastDuration is { } duration)
@@ -535,14 +576,7 @@ internal sealed class MainForm : Form
                 !_captureErrors.ContainsKey(testAbility) &&
                 _trackers[testAbility].IsCharged)
             {
-                var now = Stopwatch.GetTimestamp();
-                if (now - _lastGameFocusCheck >= Stopwatch.Frequency / 10)
-                {
-                    _destiny2Foreground = InputBindingSender.IsDestiny2Foreground();
-                    _lastGameFocusCheck = now;
-                }
-
-                if (_repeatTest.TryGetDueUse(timestamp, _destiny2Foreground, out var binding))
+                if (_repeatTest.TryGetDueUse(timestamp, InputBindingSender.IsDestiny2Foreground(), out var binding))
                 {
                     try
                     {
@@ -561,7 +595,7 @@ internal sealed class MainForm : Form
 
     private void RequestUiRefresh()
     {
-        if (!IsHandleCreated || IsDisposed)
+        if (!IsHandleCreated || IsDisposed || Interlocked.Exchange(ref _uiRefreshPending, 1) != 0)
         {
             return;
         }
@@ -570,6 +604,7 @@ internal sealed class MainForm : Form
         {
             BeginInvoke((Action)(() =>
             {
+                Interlocked.Exchange(ref _uiRefreshPending, 0);
                 if (!IsDisposed)
                 {
                     if (_refreshCaptureRegionsRequested)
@@ -591,6 +626,7 @@ internal sealed class MainForm : Form
         }
         catch (InvalidOperationException) when (_captureCancellation.IsCancellationRequested)
         {
+            Interlocked.Exchange(ref _uiRefreshPending, 0);
         }
     }
 
@@ -622,10 +658,10 @@ internal sealed class MainForm : Form
                 _statusLabels[kind].Text = tracker.State switch
                 {
                     AbilityState.Ready => $"Ready{DurationSuffix(tracker.LastDuration)}",
-                    AbilityState.Consumed => "Used · waiting for the cooldown line",
+                    AbilityState.Consumed => "Used · waiting for the bottom-border flash",
                     AbilityState.Recharging => $"Recharging · {FormatDuration(tracker.CurrentDuration)}",
                     AbilityState.Complete => $"Recharge complete · {FormatDuration(tracker.LastDuration)}",
-                    _ => slot.Region is null ? "Select this ability slot to track it" : "Watching slot background and cooldown line…"
+                    _ => slot.Region is null ? "Select this ability slot to track it" : "Watching slot background and bottom border…"
                 };
                 _statusLabels[kind].ForeColor = tracker.State switch
                 {
@@ -642,13 +678,14 @@ internal sealed class MainForm : Form
                 : _inputListenerError is { } inputListenerError
                 ? $"Input shortcuts unavailable: {inputListenerError}"
                 : _monitoring
-                ? $"Starts on the cooldown line; confirms the blank end flash · capture {_captureRate:F0}/{TargetCaptureRate} Hz"
+                ? $"Starts on the bottom-border flash · capture {_captureRate:F0}/{_targetCaptureRate} Hz (load-limited)"
                 : $"Paused · {PauseBinding} to resume";
             _testStatus.Text = _repeatTest.Status(DateTime.UtcNow);
             _testAbilityPicker.Enabled = !_repeatTest.IsActive;
             _testCyclesPicker.Enabled = !_repeatTest.IsActive;
             _testDelayPicker.Enabled = !_repeatTest.IsActive;
             _abilityUseBindingButton.Enabled = !_repeatTest.IsActive;
+            _repeatTestBindingButton.Enabled = !_repeatTest.IsActive;
             _startTestButton.Enabled = !_repeatTest.IsActive &&
                 _inputListenerAvailable &&
                 _settings.AbilityUseBinding is not null &&
@@ -703,12 +740,11 @@ internal sealed class MainForm : Form
                 BeginInvoke((Action)(() =>
                 {
                     _bindingCaptureTarget = null;
-                    var conflicts = target == BindingCaptureTarget.Pause
-                        ? _settings.AbilityUseBinding == binding
-                        : PauseBinding == binding;
+                    var conflicts = Enum.GetValues<BindingCaptureTarget>()
+                        .Any(other => other != target && GetConfiguredBinding(other) == binding);
                     if (conflicts)
                     {
-                        MessageBox.Show(this, "Use a different input for pause/resume and ability use.", Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                        MessageBox.Show(this, "Use a different input for each shortcut and ability use.", Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
                         UpdateBindingButtonText(target);
                         UpdateStatus();
                         return;
@@ -721,9 +757,17 @@ internal sealed class MainForm : Form
                             ? ((Keys)binding.Code).ToString()
                             : binding.ToString();
                     }
-                    else
+                    else if (target == BindingCaptureTarget.AbilityUse)
                     {
                         _settings.AbilityUseBinding = binding;
+                    }
+                    else if (target == BindingCaptureTarget.RepeatTest)
+                    {
+                        _settings.RepeatTestBinding = binding;
+                    }
+                    else
+                    {
+                        _settings.SelectionBindings[SelectionAbility(target)] = binding;
                     }
 
                     UpdateBindingButtonText(target);
@@ -741,18 +785,40 @@ internal sealed class MainForm : Form
     {
         BindingCaptureTarget.Pause => _pauseBindingButton,
         BindingCaptureTarget.AbilityUse => _abilityUseBindingButton,
+        BindingCaptureTarget.RepeatTest => _repeatTestBindingButton,
+        BindingCaptureTarget.SelectGrenade or BindingCaptureTarget.SelectMelee or BindingCaptureTarget.SelectClass =>
+            _selectionBindingButtons[SelectionAbility(target)],
         _ => throw new ArgumentOutOfRangeException(nameof(target))
     };
 
     private void UpdateBindingButtonText(BindingCaptureTarget target)
     {
-        GetBindingButton(target).Text = target switch
-        {
-            BindingCaptureTarget.Pause => PauseBinding.ToString(),
-            BindingCaptureTarget.AbilityUse => _settings.AbilityUseBinding?.ToString() ?? "Record input…",
-            _ => throw new ArgumentOutOfRangeException(nameof(target))
-        };
+        GetBindingButton(target).Text = GetConfiguredBinding(target)?.ToString() ?? "Record input…";
     }
+
+    private InputBinding? GetConfiguredBinding(BindingCaptureTarget target) => target switch
+    {
+        BindingCaptureTarget.Pause => PauseBinding,
+        BindingCaptureTarget.AbilityUse => _settings.AbilityUseBinding,
+        BindingCaptureTarget.RepeatTest => _settings.RepeatTestBinding,
+        _ => _settings.SelectionBindings.TryGetValue(SelectionAbility(target), out var binding) ? binding : null
+    };
+
+    private static BindingCaptureTarget SelectionCaptureTarget(AbilityKind kind) => kind switch
+    {
+        AbilityKind.Grenade => BindingCaptureTarget.SelectGrenade,
+        AbilityKind.Melee => BindingCaptureTarget.SelectMelee,
+        AbilityKind.ClassAbility => BindingCaptureTarget.SelectClass,
+        _ => throw new ArgumentOutOfRangeException(nameof(kind))
+    };
+
+    private static AbilityKind SelectionAbility(BindingCaptureTarget target) => target switch
+    {
+        BindingCaptureTarget.SelectGrenade => AbilityKind.Grenade,
+        BindingCaptureTarget.SelectMelee => AbilityKind.Melee,
+        BindingCaptureTarget.SelectClass => AbilityKind.ClassAbility,
+        _ => throw new ArgumentOutOfRangeException(nameof(target))
+    };
 
     private void StartRepeatabilityTest()
     {
@@ -808,9 +874,59 @@ internal sealed class MainForm : Form
 
     private void OnGlobalBindingPressed(object? sender, InputBindingEventArgs args)
     {
-        if (args.Binding == PauseBinding)
+        // The dedicated hook thread must never wait for the UI or capture worker.
+        QueueInputAction(() => HandleGlobalBinding(args.Binding));
+    }
+
+    private void QueueInputAction(Action action)
+    {
+        if (IsDisposed || !IsHandleCreated)
         {
-            SetMonitoring(!_monitoring);
+            return;
+        }
+
+        try
+        {
+            BeginInvoke(action);
+        }
+        catch (InvalidOperationException) when (_captureCancellation.IsCancellationRequested || IsDisposed)
+        {
+        }
+    }
+
+    private void HandleGlobalBinding(InputBinding binding)
+    {
+        if (_selectingRegion || _bindingCaptureTarget is not null || IsDisposed)
+        {
+            return;
+        }
+
+        BindingCaptureTarget? action = null;
+        foreach (var target in Enum.GetValues<BindingCaptureTarget>())
+        {
+            if (target != BindingCaptureTarget.AbilityUse && GetConfiguredBinding(target) == binding)
+            {
+                action = target;
+                break;
+            }
+        }
+        if (action is null)
+        {
+            return;
+        }
+
+        switch (action.Value)
+        {
+            case BindingCaptureTarget.Pause:
+                SetMonitoring(!_monitoring);
+                break;
+            case BindingCaptureTarget.RepeatTest:
+                if (_repeatTest.IsActive) StopRepeatabilityTest();
+                else StartRepeatabilityTest();
+                break;
+            default:
+                SelectRegion(SelectionAbility(action.Value));
+                break;
         }
     }
 
@@ -908,7 +1024,10 @@ internal sealed class MainForm : Form
                         groups.Add(deviceName, regions);
                     }
 
-                    regions.Add(new CaptureSlot(kind, resolvedRegion));
+                    var monitorBounds = Screen.FromRectangle(resolvedRegion).Bounds;
+                    var bottomPadding = Math.Min(AbilitySignalDetector.BottomPadding(resolvedRegion.Height),
+                        monitorBounds.Bottom - resolvedRegion.Bottom);
+                    regions.Add(new CaptureSlot(kind, resolvedRegion, Math.Max(0, bottomPadding)));
                 }
 
                 _captureErrors.Remove(kind);
@@ -919,15 +1038,39 @@ internal sealed class MainForm : Form
             }
         }
 
-        var batches = groups.Values.Select(slots =>
+        var batches = groups.Values.SelectMany(slots =>
         {
-            var bounds = slots[0].Bounds;
-            foreach (var slot in slots.Skip(1))
+            var batchesForDisplay = new List<CaptureBatch>();
+            var pending = new List<CaptureSlot>();
+            var bounds = Rectangle.Empty;
+            long totalArea = 0;
+            foreach (var slot in slots)
             {
-                bounds = Rectangle.Union(bounds, slot.Bounds);
+                var captureBounds = new Rectangle(slot.Bounds.X, slot.Bounds.Y, slot.Bounds.Width, slot.Bounds.Height + slot.BottomPadding);
+                var union = pending.Count == 0 ? captureBounds : Rectangle.Union(bounds, captureBounds);
+                var area = (long)captureBounds.Width * captureBounds.Height;
+                if (pending.Count > 0 && (long)union.Width * union.Height > (totalArea + area) * 4)
+                {
+                    batchesForDisplay.Add(new CaptureBatch(bounds, pending.ToArray()));
+                    pending.Clear();
+                    bounds = captureBounds;
+                    totalArea = 0;
+                }
+                else
+                {
+                    bounds = union;
+                }
+
+                pending.Add(slot);
+                totalArea += area;
             }
 
-            return new CaptureBatch(bounds, slots.ToArray());
+            if (pending.Count > 0)
+            {
+                batchesForDisplay.Add(new CaptureBatch(bounds, pending.ToArray()));
+            }
+
+            return batchesForDisplay;
         }).ToArray();
         var unchanged = _captureBatches.Length == batches.Length &&
             _captureBatches.Zip(batches).All(pair =>
@@ -1014,6 +1157,7 @@ internal sealed class MainForm : Form
     private void EnsureSlotSettings()
     {
         _settings.Slots ??= [];
+        _settings.SelectionBindings ??= [];
         if (_settings.PauseBinding is null)
         {
             var legacyKey = Enum.TryParse<Keys>(_settings.Hotkey, true, out var parsedKey)
@@ -1093,10 +1237,14 @@ internal sealed class MainForm : Form
     private enum BindingCaptureTarget
     {
         Pause,
-        AbilityUse
+        AbilityUse,
+        RepeatTest,
+        SelectGrenade,
+        SelectMelee,
+        SelectClass
     }
 
-    private sealed record CaptureSlot(AbilityKind Kind, Rectangle Bounds);
+    private sealed record CaptureSlot(AbilityKind Kind, Rectangle Bounds, int BottomPadding);
 
     private sealed class CaptureBatch(Rectangle bounds, CaptureSlot[] slots) : IDisposable
     {
