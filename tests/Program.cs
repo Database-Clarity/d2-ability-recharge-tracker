@@ -2,6 +2,7 @@ using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Drawing;
 using System.Diagnostics;
+using System.IO.Compression;
 using D2AbilityTracker;
 
 if (args.Length > 0 && args[0] == "--replay")
@@ -280,6 +281,70 @@ using (var graphics = Graphics.FromImage(hudPreview))
         "The melee and class suggestions should follow the evenly spaced adjacent HUD slots.");
     Assert(suggestions[1].Top < suggestions[0].Top && suggestions[2].Top < suggestions[1].Top,
         "Suggested rectangles should follow the HUD row's slight upward slant.");
+}
+
+var recordingDisplayBounds = new Rectangle(100, 50, 1000, 800);
+var recordingSlots = new[]
+{
+        new AbilitySlotSettings
+        {
+            Kind = AbilityKind.Grenade,
+            Region = new Rectangle(300, 200, 60, 60),
+            MonitorBounds = recordingDisplayBounds,
+            MonitorDeviceName = "DISPLAY1"
+        },
+        new AbilitySlotSettings
+        {
+            Kind = AbilityKind.Melee,
+            Region = new Rectangle(370, 195, 60, 60),
+            MonitorBounds = recordingDisplayBounds,
+            MonitorDeviceName = "DISPLAY1"
+        },
+        new AbilitySlotSettings
+        {
+            Kind = AbilityKind.ClassAbility,
+            Region = new Rectangle(440, 190, 60, 60),
+            MonitorBounds = recordingDisplayBounds,
+            MonitorDeviceName = "DISPLAY1"
+        }
+    };
+Assert(AbilityHudRecorder.GetCaptureBounds(recordingSlots) == new Rectangle(284, 174, 232, 102),
+    "The debug recording should capture all three ability areas with a small surrounding margin.");
+var recordingPath = Path.Combine(Path.GetTempPath(), $"ability-hud-test-{Guid.NewGuid():N}.zip");
+using (var recordingCancellation = new CancellationTokenSource())
+{
+    var recordingResult = AbilityHudRecorder.Record(
+        new Rectangle(0, 0, 8, 8),
+        recordingPath,
+        recordingCancellation.Token,
+        captureFrame: _ =>
+        {
+            recordingCancellation.Cancel();
+            var frame = new Bitmap(8, 8);
+            using var frameGraphics = Graphics.FromImage(frame);
+            frameGraphics.Clear(Color.Magenta);
+            return frame;
+        });
+    Assert(recordingResult.Frames == 1 && recordingResult.Bytes <= AbilityHudRecorder.MaximumArchiveBytes,
+        "A stopped recording should produce a complete archive under the size limit.");
+}
+
+try
+{
+    using var recordingArchive = ZipFile.OpenRead(recordingPath);
+    var firstFrame = recordingArchive.GetEntry("frames/000001.png");
+    Assert(firstFrame is not null &&
+        recordingArchive.GetEntry("frames.csv") is not null &&
+        recordingArchive.GetEntry("recording.txt") is not null,
+        "A recording archive should include its lossless frame, timing index, and metadata.");
+    using var frameStream = firstFrame!.Open();
+    using var decodedFrame = new Bitmap(frameStream);
+    Assert(decodedFrame.GetPixel(0, 0).ToArgb() == Color.Magenta.ToArgb(),
+        "The archived PNG frame should preserve the captured HUD pixels losslessly.");
+}
+finally
+{
+    File.Delete(recordingPath);
 }
 
 using (var listener = new GlobalInputListener())

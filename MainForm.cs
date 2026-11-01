@@ -25,6 +25,7 @@ internal sealed class MainForm : Form
     private readonly Button _startTestButton = new();
     private readonly Button _stopTestButton = new();
     private readonly Button _repeatTestBindingButton = new();
+    private readonly Button _recordHudButton = new();
     private readonly NumericUpDown _captureRatePicker = new();
     private readonly ComboBox _anchorPicker = new();
     private readonly ComboBox _monitorPicker = new();
@@ -32,6 +33,7 @@ internal sealed class MainForm : Form
     private readonly NumericUpDown _testCyclesPicker = new();
     private readonly NumericUpDown _testDelayPicker = new();
     private readonly Label _testStatus = new();
+    private readonly Label _hudRecordingStatus = new();
     private readonly RepeatTestSession _repeatTest = new();
     private readonly Dictionary<AbilityKind, AbilitySlotTracker> _trackers = [];
     private readonly Dictionary<AbilityKind, Label> _regionLabels = [];
@@ -52,6 +54,9 @@ internal sealed class MainForm : Form
     private int _uiRefreshPending;
     private bool _selectingRegion;
     private ScreenCapture.GameWindowTarget? _currentGameWindow;
+    private CancellationTokenSource? _hudRecordingCancellation;
+    private Task<AbilityHudRecordingResult>? _hudRecordingTask;
+    private bool _closingAfterHudRecording;
 
     public MainForm()
     {
@@ -88,6 +93,39 @@ internal sealed class MainForm : Form
         }
 
         SetMonitoring(true);
+        FormClosing += async (_, args) =>
+        {
+            if (_hudRecordingTask is not { } recordingTask)
+            {
+                return;
+            }
+
+            if (_closingAfterHudRecording)
+            {
+                args.Cancel = !recordingTask.IsCompleted;
+                return;
+            }
+
+            args.Cancel = true;
+            _closingAfterHudRecording = true;
+            if (!recordingTask.IsCompleted)
+            {
+                _hudRecordingCancellation?.Cancel();
+            }
+
+            _recordHudButton.Enabled = false;
+            try
+            {
+                await recordingTask;
+            }
+            catch (Exception exception)
+            {
+                MessageBox.Show(this, $"Couldn't finish the HUD recording before closing: {exception.Message}", Text,
+                    MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+
+            Close();
+        };
         FormClosed += (_, _) =>
         {
             _captureCancellation.Cancel();
@@ -139,22 +177,25 @@ internal sealed class MainForm : Form
             Text = "Select the full square border tightly; pixels below it are captured automatically.",
             AutoEllipsis = true,
             Location = new Point(20, 112),
-            Size = new Size(500, 22)
+            Size = new Size(440, 22)
         };
         var selectionGuideButton = new Button
         {
             Text = "Selection guide",
-            Location = new Point(530, 106),
-            Size = new Size(116, 30)
+            Location = new Point(465, 106),
+            Size = new Size(100, 30)
         };
         selectionGuideButton.Click += (_, _) => ShowSelectionGuide();
         var resetSelectionsButton = new Button
         {
             Text = "Reset areas",
-            Location = new Point(654, 106),
-            Size = new Size(116, 30)
+            Location = new Point(570, 106),
+            Size = new Size(90, 30)
         };
         resetSelectionsButton.Click += (_, _) => ResetSelections();
+        _recordHudButton.Text = "Record HUD…";
+        _recordHudButton.SetBounds(665, 106, 105, 30);
+        _recordHudButton.Click += (_, _) => ToggleHudRecording();
 
         var divider = new Label { BorderStyle = BorderStyle.Fixed3D, Height = 2, Width = 650, Location = new Point(20, 137) };
         foreach (var kind in AbilityKinds)
@@ -266,10 +307,14 @@ internal sealed class MainForm : Form
         _testStatus.SetBounds(15, 152, 715, 48);
         _testStatus.AutoEllipsis = true;
         _testStatus.ForeColor = Color.DimGray;
+        _hudRecordingStatus.SetBounds(345, 112, 385, 30);
+        _hudRecordingStatus.AutoEllipsis = true;
+        _hudRecordingStatus.ForeColor = Color.DimGray;
         testGroup.Controls.AddRange([
             testAbilityLabel, _testAbilityPicker, cyclesLabel, _testCyclesPicker,
             delayLabel, _testDelayPicker, secondsLabel, abilityInputLabel,
-            _abilityUseBindingButton, _startTestButton, _stopTestButton, repeatShortcutLabel, _repeatTestBindingButton, _testStatus
+            _abilityUseBindingButton, _startTestButton, _stopTestButton, repeatShortcutLabel, _repeatTestBindingButton,
+            _hudRecordingStatus, _testStatus
         ]);
 
         _toggleButton.SetBounds(20, 603, 185, 36);
@@ -298,8 +343,118 @@ internal sealed class MainForm : Form
 
         _stateStatus.SetBounds(20, 650, 750, 24);
         _stateStatus.ForeColor = Color.FromArgb(90, 90, 90);
-        Controls.AddRange([title, intro, monitorLabel, _monitorPicker, captureLabel, _captureRatePicker, help, selectionGuideButton, resetSelectionsButton, divider, testGroup, _toggleButton,
+        Controls.AddRange([title, intro, monitorLabel, _monitorPicker, captureLabel, _captureRatePicker, help, selectionGuideButton, resetSelectionsButton,
+            _recordHudButton, divider, testGroup, _toggleButton,
             hotkeyLabel, _pauseBindingButton, anchorLabel, _anchorPicker, _stateStatus]);
+    }
+
+    private async void ToggleHudRecording()
+    {
+        if (_hudRecordingCancellation is { } activeRecording)
+        {
+            activeRecording.Cancel();
+            _recordHudButton.Enabled = false;
+            _recordHudButton.Text = "Finishing…";
+            _hudRecordingStatus.Text = "Finishing the recording and writing its timestamp index…";
+            return;
+        }
+
+        Rectangle bounds;
+        try
+        {
+            bounds = AbilityHudRecorder.GetCaptureBounds(_settings.Slots);
+        }
+        catch (InvalidOperationException exception)
+        {
+            MessageBox.Show(this, exception.Message, Text, MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
+        using var dialog = new SaveFileDialog
+        {
+            Title = "Save ability HUD debug recording",
+            Filter = "Ability HUD recording (*.zip)|*.zip",
+            DefaultExt = "zip",
+            AddExtension = true,
+            FileName = $"D2Ability-HUD-{DateTime.Now:yyyyMMdd-HHmmss}.zip",
+            OverwritePrompt = true
+        };
+        if (dialog.ShowDialog(this) != DialogResult.OK)
+        {
+            return;
+        }
+
+        var cancellation = new CancellationTokenSource();
+        _hudRecordingCancellation = cancellation;
+        _recordHudButton.Text = "Stop recording";
+        _hudRecordingStatus.Text = "Recording the selected HUD crop at 15 FPS (50 MB / 10-minute maximum)…";
+        _overlay.Hide();
+        var recordingTask = Task.Run(() => AbilityHudRecorder.Record(
+            bounds,
+            dialog.FileName,
+            cancellation.Token,
+            progress => QueueHudRecordingProgress(progress, cancellation)));
+        _hudRecordingTask = recordingTask;
+
+        try
+        {
+            var result = await recordingTask;
+            if (!_closingAfterHudRecording)
+            {
+                var stopReason = result.SizeLimitReached
+                    ? "Stopped at the 50 MB limit"
+                    : result.DurationLimitReached ? "Stopped at the 10-minute limit"
+                    : cancellation.IsCancellationRequested ? "Recording stopped" : "Recording complete";
+                _hudRecordingStatus.Text =
+                    $"{stopReason}: {result.Frames} frames, {result.Bytes / 1_000_000d:F1} MB. Upload the ZIP here.";
+            }
+        }
+        catch (Exception exception)
+        {
+            if (!_closingAfterHudRecording)
+            {
+                _hudRecordingStatus.Text = "Recording failed.";
+                MessageBox.Show(this, $"Couldn't record the ability HUD: {exception.Message}", Text, MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+        finally
+        {
+            cancellation.Dispose();
+            if (!_closingAfterHudRecording)
+            {
+                _hudRecordingTask = null;
+                _hudRecordingCancellation = null;
+                _recordHudButton.Enabled = true;
+                _recordHudButton.Text = "Record HUD…";
+                _overlay.Show();
+                UpdateOverlay();
+            }
+        }
+    }
+
+    private void QueueHudRecordingProgress(AbilityHudRecordingProgress progress, CancellationTokenSource recording)
+    {
+        if (IsDisposed || !IsHandleCreated)
+        {
+            return;
+        }
+
+        try
+        {
+            BeginInvoke((Action)(() =>
+            {
+                if (!ReferenceEquals(_hudRecordingCancellation, recording))
+                {
+                    return;
+                }
+
+                _hudRecordingStatus.Text =
+                    $"Recording HUD · {progress.Elapsed:mm\\:ss} · {progress.Frames} frames · {progress.BytesWritten / 1_000_000d:F1} MB / 50 MB";
+            }));
+        }
+        catch (InvalidOperationException) when (IsDisposed)
+        {
+        }
     }
 
     private void ResetSelections()
