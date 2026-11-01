@@ -139,15 +139,22 @@ internal sealed class MainForm : Form
             Text = "Select the full square border tightly; pixels below it are captured automatically.",
             AutoEllipsis = true,
             Location = new Point(20, 112),
-            Size = new Size(620, 22)
+            Size = new Size(500, 22)
         };
         var selectionGuideButton = new Button
         {
             Text = "Selection guide",
-            Location = new Point(654, 106),
+            Location = new Point(530, 106),
             Size = new Size(116, 30)
         };
         selectionGuideButton.Click += (_, _) => ShowSelectionGuide();
+        var resetSelectionsButton = new Button
+        {
+            Text = "Reset areas",
+            Location = new Point(654, 106),
+            Size = new Size(116, 30)
+        };
+        resetSelectionsButton.Click += (_, _) => ResetSelections();
 
         var divider = new Label { BorderStyle = BorderStyle.Fixed3D, Height = 2, Width = 650, Location = new Point(20, 137) };
         foreach (var kind in AbilityKinds)
@@ -291,8 +298,53 @@ internal sealed class MainForm : Form
 
         _stateStatus.SetBounds(20, 650, 750, 24);
         _stateStatus.ForeColor = Color.FromArgb(90, 90, 90);
-        Controls.AddRange([title, intro, monitorLabel, _monitorPicker, captureLabel, _captureRatePicker, help, selectionGuideButton, divider, testGroup, _toggleButton,
+        Controls.AddRange([title, intro, monitorLabel, _monitorPicker, captureLabel, _captureRatePicker, help, selectionGuideButton, resetSelectionsButton, divider, testGroup, _toggleButton,
             hotkeyLabel, _pauseBindingButton, anchorLabel, _anchorPicker, _stateStatus]);
+    }
+
+    private void ResetSelections()
+    {
+        var result = MessageBox.Show(
+            this,
+            "Clear the saved screen areas for grenade, melee, and class ability? You can select them again at any time. Selection shortcuts will be kept.",
+            Text,
+            MessageBoxButtons.YesNo,
+            MessageBoxIcon.Warning);
+        if (result != DialogResult.Yes)
+        {
+            return;
+        }
+
+        if (_repeatTest.IsActive)
+        {
+            StopRepeatabilityTest();
+        }
+
+        lock (_captureSync)
+        {
+            foreach (var slot in _settings.Slots)
+            {
+                slot.Region = null;
+                slot.MonitorBounds = null;
+                slot.MonitorDeviceName = null;
+                slot.GameWindowBounds = null;
+                slot.RegionAutoDetected = false;
+                _trackers[slot.Kind].ResetCycle();
+            }
+
+            _settings.Region = null;
+            _settings.RegionMonitorBounds = null;
+            _settings.RegionMonitorDeviceName = null;
+            _currentGameWindow = null;
+            if (_monitoring)
+            {
+                RefreshCaptureRegions();
+            }
+        }
+
+        SaveSettings();
+        UpdateStatus();
+        UpdateOverlay();
     }
 
     private void RefreshDisplays()
