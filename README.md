@@ -1,6 +1,6 @@
 # Destiny 2 Ability Recharge Tracker
 
-A Windows overlay for timing grenade, melee, and class-ability recharge from the visible Destiny 2 HUD. It samples screen pixels only; it does not read game memory, inject into the game, or send game input.
+A Windows overlay for timing grenade, melee, and class-ability recharge from the visible Destiny 2 HUD. It samples screen pixels only and does not read game memory. Global low-level keyboard and mouse hooks support configurable input bindings; they pass all input through to other applications.
 
 ## Run
 
@@ -15,4 +15,4 @@ No sample calibration is required. The detector follows the moving horizontal co
 
 Capture runs independently from the control-window UI, targets up to 240 samples per second, combines selected slots into one capture per display, reuses native screen-capture buffers, and scans their pixel data directly. The control window reports the measured capture rate. This is a best-effort desktop capture rate, not a guarantee of observing every game-rendered frame: Windows can only provide frames actually presented to the desktop, and system load or capture permissions can reduce the rate.
 
-Use the configurable global function key (F8 by default) or the control window button to pause before opening menus. Settings are stored locally under `%AppData%\D2AbilityTracker`.
+Click the pause-binding button and press any key or mouse button to configure the global pause/resume shortcut; Ctrl, Alt, Shift, and Windows modifiers are recorded with it. Keyboard keys, mouse buttons, and wheel directions are supported. Pressing the shortcut never blocks that input from reaching Destiny 2. Settings are stored locally under `%AppData%\D2AbilityTracker`.

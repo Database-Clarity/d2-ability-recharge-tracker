@@ -1,14 +1,12 @@
 using System.Diagnostics;
 using System.Drawing;
-using System.Runtime.InteropServices;
 using System.Text.Json;
+using System.Windows.Forms;
 
 namespace D2AbilityTracker;
 
 internal sealed class MainForm : Form
 {
-    private const int HotkeyId = 0x5101;
-    private const uint ModNoRepeat = 0x4000;
     private const int TargetCaptureRate = 240;
     private static readonly AbilityKind[] AbilityKinds = Enum.GetValues<AbilityKind>();
     private readonly string _settingsPath = Path.Combine(
@@ -19,10 +17,11 @@ internal sealed class MainForm : Form
     private readonly OverlayWindow _overlay = new();
     private readonly CancellationTokenSource _captureCancellation = new();
     private readonly object _captureSync = new();
+    private readonly GlobalInputListener _inputListener = new();
     private readonly Thread _captureThread;
     private readonly Label _stateStatus = new();
     private readonly Button _toggleButton = new();
-    private readonly ComboBox _hotkeyPicker = new();
+    private readonly Button _pauseBindingButton = new();
     private readonly ComboBox _anchorPicker = new();
     private readonly ComboBox _monitorPicker = new();
     private readonly Dictionary<AbilityKind, AbilitySlotTracker> _trackers = [];
@@ -34,6 +33,8 @@ internal sealed class MainForm : Form
     private CaptureBatch[] _captureBatches = [];
     private volatile bool _monitoring;
     private volatile bool _refreshCaptureRegionsRequested;
+    private bool _capturingPauseBinding;
+    private bool _inputListenerAvailable;
     private double _captureRate;
     private string? _captureLoopError;
 
@@ -42,9 +43,9 @@ internal sealed class MainForm : Form
         _settings = LoadSettings();
         EnsureSlotSettings();
         Text = "D2 Ability Recharge Tracker";
-        ClientSize = new Size(690, 480);
-        MinimumSize = new Size(690, 480);
-        MaximumSize = new Size(690, 480);
+        ClientSize = new Size(740, 480);
+        MinimumSize = new Size(740, 480);
+        MaximumSize = new Size(740, 480);
         FormBorderStyle = FormBorderStyle.FixedDialog;
         MaximizeBox = false;
         StartPosition = FormStartPosition.CenterScreen;
@@ -53,11 +54,22 @@ internal sealed class MainForm : Form
         _overlay.Show();
         UpdateOverlay();
         UpdateStatus();
+        _inputListener.BindingPressed += OnGlobalBindingPressed;
+        try
+        {
+            _inputListener.Start();
+            _inputListenerAvailable = true;
+        }
+        catch (Exception exception)
+        {
+            _captureLoopError = $"Input bindings unavailable: {exception.Message}";
+        }
+
         SetMonitoring(true);
         FormClosed += (_, _) =>
         {
             _captureCancellation.Cancel();
-            UnregisterHotKey(Handle, HotkeyId);
+            _inputListener.Dispose();
             _overlay.Close();
         };
         _captureThread = new Thread(CaptureLoop)
@@ -66,22 +78,6 @@ internal sealed class MainForm : Form
             Name = "D2 ability HUD capture"
         };
         _captureThread.Start();
-    }
-
-    protected override void OnHandleCreated(EventArgs e)
-    {
-        base.OnHandleCreated(e);
-        RegisterSelectedHotkey();
-    }
-
-    protected override void WndProc(ref Message message)
-    {
-        if (message.Msg == 0x0312 && message.WParam.ToInt32() == HotkeyId)
-        {
-            SetMonitoring(!_monitoring);
-        }
-
-        base.WndProc(ref message);
     }
 
     private void BuildControls()
@@ -152,24 +148,12 @@ internal sealed class MainForm : Form
         _toggleButton.SetBounds(20, 388, 185, 36);
         _toggleButton.Click += (_, _) => SetMonitoring(!_monitoring);
         var hotkeyLabel = new Label { Text = "Toggle key", AutoSize = true, Location = new Point(224, 399) };
-        _hotkeyPicker.SetBounds(300, 393, 80, 28);
-        _hotkeyPicker.DropDownStyle = ComboBoxStyle.DropDownList;
-        _hotkeyPicker.Items.AddRange(["F6", "F7", "F8", "F9", "F10", "F11", "F12"]);
-        _hotkeyPicker.SelectedItem = _settings.Hotkey;
-        if (_hotkeyPicker.SelectedIndex < 0)
-        {
-            _hotkeyPicker.SelectedItem = "F8";
-        }
+        _pauseBindingButton.SetBounds(300, 393, 130, 30);
+        _pauseBindingButton.Text = PauseBinding.ToString();
+        _pauseBindingButton.Click += (_, _) => TogglePauseBindingCapture();
 
-        _hotkeyPicker.SelectedIndexChanged += (_, _) =>
-        {
-            _settings.Hotkey = _hotkeyPicker.SelectedItem?.ToString() ?? "F8";
-            RegisterSelectedHotkey();
-            SaveSettings();
-        };
-
-        var anchorLabel = new Label { Text = "Overlay position", AutoSize = true, Location = new Point(410, 399) };
-        _anchorPicker.SetBounds(515, 393, 150, 28);
+        var anchorLabel = new Label { Text = "Overlay position", AutoSize = true, Location = new Point(455, 399) };
+        _anchorPicker.SetBounds(560, 393, 150, 28);
         _anchorPicker.DropDownStyle = ComboBoxStyle.DropDownList;
         _anchorPicker.Items.AddRange(["Top left", "Top right", "Bottom left", "Bottom right"]);
         _anchorPicker.SelectedItem = _settings.OverlayAnchor;
@@ -185,10 +169,10 @@ internal sealed class MainForm : Form
             SaveSettings();
         };
 
-        _stateStatus.SetBounds(20, 438, 640, 24);
+        _stateStatus.SetBounds(20, 438, 700, 24);
         _stateStatus.ForeColor = Color.FromArgb(90, 90, 90);
         Controls.AddRange([title, intro, monitorLabel, _monitorPicker, help, divider, bottomDivider, _toggleButton,
-            hotkeyLabel, _hotkeyPicker, anchorLabel, _anchorPicker, _stateStatus]);
+            hotkeyLabel, _pauseBindingButton, anchorLabel, _anchorPicker, _stateStatus]);
     }
 
     private void RefreshDisplays()
@@ -477,7 +461,56 @@ internal sealed class MainForm : Form
                 ? $"Capture stopped: {captureLoopError}"
                 : _monitoring
                 ? $"Starts on the cooldown line; confirms the blank end flash · capture {_captureRate:F0}/{TargetCaptureRate} Hz"
-                : $"Paused · {_settings.Hotkey} to resume";
+                : $"Paused · {PauseBinding} to resume";
+        }
+    }
+
+    private InputBinding PauseBinding => _settings.PauseBinding ?? InputBinding.DefaultPause;
+
+    private void TogglePauseBindingCapture()
+    {
+        if (!_inputListenerAvailable)
+        {
+            MessageBox.Show(this, _captureLoopError ?? "Global input hooks are unavailable.", Text, MessageBoxButtons.OK, MessageBoxIcon.Error);
+            return;
+        }
+
+        if (_capturingPauseBinding)
+        {
+            _inputListener.CancelCapture();
+            _capturingPauseBinding = false;
+            _pauseBindingButton.Text = PauseBinding.ToString();
+            return;
+        }
+
+        _capturingPauseBinding = true;
+        _pauseBindingButton.Text = "Press a key/button…";
+        _inputListener.BeginCapture(binding =>
+        {
+            if (IsDisposed || !IsHandleCreated)
+            {
+                return;
+            }
+
+            BeginInvoke((Action)(() =>
+            {
+                _capturingPauseBinding = false;
+                _settings.PauseBinding = binding;
+                _settings.Hotkey = binding.Device == InputDevice.Keyboard && binding.Modifiers == InputModifiers.None
+                    ? ((Keys)binding.Code).ToString()
+                    : binding.ToString();
+                _pauseBindingButton.Text = binding.ToString();
+                SaveSettings();
+                UpdateStatus();
+            }));
+        });
+    }
+
+    private void OnGlobalBindingPressed(object? sender, InputBindingEventArgs args)
+    {
+        if (args.Binding == PauseBinding)
+        {
+            SetMonitoring(!_monitoring);
         }
     }
 
@@ -676,6 +709,14 @@ internal sealed class MainForm : Form
     private void EnsureSlotSettings()
     {
         _settings.Slots ??= [];
+        if (_settings.PauseBinding is null)
+        {
+            var legacyKey = Enum.TryParse<Keys>(_settings.Hotkey, true, out var parsedKey)
+                ? parsedKey
+                : Keys.F8;
+            _settings.PauseBinding = new InputBinding(InputDevice.Keyboard, (int)legacyKey, InputModifiers.None);
+        }
+
         foreach (var kind in Enum.GetValues<AbilityKind>())
         {
             if (_settings.Slots.All(slot => slot.Kind != kind))
@@ -709,22 +750,6 @@ internal sealed class MainForm : Form
         catch (Exception exception)
         {
             MessageBox.Show(this, $"Couldn't save settings: {exception.Message}", Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
-        }
-    }
-
-    private void RegisterSelectedHotkey()
-    {
-        if (!IsHandleCreated)
-        {
-            return;
-        }
-
-        UnregisterHotKey(Handle, HotkeyId);
-        var key = Enum.TryParse<Keys>(_settings.Hotkey, out var parsed) ? parsed : Keys.F8;
-        if (!RegisterHotKey(Handle, HotkeyId, ModNoRepeat, (uint)key))
-        {
-            _stateStatus.Text = $"Couldn't register {_settings.Hotkey}; another app may be using it.";
-            _stateStatus.ForeColor = Color.Firebrick;
         }
     }
 
@@ -769,10 +794,4 @@ internal sealed class MainForm : Form
             Surface = null;
         }
     }
-
-    [DllImport("user32.dll", SetLastError = true)]
-    private static extern bool RegisterHotKey(IntPtr hWnd, int id, uint fsModifiers, uint virtualKey);
-
-    [DllImport("user32.dll", SetLastError = true)]
-    private static extern bool UnregisterHotKey(IntPtr hWnd, int id);
 }

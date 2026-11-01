@@ -42,6 +42,7 @@ internal sealed class TrackerSettings
     public float[]? ReadySignature { get; set; }
     public float[]? RechargingSignature { get; set; }
     public string Hotkey { get; set; } = "F8";
+    public InputBinding? PauseBinding { get; set; }
     public string OverlayAnchor { get; set; } = "Bottom right";
 }
 
@@ -76,8 +77,9 @@ internal sealed class AbilitySlotTracker
         State = AbilityState.Unknown;
     }
 
-    public void Observe(AbilitySignal signal, DateTime timestamp)
+    public bool Observe(AbilitySignal signal, DateTime timestamp)
     {
+        var completed = false;
         if (signal.CooldownLine && !signal.Charged)
         {
             _completionCandidateSince = null;
@@ -105,6 +107,7 @@ internal sealed class AbilitySlotTracker
                     _completionCandidateSince = null;
                     _hasSeenRechargeLine = false;
                     State = AbilityState.Complete;
+                    completed = true;
                 }
             }
         }
@@ -125,5 +128,7 @@ internal sealed class AbilitySlotTracker
         {
             State = AbilityState.Consumed;
         }
+
+        return completed;
     }
 }
