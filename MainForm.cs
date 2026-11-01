@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Drawing;
 using System.Runtime.InteropServices;
 using System.Text.Json;
@@ -8,13 +9,17 @@ internal sealed class MainForm : Form
 {
     private const int HotkeyId = 0x5101;
     private const uint ModNoRepeat = 0x4000;
+    private const int TargetCaptureRate = 240;
+    private static readonly AbilityKind[] AbilityKinds = Enum.GetValues<AbilityKind>();
     private readonly string _settingsPath = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
         "D2AbilityTracker",
         "settings.json");
     private readonly TrackerSettings _settings;
     private readonly OverlayWindow _overlay = new();
-    private readonly System.Windows.Forms.Timer _pollTimer = new() { Interval = 33 };
+    private readonly CancellationTokenSource _captureCancellation = new();
+    private readonly object _captureSync = new();
+    private readonly Thread _captureThread;
     private readonly Label _stateStatus = new();
     private readonly Button _toggleButton = new();
     private readonly ComboBox _hotkeyPicker = new();
@@ -25,7 +30,12 @@ internal sealed class MainForm : Form
     private readonly Dictionary<AbilityKind, Label> _statusLabels = [];
     private readonly Dictionary<AbilityKind, Button> _selectButtons = [];
     private readonly Dictionary<AbilityKind, string> _captureErrors = [];
-    private bool _monitoring;
+    private readonly Queue<CaptureBatch> _retiredCaptureBatches = [];
+    private CaptureBatch[] _captureBatches = [];
+    private volatile bool _monitoring;
+    private volatile bool _refreshCaptureRegionsRequested;
+    private double _captureRate;
+    private string? _captureLoopError;
 
     public MainForm()
     {
@@ -44,14 +54,18 @@ internal sealed class MainForm : Form
         UpdateOverlay();
         UpdateStatus();
         SetMonitoring(true);
-        _pollTimer.Tick += (_, _) => PollAbilities();
-        _pollTimer.Start();
         FormClosed += (_, _) =>
         {
-            _pollTimer.Stop();
+            _captureCancellation.Cancel();
             UnregisterHotKey(Handle, HotkeyId);
             _overlay.Close();
         };
+        _captureThread = new Thread(CaptureLoop)
+        {
+            IsBackground = true,
+            Name = "D2 ability HUD capture"
+        };
+        _captureThread.Start();
     }
 
     protected override void OnHandleCreated(EventArgs e)
@@ -98,7 +112,7 @@ internal sealed class MainForm : Form
         };
 
         var divider = new Label { BorderStyle = BorderStyle.Fixed3D, Height = 2, Width = 650, Location = new Point(20, 137) };
-        foreach (var kind in Enum.GetValues<AbilityKind>())
+        foreach (var kind in AbilityKinds)
         {
             var y = 151 + (int)kind * 72;
             var name = new Label
@@ -234,27 +248,331 @@ internal sealed class MainForm : Form
         }
     }
 
-    private void PollAbilities()
+    private void CaptureLoop()
     {
-        if (!_monitoring)
+        var cancellationToken = _captureCancellation.Token;
+        var uiUpdateInterval = Stopwatch.Frequency / 10;
+        var rateWindowStart = Stopwatch.GetTimestamp();
+        var lastUiUpdate = rateWindowStart;
+        var capturedFrames = 0;
+        var frameInterval = Stopwatch.Frequency / (double)TargetCaptureRate;
+        var nextFrame = Stopwatch.GetTimestamp();
+        try
+        {
+            using var desktop = ScreenCapture.OpenDesktop();
+            while (!cancellationToken.IsCancellationRequested)
+            {
+                DisposeRetiredCaptureBatches();
+                if (!_monitoring)
+                {
+                    _captureRate = 0;
+                    capturedFrames = 0;
+                    rateWindowStart = Stopwatch.GetTimestamp();
+                    cancellationToken.WaitHandle.WaitOne(50);
+                    nextFrame = Stopwatch.GetTimestamp() + (long)frameInterval;
+                    continue;
+                }
+
+                var now = Stopwatch.GetTimestamp();
+                if (now < nextFrame)
+                {
+                    var remainingMilliseconds = (nextFrame - now) * 1000d / Stopwatch.Frequency;
+                    cancellationToken.WaitHandle.WaitOne(Math.Max(1, (int)Math.Ceiling(remainingMilliseconds)));
+                    continue;
+                }
+
+                if (CaptureFrame(desktop.DeviceContext))
+                {
+                    capturedFrames++;
+                }
+
+                now = Stopwatch.GetTimestamp();
+                nextFrame += (long)frameInterval;
+                if (now - nextFrame > frameInterval * 3)
+                {
+                    nextFrame = now;
+                }
+
+                if (now - rateWindowStart >= Stopwatch.Frequency)
+                {
+                    _captureRate = capturedFrames * (double)Stopwatch.Frequency / (now - rateWindowStart);
+                    capturedFrames = 0;
+                    rateWindowStart = now;
+                    _refreshCaptureRegionsRequested = true;
+                }
+
+                if (now - lastUiUpdate >= uiUpdateInterval)
+                {
+                    lastUiUpdate = now;
+                    RequestUiRefresh();
+                }
+            }
+        }
+        catch (Exception exception)
+        {
+            lock (_captureSync)
+            {
+                _captureLoopError = exception.Message;
+                foreach (var batch in _captureBatches)
+                {
+                    foreach (var slot in batch.Slots)
+                    {
+                        _captureErrors[slot.Kind] = exception.Message;
+                    }
+                }
+            }
+
+            RequestUiRefresh();
+        }
+        finally
+        {
+            lock (_captureSync)
+            {
+                foreach (var batch in _captureBatches)
+                {
+                    batch.Dispose();
+                }
+
+                while (_retiredCaptureBatches.TryDequeue(out var batch))
+                {
+                    batch.Dispose();
+                }
+            }
+        }
+    }
+
+    private bool CaptureFrame(IntPtr desktopDeviceContext)
+    {
+        var capturedAny = false;
+        var timestamp = DateTime.UtcNow;
+        lock (_captureSync)
+        {
+            if (!_monitoring)
+            {
+                return false;
+            }
+
+            foreach (var batch in _captureBatches)
+            {
+                try
+                {
+                    var bounds = batch.Bounds;
+                    var surface = batch.Surface;
+                    if (surface is null || surface.Width != bounds.Width || surface.Height != bounds.Height)
+                    {
+                        batch.Dispose();
+                        surface = new ScreenCaptureSurface(bounds.Width, bounds.Height, desktopDeviceContext);
+                        batch.Surface = surface;
+                    }
+
+                    surface.Capture(desktopDeviceContext, bounds);
+                    capturedAny = true;
+                    foreach (var slot in batch.Slots)
+                    {
+                        var region = slot.Bounds;
+                        _trackers[slot.Kind].Observe(
+                            AbilitySignalDetector.Read(
+                                surface.Pixels,
+                                surface.Stride,
+                                region.Left - bounds.Left,
+                                region.Top - bounds.Top,
+                                region.Width,
+                                region.Height),
+                            timestamp);
+                        _captureErrors.Remove(slot.Kind);
+                    }
+                }
+                catch (Exception exception)
+                {
+                    foreach (var slot in batch.Slots)
+                    {
+                        _captureErrors[slot.Kind] = exception.Message;
+                    }
+                }
+            }
+        }
+
+        return capturedAny;
+    }
+
+    private void RequestUiRefresh()
+    {
+        if (!IsHandleCreated || IsDisposed)
         {
             return;
         }
 
-        var timestamp = DateTime.UtcNow;
-        foreach (var kind in Enum.GetValues<AbilityKind>())
+        try
         {
-            var slot = GetSlot(kind);
-            var tracker = _trackers[kind];
-            if (slot.Region is not { } region)
+            BeginInvoke((Action)(() =>
             {
-                continue;
+                if (!IsDisposed)
+                {
+                    if (_refreshCaptureRegionsRequested)
+                    {
+                        _refreshCaptureRegionsRequested = false;
+                        lock (_captureSync)
+                        {
+                            if (_monitoring)
+                            {
+                                RefreshCaptureRegions();
+                            }
+                        }
+                    }
+
+                    UpdateStatus();
+                    UpdateOverlay();
+                }
+            }));
+        }
+        catch (InvalidOperationException) when (_captureCancellation.IsCancellationRequested)
+        {
+        }
+    }
+
+    private void UpdateStatus()
+    {
+        lock (_captureSync)
+        {
+            foreach (var kind in AbilityKinds)
+            {
+                var slot = GetSlot(kind);
+                var tracker = _trackers[kind];
+                _regionLabels[kind].Text = slot.Region is { } region
+                    ? $"Area selected: {region.Width} × {region.Height}"
+                    : "No area selected";
+                if (_captureErrors.TryGetValue(kind, out var captureError))
+                {
+                    _statusLabels[kind].Text = $"Capture failed: {captureError}";
+                    _statusLabels[kind].ForeColor = Color.Firebrick;
+                    continue;
+                }
+
+                if (!_monitoring)
+                {
+                    _statusLabels[kind].Text = "Paused";
+                    _statusLabels[kind].ForeColor = Color.DimGray;
+                    continue;
+                }
+
+                _statusLabels[kind].Text = tracker.State switch
+                {
+                    AbilityState.Ready => $"Ready{DurationSuffix(tracker.LastDuration)}",
+                    AbilityState.Consumed => "Used · waiting for the cooldown line",
+                    AbilityState.Recharging => $"Recharging · {FormatDuration(tracker.CurrentDuration)}",
+                    AbilityState.Complete => $"Recharge complete · {FormatDuration(tracker.LastDuration)}",
+                    _ => slot.Region is null ? "Select this ability slot to track it" : "Watching slot background and cooldown line…"
+                };
+                _statusLabels[kind].ForeColor = tracker.State switch
+                {
+                    AbilityState.Consumed => Color.DarkOrange,
+                    AbilityState.Recharging => Color.RoyalBlue,
+                    AbilityState.Complete => Color.SeaGreen,
+                    _ => Color.DimGray
+                };
             }
 
+            _toggleButton.Text = _monitoring ? "Pause detection" : "Resume detection";
+            _stateStatus.Text = _captureLoopError is { } captureLoopError
+                ? $"Capture stopped: {captureLoopError}"
+                : _monitoring
+                ? $"Starts on the cooldown line; confirms the blank end flash · capture {_captureRate:F0}/{TargetCaptureRate} Hz"
+                : $"Paused · {_settings.Hotkey} to resume";
+        }
+    }
+
+    private void UpdateOverlay()
+    {
+        lock (_captureSync)
+        {
+            var rows = AbilityKinds.Select(kind =>
+            {
+                var tracker = _trackers.GetValueOrDefault(kind);
+                var slot = _settings.Slots.FirstOrDefault(item => item.Kind == kind);
+                var label = KindShortName(kind);
+                if (!_monitoring)
+                {
+                    return $"{label}  Paused{DurationSuffix(tracker?.LastDuration)}";
+                }
+
+                if (slot?.Region is null)
+                {
+                    return $"{label}  Select area";
+                }
+
+                return tracker?.State switch
+                {
+                    AbilityState.Ready => $"{label}  Ready{DurationSuffix(tracker.LastDuration)}",
+                    AbilityState.Consumed => $"{label}  Used · waiting",
+                    AbilityState.Recharging => $"{label}  {FormatDuration(tracker.CurrentDuration)}",
+                    AbilityState.Complete => $"{label}  Complete · {FormatDuration(tracker.LastDuration)}",
+                    _ => $"{label}  Watching"
+                };
+            }).ToArray();
+
+            var accent = !_monitoring
+                ? Color.Gray
+                : _trackers.Values.Any(tracker => tracker.State == AbilityState.Recharging)
+                    ? Color.FromArgb(86, 167, 229)
+                    : Color.FromArgb(89, 190, 130);
+            var savedMonitor = _settings.Slots.FirstOrDefault(slot => slot.Region is not null);
+            var monitor = savedMonitor?.MonitorDeviceName is { } deviceName
+                ? Screen.AllScreens.FirstOrDefault(screen => screen.DeviceName.Equals(deviceName, StringComparison.OrdinalIgnoreCase))?.Bounds
+                    ?? savedMonitor.MonitorBounds
+                : savedMonitor?.MonitorBounds;
+            _overlay.SetStatus(_monitoring ? "ABILITY RECHARGE" : "TRACKING PAUSED", string.Join(Environment.NewLine, rows), accent, monitor);
+        }
+    }
+
+    private void SetMonitoring(bool enabled)
+    {
+        lock (_captureSync)
+        {
+            if (_monitoring == enabled)
+            {
+                UpdateStatus();
+                UpdateOverlay();
+                return;
+            }
+
+            _monitoring = enabled;
+            foreach (var tracker in _trackers.Values)
+            {
+                tracker.ResetCycle();
+            }
+
+            if (enabled)
+            {
+                RefreshCaptureRegions();
+            }
+        }
+
+        UpdateStatus();
+        UpdateOverlay();
+    }
+
+    private void RefreshCaptureRegions()
+    {
+        var groups = new Dictionary<string, List<CaptureSlot>>(StringComparer.OrdinalIgnoreCase);
+        for (var index = 0; index < AbilityKinds.Length; index++)
+        {
+            var kind = AbilityKinds[index];
+            var slot = GetSlot(kind);
             try
             {
-                using var bitmap = ScreenCapture.Capture(ResolveCaptureRegion(slot, region));
-                tracker.Observe(AbilitySignalDetector.Read(bitmap), timestamp);
+                if (slot.Region is { } region)
+                {
+                    var resolvedRegion = ResolveCaptureRegion(slot, region);
+                    var deviceName = Screen.FromRectangle(resolvedRegion).DeviceName;
+                    if (!groups.TryGetValue(deviceName, out var regions))
+                    {
+                        regions = [];
+                        groups.Add(deviceName, regions);
+                    }
+
+                    regions.Add(new CaptureSlot(kind, resolvedRegion));
+                }
+
                 _captureErrors.Remove(kind);
             }
             catch (Exception exception)
@@ -263,113 +581,45 @@ internal sealed class MainForm : Form
             }
         }
 
-        UpdateStatus();
-        UpdateOverlay();
-    }
-
-    private void UpdateStatus()
-    {
-        foreach (var kind in Enum.GetValues<AbilityKind>())
+        var batches = groups.Values.Select(slots =>
         {
-            var slot = GetSlot(kind);
-            var tracker = _trackers[kind];
-            _regionLabels[kind].Text = slot.Region is { } region
-                ? $"Area selected: {region.Width} × {region.Height}"
-                : "No area selected";
-            if (_captureErrors.TryGetValue(kind, out var captureError))
+            var bounds = slots[0].Bounds;
+            foreach (var slot in slots.Skip(1))
             {
-                _statusLabels[kind].Text = $"Capture failed: {captureError}";
-                _statusLabels[kind].ForeColor = Color.Firebrick;
-                continue;
+                bounds = Rectangle.Union(bounds, slot.Bounds);
             }
 
-            if (!_monitoring)
-            {
-                _statusLabels[kind].Text = "Paused";
-                _statusLabels[kind].ForeColor = Color.DimGray;
-                continue;
-            }
-
-            _statusLabels[kind].Text = tracker.State switch
-            {
-                AbilityState.Ready => $"Ready{DurationSuffix(tracker.LastDuration)}",
-                AbilityState.Consumed => "Used · waiting for the cooldown line",
-                AbilityState.Recharging => $"Recharging · {FormatDuration(tracker.CurrentDuration)}",
-                AbilityState.Complete => $"Recharge complete · {FormatDuration(tracker.LastDuration)}",
-                _ => slot.Region is null ? "Select this ability slot to track it" : "Watching slot background and cooldown line…"
-            };
-            _statusLabels[kind].ForeColor = tracker.State switch
-            {
-                AbilityState.Consumed => Color.DarkOrange,
-                AbilityState.Recharging => Color.RoyalBlue,
-                AbilityState.Complete => Color.SeaGreen,
-                _ => Color.DimGray
-            };
-        }
-
-        _toggleButton.Text = _monitoring ? "Pause detection" : "Resume detection";
-        _stateStatus.Text = _monitoring
-            ? "Starts when the cooldown line appears; confirms the blank end flash when the ready fill returns."
-            : $"Paused · {_settings.Hotkey} to resume";
-    }
-
-    private void UpdateOverlay()
-    {
-        var rows = Enum.GetValues<AbilityKind>().Select(kind =>
-        {
-            var tracker = _trackers.GetValueOrDefault(kind);
-            var slot = _settings.Slots.FirstOrDefault(item => item.Kind == kind);
-            var label = KindShortName(kind);
-            if (!_monitoring)
-            {
-                return $"{label}  Paused{DurationSuffix(tracker?.LastDuration)}";
-            }
-
-            if (slot?.Region is null)
-            {
-                return $"{label}  Select area";
-            }
-
-            return tracker?.State switch
-            {
-                AbilityState.Ready => $"{label}  Ready{DurationSuffix(tracker.LastDuration)}",
-                AbilityState.Consumed => $"{label}  Used · waiting",
-                AbilityState.Recharging => $"{label}  {FormatDuration(tracker.CurrentDuration)}",
-                AbilityState.Complete => $"{label}  Complete · {FormatDuration(tracker.LastDuration)}",
-                _ => $"{label}  Watching"
-            };
+            return new CaptureBatch(bounds, slots.ToArray());
         }).ToArray();
-
-        var accent = !_monitoring
-            ? Color.Gray
-            : _trackers.Values.Any(tracker => tracker.State == AbilityState.Recharging)
-                ? Color.FromArgb(86, 167, 229)
-                : Color.FromArgb(89, 190, 130);
-        var savedMonitor = _settings.Slots.FirstOrDefault(slot => slot.Region is not null);
-        var monitor = savedMonitor?.MonitorDeviceName is { } deviceName
-            ? Screen.AllScreens.FirstOrDefault(screen => screen.DeviceName.Equals(deviceName, StringComparison.OrdinalIgnoreCase))?.Bounds
-                ?? savedMonitor.MonitorBounds
-            : savedMonitor?.MonitorBounds;
-        _overlay.SetStatus(_monitoring ? "ABILITY RECHARGE" : "TRACKING PAUSED", string.Join(Environment.NewLine, rows), accent, monitor);
-    }
-
-    private void SetMonitoring(bool enabled)
-    {
-        if (_monitoring == enabled)
+        var unchanged = _captureBatches.Length == batches.Length &&
+            _captureBatches.Zip(batches).All(pair =>
+                pair.First.Bounds == pair.Second.Bounds &&
+                pair.First.Slots.SequenceEqual(pair.Second.Slots));
+        if (unchanged)
         {
-            UpdateStatus();
-            UpdateOverlay();
             return;
         }
 
-        _monitoring = enabled;
-        foreach (var tracker in _trackers.Values)
+        foreach (var batch in _captureBatches)
         {
-            tracker.ResetCycle();
+            if (batch.Surface is not null)
+            {
+                _retiredCaptureBatches.Enqueue(batch);
+            }
         }
 
-        UpdateStatus();
-        UpdateOverlay();
+        _captureBatches = batches;
+    }
+
+    private void DisposeRetiredCaptureBatches()
+    {
+        lock (_captureSync)
+        {
+            while (_retiredCaptureBatches.TryDequeue(out var batch))
+            {
+                batch.Dispose();
+            }
+        }
     }
 
     private Rectangle ResolveCaptureRegion(AbilitySlotSettings slot, Rectangle savedRegion)
@@ -503,6 +753,21 @@ internal sealed class MainForm : Form
     private sealed record DisplayChoice(string DeviceName, Rectangle Bounds, string Label)
     {
         public override string ToString() => Label;
+    }
+
+    private sealed record CaptureSlot(AbilityKind Kind, Rectangle Bounds);
+
+    private sealed class CaptureBatch(Rectangle bounds, CaptureSlot[] slots) : IDisposable
+    {
+        public Rectangle Bounds { get; } = bounds;
+        public CaptureSlot[] Slots { get; } = slots;
+        public ScreenCaptureSurface? Surface { get; set; }
+
+        public void Dispose()
+        {
+            Surface?.Dispose();
+            Surface = null;
+        }
     }
 
     [DllImport("user32.dll", SetLastError = true)]
