@@ -170,7 +170,5 @@ internal sealed class RepeatTestSession
         state == AbilityState.Recharging;
 
     private static string FormatDuration(TimeSpan? duration) =>
-        duration is { } value
-            ? $"{(int)value.TotalMinutes:00}:{value.Seconds:00}.{value.Milliseconds / 100}"
-            : "--:--.-";
+        DurationDisplay.Format(duration);
 }

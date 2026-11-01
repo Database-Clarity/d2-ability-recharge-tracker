@@ -1,5 +1,4 @@
 using System.Drawing;
-using System.Runtime.InteropServices;
 
 namespace D2AbilityTracker;
 
@@ -17,7 +16,7 @@ internal sealed class OverlayWindow : Form
         StartPosition = FormStartPosition.Manual;
         BackColor = Color.FromArgb(18, 20, 27);
         Opacity = 0.9;
-        Size = new Size(330, 112);
+        Size = new Size(450, 112);
         DoubleBuffered = true;
         UpdatePosition("Bottom right");
     }
@@ -93,14 +92,6 @@ internal sealed class OverlayWindow : Form
         e.Graphics.DrawString(_detail, detailFont, textBrush, new RectangleF(15, 30, Width - 28, Height - 36));
     }
 
-    protected override void OnShown(EventArgs e)
-    {
-        base.OnShown(e);
-        SetWindowDisplayAffinity(Handle, 0x00000011);
-    }
-
-    [DllImport("user32.dll")]
-    private static extern bool SetWindowDisplayAffinity(IntPtr hWnd, uint dwAffinity);
 }
 
 internal static class GraphicsExtensions

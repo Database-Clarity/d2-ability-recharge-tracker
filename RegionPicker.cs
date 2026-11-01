@@ -409,16 +409,8 @@ internal sealed class RegionPicker : Form
 
     private void ShowGuide()
     {
-        MessageBox.Show(
-            this,
-            "1. Keep Destiny 2 visible while selecting; the frozen preview is taken from its window when available.\n" +
-            "2. Select the full square ability slot tightly, including its border. A small strip below it is captured automatically.\n" +
-            "3. The brief thickening/flash underneath the bottom border starts timing. Do not select only the artwork; no manual flash calibration is needed.\n" +
-            "4. Scroll or use +/- to zoom. Right- or middle-drag to pan. Drag inside the selection to move it, or drag a corner to resize it.\n" +
-            "5. Review the outline, then choose Use selection. Escape or Cancel leaves the saved area unchanged.",
-            "Region selection guide",
-            MessageBoxButtons.OK,
-            MessageBoxIcon.Information);
+        using var guide = new SelectionGuide();
+        guide.ShowDialog(this);
     }
 
     private RectangleF ImageDestination()

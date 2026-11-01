@@ -406,16 +406,8 @@ internal sealed class MainForm : Form
 
     private void ShowSelectionGuide()
     {
-        MessageBox.Show(
-            this,
-            "1. Keep Destiny 2 visible, then choose Select area. The app looks for its window and opens a frozen preview of it automatically.\n" +
-            "2. Select the full square ability slot tightly, including its border. The app also samples a small strip below your selection automatically.\n" +
-            "3. Timing starts when the bottom border briefly thickens/flashes underneath the square, not when a line moves inside the icon. No flash capture or manual calibration is needed.\n" +
-            "4. Zoom with the mouse wheel or +/-; right- or middle-drag to pan. Drag inside the outline to move it, or drag a corner to resize it.\n" +
-            "5. Review and adjust the outline, then click Use selection. If Destiny 2 is not found, you can choose the selected display preview instead.",
-            "Region selection guide",
-            MessageBoxButtons.OK,
-            MessageBoxIcon.Information);
+        using var guide = new SelectionGuide();
+        guide.ShowDialog(this);
     }
 
     private void CaptureLoop()
@@ -1222,7 +1214,7 @@ internal sealed class MainForm : Form
         duration is { } value ? $" · last {FormatDuration(value)}" : string.Empty;
 
     private static string FormatDuration(TimeSpan? duration) =>
-        duration is { } value ? $"{(int)value.TotalMinutes:00}:{value.Seconds:00}.{value.Milliseconds / 100}" : "--:--.-";
+        DurationDisplay.Format(duration);
 
     private sealed record DisplayChoice(string DeviceName, Rectangle Bounds, string Label)
     {

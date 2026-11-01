@@ -25,7 +25,11 @@ Assert(session.Phase == RepeatTestPhase.WaitingForRecharge, "The next cooldown s
 session.RecordRecharge(ability, TimeSpan.FromSeconds(12), start.AddSeconds(25));
 Assert(session.Phase == RepeatTestPhase.Completed, "The test should finish at the requested cycle count.");
 Assert(session.AverageDuration == TimeSpan.FromSeconds(11), "The final result should average all measured recharges.");
-Assert(session.Status(start.AddSeconds(25)).Contains("average 00:11.0", StringComparison.Ordinal), "The summary should show the mean duration.");
+Assert(session.Status(start.AddSeconds(25)).Contains("average 11.00 s (00:11.00)", StringComparison.Ordinal), "The summary should show the mean in seconds and clock format.");
+Assert(DurationDisplay.Format(TimeSpan.FromMilliseconds(73456)) == "73.46 s (01:13.46)",
+    "Recharge durations should include total seconds rounded to two decimals.");
+Assert(DurationDisplay.Format(null) == "--.-- s (--:--.--)", "Missing durations should show placeholders for both formats.");
+Assert(DurationDisplay.Format(TimeSpan.FromMilliseconds(59999)) == "60.00 s (01:00.00)", "Both formats should agree when rounding crosses a minute.");
 
 var stopped = new RepeatTestSession();
 stopped.Start(ability, 3, TimeSpan.Zero, useBinding);
@@ -132,6 +136,15 @@ using (var preview = new Bitmap(40, 40))
 using (var picker = new RegionPicker(preview, new Rectangle(0, 0, 40, 40), new Rectangle(0, 0, 1080, 900), "test preview"))
 {
     AssertReadableButtons(picker);
+}
+
+using (var guide = new SelectionGuide())
+using (var illustration = new Bitmap(guide.ClientSize.Width, guide.ClientSize.Height))
+{
+    guide.DrawToBitmap(illustration, guide.ClientRectangle);
+    Assert(illustration.GetPixel(100, 100) != illustration.GetPixel(300, 100),
+        "The guide should render an illustrated slot against its background.");
+    AssertReadableButtons(guide);
 }
 
 using (var listener = new GlobalInputListener())
