@@ -25,6 +25,7 @@ internal sealed class AbilitySlotSettings
     public Rectangle? MonitorBounds { get; set; }
     public string? MonitorDeviceName { get; set; }
     public Rectangle? GameWindowBounds { get; set; }
+    public bool RegionAutoDetected { get; set; }
 }
 
 internal sealed class TrackerSettings

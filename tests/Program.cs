@@ -258,6 +258,30 @@ using (var illustration = new Bitmap(guide.ClientSize.Width, guide.ClientSize.He
     AssertReadableButtons(guide);
 }
 
+using (var hudPreview = new Bitmap(581, 182))
+using (var graphics = Graphics.FromImage(hudPreview))
+{
+    graphics.Clear(Color.FromArgb(25, 24, 32));
+    using var pink = new SolidBrush(Color.FromArgb(244, 115, 170));
+    for (var x = 110; x < 570; x++)
+    {
+        var y = (int)Math.Round(75 - (x - 110) * 0.055);
+        graphics.FillRectangle(pink, x, y - 2, 1, 5);
+    }
+
+    var window = new Rectangle(500, 300, hudPreview.Width, hudPreview.Height);
+    var suggestions = AbilitySlotRegionFinder.Find(hudPreview, window);
+    Assert(suggestions.Length == 3, "The HUD's pink ability-row anchor should suggest all three slot regions.");
+    Assert(Math.Abs(suggestions[0].Left - 610) < 3 && suggestions[0].Top is >= 377 and <= 385 &&
+        suggestions[0].Width is >= 60 and <= 72 && suggestions[0].Height is >= 60 and <= 72,
+        "The first suggested ability selection should cover the square HUD slot at screen coordinates.");
+    Assert(suggestions[1].Left - suggestions[0].Left is >= 64 and <= 72 &&
+        suggestions[2].Left - suggestions[1].Left is >= 64 and <= 72,
+        "The melee and class suggestions should follow the evenly spaced adjacent HUD slots.");
+    Assert(suggestions[1].Top < suggestions[0].Top && suggestions[2].Top < suggestions[1].Top,
+        "Suggested rectangles should follow the HUD row's slight upward slant.");
+}
+
 using (var listener = new GlobalInputListener())
 using (var hookThreadResponded = new ManualResetEventSlim())
 {

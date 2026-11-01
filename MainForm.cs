@@ -366,6 +366,7 @@ internal sealed class MainForm : Form
             _overlay.Hide();
             Thread.Sleep(150);
             using var snapshot = ScreenCapture.Capture(sourceBounds);
+            var suggestions = AbilitySlotRegionFinder.Find(snapshot, sourceBounds);
             var slot = GetSlot(kind);
             Rectangle? initialSelection = null;
             if (slot.Region is { } savedRegion &&
@@ -374,14 +375,38 @@ internal sealed class MainForm : Form
             {
                 initialSelection = Rectangle.Intersect(savedRegion, sourceBounds);
             }
+            else if (suggestions.Length == AbilityKinds.Length)
+            {
+                initialSelection = suggestions[Array.IndexOf(AbilityKinds, kind)];
+            }
 
-            using var picker = new RegionPicker(snapshot, sourceBounds, display.Bounds, sourceDescription, initialSelection);
+            var pickerDescription = suggestions.Length == AbilityKinds.Length
+                ? $"{sourceDescription} · ability slots auto-detected; refine the highlighted selection if needed"
+                : sourceDescription;
+            using var picker = new RegionPicker(snapshot, sourceBounds, display.Bounds, pickerDescription, initialSelection);
             if (picker.ShowDialog() == DialogResult.OK && picker.SelectedRegion is { } region)
             {
+                if (suggestions.Length == AbilityKinds.Length)
+                {
+                    for (var index = 0; index < AbilityKinds.Length; index++)
+                    {
+                        var suggestedSlot = GetSlot(AbilityKinds[index]);
+                        if (suggestedSlot.Region is null)
+                        {
+                            suggestedSlot.Region = suggestions[index];
+                            suggestedSlot.MonitorBounds = display.Bounds;
+                            suggestedSlot.MonitorDeviceName = display.DeviceName;
+                            suggestedSlot.GameWindowBounds = target?.Bounds;
+                            suggestedSlot.RegionAutoDetected = true;
+                        }
+                    }
+                }
+
                 slot.Region = region;
                 slot.MonitorBounds = display.Bounds;
                 slot.MonitorDeviceName = display.DeviceName;
                 slot.GameWindowBounds = target?.Bounds;
+                slot.RegionAutoDetected = false;
                 _trackers[kind].ResetCycle();
                 SaveSettings();
                 UpdateStatus();
@@ -663,7 +688,9 @@ internal sealed class MainForm : Form
                     AbilityState.Consumed => "Used · waiting for the bottom-border flash",
                     AbilityState.Recharging => $"Recharging · {FormatDuration(tracker.CurrentDuration)}",
                     AbilityState.Complete => $"Recharge complete · {FormatDuration(tracker.LastDuration)}",
-                    _ => slot.Region is null ? "Select this ability slot to track it" : "Watching slot background and bottom border…"
+                    _ => slot.Region is null
+                        ? "Select this ability slot to track it"
+                        : slot.RegionAutoDetected ? "Auto-detected · click to refine" : "Watching slot background and bottom border…"
                 };
                 _statusLabels[kind].ForeColor = tracker.State switch
                 {
