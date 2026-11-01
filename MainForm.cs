@@ -51,6 +51,7 @@ internal sealed class MainForm : Form
     private int _targetCaptureRate;
     private int _uiRefreshPending;
     private bool _selectingRegion;
+    private ScreenCapture.GameWindowTarget? _currentGameWindow;
 
     public MainForm()
     {
@@ -380,6 +381,7 @@ internal sealed class MainForm : Form
                 slot.Region = region;
                 slot.MonitorBounds = display.Bounds;
                 slot.MonitorDeviceName = display.DeviceName;
+                slot.GameWindowBounds = target?.Bounds;
                 _trackers[kind].ResetCycle();
                 SaveSettings();
                 UpdateStatus();
@@ -477,6 +479,7 @@ internal sealed class MainForm : Form
                     foreach (var slot in batch.Slots)
                     {
                         _captureErrors[slot.Kind] = exception.Message;
+                        _trackers[slot.Kind].MarkSignalLost(DateTime.UtcNow);
                     }
                 }
             }
@@ -548,6 +551,10 @@ internal sealed class MainForm : Form
                         {
                             _repeatTest.RecordRecharge(slot.Kind, duration, timestamp);
                         }
+                        if (tracker.MeasurementDiscarded && _repeatTest.Ability == slot.Kind && _repeatTest.IsActive)
+                        {
+                            _repeatTest.Fail(tracker.TrackingWarning!);
+                        }
 
                         _captureErrors.Remove(slot.Kind);
                     }
@@ -557,6 +564,7 @@ internal sealed class MainForm : Form
                     foreach (var slot in batch.Slots)
                     {
                         _captureErrors[slot.Kind] = exception.Message;
+                        _trackers[slot.Kind].MarkSignalLost(timestamp);
                     }
                 }
 
@@ -662,6 +670,19 @@ internal sealed class MainForm : Form
                     AbilityState.Complete => Color.SeaGreen,
                     _ => Color.DimGray
                 };
+                if (tracker.TrackingWarning is { } warning)
+                {
+                    _statusLabels[kind].Text = $"{FormatDuration(tracker.CurrentDuration)} · {warning}";
+                    _statusLabels[kind].ForeColor = Color.DarkOrange;
+                }
+                else if (tracker.State == AbilityState.Recharging && tracker.ChargeProgress is { } progress)
+                {
+                    _statusLabels[kind].Text += $" · {progress:P0}";
+                    if (tracker.EstimatedDuration is { } estimated)
+                    {
+                        _statusLabels[kind].Text += $" · est. {estimated.TotalSeconds:F2} s";
+                    }
+                }
             }
 
             _toggleButton.Text = _monitoring ? "Pause detection" : "Resume detection";
@@ -941,11 +962,26 @@ internal sealed class MainForm : Form
                     return $"{label}  Select area";
                 }
 
+                if (tracker?.State == AbilityState.Recharging)
+                {
+                    var progressText = tracker.TrackingWarning is not null
+                        ? "recovering"
+                        : tracker.ChargeProgress is { } progress ? $"{progress:P0}" : "acquiring progress";
+                    var estimateText = tracker.EstimatedDuration is { } estimate && tracker.EstimateConfidence is { } confidence
+                        ? $"Est. total {estimate.TotalSeconds:F2} s · fit confidence {confidence:P0}"
+                        : "Est. total unavailable";
+                    return $"{label}  {FormatDuration(tracker.CurrentDuration)} · {progressText}\n          {estimateText}";
+                }
+
+                if (tracker?.MeasurementDiscarded == true)
+                {
+                    return $"{label}  Endpoint obscured · measurement discarded";
+                }
+
                 return tracker?.State switch
                 {
                     AbilityState.Ready => $"{label}  Ready{DurationSuffix(tracker.LastDuration)}",
                     AbilityState.Consumed => $"{label}  Used · waiting",
-                    AbilityState.Recharging => $"{label}  {FormatDuration(tracker.CurrentDuration)}",
                     AbilityState.Complete => $"{label}  Complete · {FormatDuration(tracker.LastDuration)}",
                     _ => $"{label}  Watching"
                 };
@@ -999,6 +1035,9 @@ internal sealed class MainForm : Form
 
     private void RefreshCaptureRegions()
     {
+        _currentGameWindow = _settings.Slots.Any(slot => slot.GameWindowBounds is not null)
+            ? ScreenCapture.FindDestiny2Window()
+            : null;
         var groups = new Dictionary<string, List<CaptureSlot>>(StringComparer.OrdinalIgnoreCase);
         for (var index = 0; index < AbilityKinds.Length; index++)
         {
@@ -1027,6 +1066,7 @@ internal sealed class MainForm : Form
             catch (Exception exception)
             {
                 _captureErrors[kind] = exception.Message;
+                _trackers[kind].MarkSignalLost(DateTime.UtcNow);
             }
         }
 
@@ -1097,6 +1137,16 @@ internal sealed class MainForm : Form
 
     private Rectangle ResolveCaptureRegion(AbilitySlotSettings slot, Rectangle savedRegion)
     {
+        if (slot.GameWindowBounds is { Width: > 0, Height: > 0 } savedWindow)
+        {
+            if (_currentGameWindow is not { } gameWindow)
+            {
+                throw new InvalidOperationException("Destiny 2 window is unavailable; waiting to recover the HUD.");
+            }
+
+            return MapRegion(savedRegion, savedWindow, gameWindow.Bounds);
+        }
+
         if (slot.MonitorBounds is not { Width: > 0, Height: > 0 } sourceBounds)
         {
             var monitor = Screen.FromRectangle(savedRegion);
@@ -1116,6 +1166,11 @@ internal sealed class MainForm : Form
             return savedRegion;
         }
 
+        return MapRegion(savedRegion, sourceBounds, target);
+    }
+
+    internal static Rectangle MapRegion(Rectangle savedRegion, Rectangle sourceBounds, Rectangle target)
+    {
         var left = target.Left + (int)Math.Round((savedRegion.Left - sourceBounds.Left) * (double)target.Width / sourceBounds.Width);
         var top = target.Top + (int)Math.Round((savedRegion.Top - sourceBounds.Top) * (double)target.Height / sourceBounds.Height);
         var right = target.Left + (int)Math.Round((savedRegion.Right - sourceBounds.Left) * (double)target.Width / sourceBounds.Width);

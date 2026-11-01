@@ -72,13 +72,15 @@ internal static class AbilitySignalDetector
             Math.Clamp((int)(width * 0.07f), 0, width - 1),
             Math.Clamp((int)(width * 0.20f), 1, width),
             Math.Clamp((int)(width * 0.80f), 0, width - 1),
-            Math.Clamp((int)(width * 0.93f), 1, width));
+            Math.Clamp((int)(width * 0.93f), 1, width),
+            out var progress);
         return new AbilitySignal(
             chargedRatio >= MinimumChargedBackgroundRatio,
             lineRatio >= MinimumLineContrast,
             chargedRatio,
             lineRatio,
-            ReadBottomBorderThickness(pixelData, stride, width, height, bottomPadding));
+            ReadBottomBorderThickness(pixelData, stride, width, height, bottomPadding),
+            progress);
     }
 
     public static int BottomPadding(int height) => Math.Max(3, (int)Math.Ceiling(height * 0.1));
@@ -122,8 +124,10 @@ internal static class AbilitySignalDetector
         int leftStart,
         int leftEnd,
         int rightStart,
-        int rightEnd)
+        int rightEnd,
+        out float? progress)
     {
+        progress = null;
         var innerWidth = leftEnd - leftStart + rightEnd - rightStart;
         if (innerWidth <= 0)
         {
@@ -133,36 +137,66 @@ internal static class AbilitySignalDetector
         var firstRow = Math.Clamp((int)(height * 0.04f), 0, height - 1);
         var lastRow = Math.Clamp((int)(height * 0.96f), firstRow + 1, height);
         Span<float> luminanceByRow = stackalloc float[height];
+        Span<float> leftByRow = stackalloc float[height];
+        Span<float> rightByRow = stackalloc float[height];
         for (var y = firstRow; y < lastRow; y++)
         {
             var luminanceTotal = 0f;
+            var leftTotal = 0f;
+            var rightTotal = 0f;
             var row = pixelData + y * stride;
             for (var x = leftStart; x < leftEnd; x++)
             {
-                luminanceTotal += GetLuminance(row + x * 4);
+                leftTotal += GetLuminance(row + x * 4);
             }
 
             for (var x = rightStart; x < rightEnd; x++)
             {
-                luminanceTotal += GetLuminance(row + x * 4);
+                rightTotal += GetLuminance(row + x * 4);
             }
 
+            luminanceTotal = leftTotal + rightTotal;
             luminanceByRow[y] = luminanceTotal / innerWidth;
+            leftByRow[y] = leftTotal / Math.Max(1, leftEnd - leftStart);
+            rightByRow[y] = rightTotal / Math.Max(1, rightEnd - rightStart);
         }
 
         var strongestLine = 0f;
+        var leftStrength = 0f;
+        var rightStrength = 0f;
+        var leftRow = 0;
+        var rightRow = 0;
         for (var y = firstRow + LineContrastOffset; y < lastRow - LineContrastOffset; y++)
         {
             var above = 0f;
             var below = 0f;
+            var leftContrast = 0f;
+            var rightContrast = 0f;
             for (var offset = 1; offset <= LineContrastOffset; offset++)
             {
                 above += luminanceByRow[y - offset];
                 below += luminanceByRow[y + offset];
+                leftContrast += leftByRow[y - offset] - leftByRow[y + offset];
+                rightContrast += rightByRow[y - offset] - rightByRow[y + offset];
             }
 
             var contrast = Math.Abs(above - below) / LineContrastOffset;
-            strongestLine = Math.Max(strongestLine, contrast);
+            leftContrast = Math.Abs(leftContrast) / LineContrastOffset;
+            rightContrast = Math.Abs(rightContrast) / LineContrastOffset;
+            if (leftContrast > leftStrength) { leftStrength = leftContrast; leftRow = y; }
+            if (rightContrast > rightStrength) { rightStrength = rightContrast; rightRow = y; }
+            if (contrast > strongestLine)
+            {
+                strongestLine = contrast;
+                // The fill boundary rises from the bottom as recharge progresses.
+                progress = 1f - y / (float)height;
+            }
+        }
+
+        if (strongestLine < MinimumLineContrast || leftStrength < MinimumLineContrast ||
+            rightStrength < MinimumLineContrast || Math.Abs(leftRow - rightRow) > Math.Max(2, height * 0.08f))
+        {
+            progress = null;
         }
 
         return strongestLine;

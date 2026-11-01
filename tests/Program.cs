@@ -95,7 +95,70 @@ foreach (var size in new[] { 40, 80, 160 })
     pixelTracker.Observe(normalBorder with { Charged = true }, start);
     pixelTracker.Observe(thickBorder, start.AddSeconds(1));
     Assert(pixelTracker.State == AbilityState.Recharging, "Pixel-based bottom flash should start recharge.");
+    var progressSignal = ReadSyntheticProgress(size, 0.6f);
+    Assert(progressSignal.ChargeProgress is { } observed && Math.Abs(observed - 0.6f) < 0.08f,
+        "Matching side-strip boundaries should expose resolution-scaled charge progress.");
 }
+
+var resilient = new AbilitySlotTracker(AbilityKind.ClassAbility);
+resilient.Observe(charged, start);
+resilient.Observe(flash, start.AddSeconds(1));
+resilient.Observe(line with { ChargeProgress = 0.3f }, start.AddSeconds(4));
+resilient.Observe(line with { ChargeProgress = 0.4f }, start.AddSeconds(5));
+resilient.Observe(empty, start.AddSeconds(6));
+Assert(resilient.TrackingWarning is not null && resilient.CurrentDuration == TimeSpan.FromSeconds(5),
+    "Losing contrast mid-charge must keep the original timer and expose recovery status.");
+Assert(!resilient.Observe(charged, start.AddSeconds(6).AddMilliseconds(10)) && resilient.MeasurementDiscarded,
+    "A charged-looking frame during recovery must not manufacture an endpoint.");
+
+var recovered = new AbilitySlotTracker(AbilityKind.Melee);
+recovered.Observe(charged, start);
+recovered.Observe(flash, start.AddSeconds(1));
+recovered.Observe(line with { ChargeProgress = 0.3f }, start.AddSeconds(4));
+recovered.Observe(line with { ChargeProgress = 0.4f }, start.AddSeconds(5));
+recovered.Observe(empty, start.AddSeconds(6));
+recovered.Observe(line with { ChargeProgress = 0.65f }, start.AddSeconds(8));
+Assert(recovered.TrackingWarning is null && recovered.CurrentDuration == TimeSpan.FromSeconds(7),
+    "Recovered forward progress must resume the same measurement without resetting its start.");
+recovered.Observe(line with { ChargeProgress = 0.95f }, start.AddSeconds(10));
+recovered.Observe(empty, start.AddSeconds(10).AddMilliseconds(100));
+Assert(recovered.Observe(charged, start.AddSeconds(10).AddMilliseconds(150)) &&
+    recovered.LastDuration == TimeSpan.FromSeconds(9.1),
+    "A visible endpoint after recovery must retain the original start timestamp.");
+Assert(MainForm.MapRegion(new Rectangle(100, 100, 40, 40), new Rectangle(0, 0, 1000, 1000),
+    new Rectangle(200, 300, 500, 500)) == new Rectangle(250, 350, 20, 20),
+    "Window-relative regions should follow movement and resizing.");
+
+var forecast = new RechargeEstimate();
+for (var sample = 0; sample < 20; sample++)
+{
+    forecast.Observe(TimeSpan.FromSeconds(sample * 0.2), sample * 0.02f);
+}
+Assert(forecast.TotalDuration is { } total && Math.Abs(total.TotalSeconds - 10) < 0.001 &&
+    forecast.Confidence is > 0.9 and <= 0.95,
+    "Stable observed progress should estimate the total duration with capped fit confidence.");
+forecast.Observe(TimeSpan.FromSeconds(4), 0.8f);
+Assert(forecast.TotalDuration is null && forecast.Confidence is null,
+    "An energy jump should invalidate a previously stable estimate.");
+forecast.Reset();
+Assert(forecast.TotalDuration is null && forecast.Confidence is null, "Signal loss should clear the prediction.");
+for (var sample = 0; sample < 20; sample++)
+{
+    forecast.Observe(TimeSpan.FromSeconds(sample * 0.2), 0.1f);
+}
+Assert(forecast.TotalDuration is null, "Stationary progress must not produce a finish estimate.");
+var estimatingTracker = new AbilitySlotTracker(ability);
+estimatingTracker.Observe(charged, start);
+estimatingTracker.Observe(flash, start.AddSeconds(1));
+for (var sample = 1; sample <= 20; sample++)
+{
+    estimatingTracker.Observe(line with { ChargeProgress = sample * 0.02f },
+        start.AddSeconds(1 + sample * 0.2));
+}
+Assert(estimatingTracker.EstimatedDuration is not null, "The active tracker should expose its fitted estimate.");
+estimatingTracker.MarkSignalLost(start.AddSeconds(6));
+Assert(estimatingTracker.EstimatedDuration is null && estimatingTracker.CurrentDuration == TimeSpan.FromSeconds(5),
+    "Recovery should retain elapsed time but hide stale estimates.");
 
 Assert(CaptureSchedule.NextFrame(0, 10, 120, 1000) == 40, "Slow capture must get three times its work duration as rest.");
 Assert(CaptureSchedule.NextFrame(100, 101, 120, 1000) == 108, "Fast captures should respect the configured target.");
@@ -221,6 +284,30 @@ static AbilitySignal ReadSyntheticSlot(int size, bool thickBorder, bool interior
     {
         Marshal.Copy(data, 0, buffer, data.Length);
         return AbilitySignalDetector.Read(buffer, size * 4, 0, 0, size, size, padding);
+    }
+    finally
+    {
+        Marshal.FreeHGlobal(buffer);
+    }
+}
+
+static AbilitySignal ReadSyntheticProgress(int size, float progress)
+{
+    var data = new byte[size * size * 4];
+    for (var y = 0; y < (int)(size * (1 - progress)); y++)
+    {
+        for (var x = 0; x < size; x++)
+        {
+            var offset = (y * size + x) * 4;
+            data[offset] = data[offset + 1] = data[offset + 2] = 255;
+        }
+    }
+
+    var buffer = Marshal.AllocHGlobal(data.Length);
+    try
+    {
+        Marshal.Copy(data, 0, buffer, data.Length);
+        return AbilitySignalDetector.Read(buffer, size * 4, 0, 0, size, size);
     }
     finally
     {
