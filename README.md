@@ -4,8 +4,8 @@ A Windows overlay for timing grenade, melee, and class-ability recharge from the
 
 ## Run
 
-1. Download `D2AbilityTracker-win-x64.zip` from the [latest release](https://github.com/Database-Clarity/d2-ability-recharge-tracker/releases/latest).
-2. Extract the entire ZIP and run `D2AbilityTracker.exe` on Windows x64. No separate .NET installation is required. These builds are unsigned, so Windows may show an unknown-publisher warning.
+1. Download `D2AbilityTracker.exe` from the [latest release](https://github.com/Database-Clarity/d2-ability-recharge-tracker/releases/latest).
+2. Run it on Windows x64. No extraction, installer, or separate .NET installation is required. The bundled native runtime extracts automatically to a temporary cache on first launch. These builds are unsigned, so Windows may show an unknown-publisher warning.
 3. Keep Destiny 2 visible and select an ability slot. The selector finds the Destiny 2 window and opens a frozen preview of it; if the game is not found, it offers the selected display preview as a fallback. Select the square slot, including its border and the area where the cooldown line travels. Repeat for grenade, melee, and class ability as desired.
 4. Leave detection on. The timer starts when the cooldown line appears. When that line disappears, the tracker waits for the slot's ready fill to return to confirm the brief blank completion flash, but records the disappearance time as the end. The measured duration remains visible after completion.
 
@@ -23,4 +23,4 @@ Click the ability-use binding button and press the desired keyboard key, mouse b
 
 Install the .NET 9 SDK on Windows and run `dotnet run` from this folder to build from source. Run `dotnet run --project tests\D2AbilityTracker.Tests.csproj --configuration Release` for automated checks.
 
-GitHub Actions checks formatting, runs the automated checks, and packages a self-contained Windows x64 build on pushes to `main` and pull requests targeting `main`. Each successful `main` update automatically creates a release with the ZIP and generated change notes, tagged `build-<run number>.<attempt>`. Pull requests produce downloadable workflow artifacts but never releases. You can also run **Build and release** manually from the Actions tab; only runs on `main` publish a release. Repository Actions must be enabled.
+GitHub Actions checks formatting, runs the automated checks, and publishes a single-file self-contained Windows x64 executable on pushes to `main` and pull requests targeting `main`. Each successful `main` update automatically creates a release with the executable and generated change notes, tagged `build-<run number>.<attempt>`. Pull requests produce downloadable workflow artifacts but never releases. You can also run **Build and release** manually from the Actions tab; only runs on `main` publish a release. Repository Actions must be enabled.
