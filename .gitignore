@@ -1,0 +1,14 @@
+bin/
+obj/
+verify-output*/
+release-check/
+signal-check/
+recharge-*.jpg
+later-*.jpg
+finish-*.jpg
+last-*.jpg
+final-*.jpg
+endpoint-*.jpg
+*.user
+*.suo
+.vs/
