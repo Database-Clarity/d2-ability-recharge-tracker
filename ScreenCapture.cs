@@ -1,10 +1,70 @@
 using System.Drawing;
 using System.Runtime.InteropServices;
+using System.ComponentModel;
+using System.Diagnostics;
+using System.Windows.Forms;
 
 namespace D2AbilityTracker;
 
 internal static class ScreenCapture
 {
+    public static GameWindowTarget? FindDestiny2Window()
+    {
+        foreach (var process in Process.GetProcessesByName("destiny2"))
+        {
+            using (process)
+            {
+                try
+                {
+                    var handle = process.MainWindowHandle;
+                    if (handle == IntPtr.Zero || !NativeMethods.IsWindowVisible(handle) || NativeMethods.IsIconic(handle))
+                    {
+                        continue;
+                    }
+
+                    if (!NativeMethods.GetWindowRect(handle, out var windowRect))
+                    {
+                        continue;
+                    }
+
+                    var bounds = Rectangle.FromLTRB(windowRect.Left, windowRect.Top, windowRect.Right, windowRect.Bottom);
+                    if (NativeMethods.GetClientRect(handle, out var clientRect))
+                    {
+                        var clientTopLeft = new NativeMethods.WindowPoint { X = clientRect.Left, Y = clientRect.Top };
+                        var clientBottomRight = new NativeMethods.WindowPoint { X = clientRect.Right, Y = clientRect.Bottom };
+                        if (NativeMethods.ClientToScreen(handle, ref clientTopLeft) &&
+                            NativeMethods.ClientToScreen(handle, ref clientBottomRight))
+                        {
+                            bounds = Rectangle.FromLTRB(
+                                clientTopLeft.X,
+                                clientTopLeft.Y,
+                                clientBottomRight.X,
+                                clientBottomRight.Y);
+                        }
+                    }
+
+                    var monitor = Screen.FromHandle(handle);
+                    var visibleBounds = Rectangle.Intersect(bounds, monitor.Bounds);
+                    if (visibleBounds.Width <= 0 || visibleBounds.Height <= 0)
+                    {
+                        continue;
+                    }
+
+                    return new GameWindowTarget(
+                        visibleBounds,
+                        monitor.Bounds,
+                        monitor.DeviceName);
+                }
+                catch (Exception exception) when (exception is InvalidOperationException or Win32Exception)
+                {
+                    // The game can exit while the selector is locating its window.
+                }
+            }
+        }
+
+        return null;
+    }
+
     public static Bitmap Capture(Rectangle bounds)
     {
         ValidateBounds(bounds);
@@ -13,6 +73,8 @@ internal static class ScreenCapture
         graphics.CopyFromScreen(bounds.Location, Point.Empty, bounds.Size, CopyPixelOperation.SourceCopy);
         return bitmap;
     }
+
+    internal sealed record GameWindowTarget(Rectangle Bounds, Rectangle MonitorBounds, string DeviceName);
 
     public static DesktopCaptureContext OpenDesktop() => new();
 
@@ -188,6 +250,37 @@ internal sealed class ScreenCaptureSurface : IDisposable
 
 internal static class NativeMethods
 {
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct WindowRectangle
+    {
+        public int Left;
+        public int Top;
+        public int Right;
+        public int Bottom;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct WindowPoint
+    {
+        public int X;
+        public int Y;
+    }
+
+    [DllImport("user32.dll", SetLastError = true)]
+    internal static extern bool GetClientRect(IntPtr window, out WindowRectangle rectangle);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    internal static extern bool ClientToScreen(IntPtr window, ref WindowPoint point);
+
+    [DllImport("user32.dll")]
+    internal static extern bool IsWindowVisible(IntPtr window);
+
+    [DllImport("user32.dll")]
+    internal static extern bool IsIconic(IntPtr window);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    internal static extern bool GetWindowRect(IntPtr window, out WindowRectangle rectangle);
+
     [DllImport("user32.dll", SetLastError = true)]
     internal static extern IntPtr GetDC(IntPtr window);
 

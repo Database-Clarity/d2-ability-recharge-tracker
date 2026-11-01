@@ -1,32 +1,55 @@
 using System.Drawing;
-using System.Runtime.InteropServices;
+using System.Drawing.Drawing2D;
 
 namespace D2AbilityTracker;
 
 internal sealed class RegionPicker : Form
 {
     private readonly Bitmap _snapshot;
+    private readonly Rectangle _sourceBounds;
     private readonly Rectangle _monitorBounds;
-    private readonly RectangleF _imageBounds;
-    private Point _start;
-    private Point _current;
-    private bool _dragging;
+    private readonly string _sourceDescription;
+    private readonly Panel _toolbar = new();
+    private readonly Panel _footer = new();
+    private readonly Label _instructions = new();
+    private readonly Label _zoomLabel = new();
+    private readonly Button _zoomOutButton = new();
+    private readonly Button _zoomInButton = new();
+    private readonly Button _guideButton = new();
+    private readonly Button _applyButton = new();
+    private readonly RectangleF _viewport;
+    private PointF _sourceCenter;
+    private PointF _startSource;
+    private PointF _lastSource;
+    private PointF _resizeAnchor;
+    private RectangleF? _selection;
+    private bool _draggingSelection;
+    private bool _movingSelection;
+    private bool _resizingSelection;
+    private bool _panning;
+    private float _zoom = 1f;
+    private float _scale;
 
     public Rectangle? SelectedRegion { get; private set; }
 
-    public RegionPicker(Bitmap snapshot, Rectangle monitorBounds)
+    public RegionPicker(
+        Bitmap snapshot,
+        Rectangle sourceBounds,
+        Rectangle monitorBounds,
+        string sourceDescription,
+        Rectangle? initialSelection = null)
     {
+        if (snapshot.Width != sourceBounds.Width || snapshot.Height != sourceBounds.Height)
+        {
+            throw new ArgumentException("The preview dimensions must match its source bounds.", nameof(snapshot));
+        }
+
         _snapshot = (Bitmap)snapshot.Clone();
+        _sourceBounds = sourceBounds;
         _monitorBounds = monitorBounds;
-        var imageScale = Math.Min((monitorBounds.Width - 48f) / snapshot.Width, (monitorBounds.Height - 112f) / snapshot.Height);
-        imageScale = Math.Max(0.1f, imageScale);
-        var imageWidth = snapshot.Width * imageScale;
-        var imageHeight = snapshot.Height * imageScale;
-        _imageBounds = new RectangleF(
-            (monitorBounds.Width - imageWidth) / 2f,
-            Math.Max(68f, (monitorBounds.Height - imageHeight) / 2f + 32f),
-            imageWidth,
-            imageHeight);
+        _sourceDescription = sourceDescription;
+        _sourceCenter = new PointF(snapshot.Width / 2f, snapshot.Height / 2f);
+        _viewport = new RectangleF(0, 86, monitorBounds.Width, Math.Max(1, monitorBounds.Height - 138));
 
         Bounds = monitorBounds;
         StartPosition = FormStartPosition.Manual;
@@ -37,12 +60,88 @@ internal sealed class RegionPicker : Form
         BackColor = Color.FromArgb(14, 17, 24);
         DoubleBuffered = true;
         KeyPreview = true;
+
+        _toolbar.BackColor = Color.FromArgb(14, 17, 24);
+        _toolbar.Dock = DockStyle.Top;
+        _toolbar.Height = 86;
+        _toolbar.Padding = new Padding(18, 8, 18, 8);
+        _instructions.Text = $"Select inside {_sourceDescription}. Drag to mark the ability slot; adjust it before applying.";
+        _instructions.ForeColor = Color.White;
+        _instructions.Font = new Font("Segoe UI", 11, FontStyle.Bold);
+        _instructions.AutoEllipsis = true;
+        _instructions.SetBounds(18, 8, Math.Max(200, monitorBounds.Width - 250), 24);
+        var hint = new Label
+        {
+            Text = "Drag inside the box to move it; drag a corner to resize. Scroll or use +/- to zoom; right/middle-drag to pan. Esc cancels.",
+            ForeColor = Color.FromArgb(205, 215, 225),
+            AutoEllipsis = true
+        };
+        hint.SetBounds(20, 38, Math.Max(180, monitorBounds.Width - 250), 22);
+        _zoomOutButton.Text = "−";
+        _zoomOutButton.SetBounds(Math.Max(20, monitorBounds.Width - 210), 25, 34, 30);
+        _zoomOutButton.Click += (_, _) => SetZoom(_zoom / 1.25f, ViewportCenter());
+        _zoomLabel.SetBounds(Math.Max(56, monitorBounds.Width - 172), 31, 55, 22);
+        _zoomLabel.ForeColor = Color.White;
+        _zoomLabel.TextAlign = ContentAlignment.MiddleCenter;
+        _zoomInButton.Text = "+";
+        _zoomInButton.SetBounds(Math.Max(112, monitorBounds.Width - 112), 25, 34, 30);
+        _zoomInButton.Click += (_, _) => SetZoom(_zoom * 1.25f, ViewportCenter());
+        _guideButton.Text = "Guide";
+        _guideButton.SetBounds(Math.Max(152, monitorBounds.Width - 70), 25, 60, 30);
+        _guideButton.Click += (_, _) => ShowGuide();
+        _zoomLabel.Text = $"{_zoom:P0}";
+        _toolbar.Controls.AddRange([_instructions, hint, _zoomOutButton, _zoomLabel, _zoomInButton, _guideButton]);
+
+        _footer.BackColor = Color.FromArgb(14, 17, 24);
+        _footer.Dock = DockStyle.Bottom;
+        _footer.Height = 52;
+        _footer.Padding = new Padding(18, 8, 18, 8);
+        var footerHint = new Label
+        {
+            Text = "Include the slot background, border, and cooldown-line path; avoid selecting only the icon.",
+            ForeColor = Color.FromArgb(205, 215, 225),
+            AutoEllipsis = true
+        };
+        footerHint.SetBounds(18, 15, Math.Max(180, monitorBounds.Width - 250), 22);
+        _applyButton.Text = "Use selection";
+        _applyButton.Enabled = false;
+        _applyButton.SetBounds(Math.Max(20, monitorBounds.Width - 216), 9, 112, 32);
+        _applyButton.Click += (_, _) => ApplySelection();
+        var cancelButton = new Button { Text = "Cancel" };
+        cancelButton.SetBounds(Math.Max(140, monitorBounds.Width - 94), 9, 76, 32);
+        cancelButton.Click += (_, _) => CancelSelection();
+        _footer.Controls.AddRange([footerHint, _applyButton, cancelButton]);
+        Controls.AddRange([_toolbar, _footer]);
+
+        _scale = FitScale();
+        if (initialSelection is { } existing)
+        {
+            var clipped = Rectangle.Intersect(existing, sourceBounds);
+            if (clipped.Width >= 18 && clipped.Height >= 18)
+            {
+                _selection = new RectangleF(
+                    clipped.Left - sourceBounds.Left,
+                    clipped.Top - sourceBounds.Top,
+                    clipped.Width,
+                    clipped.Height);
+                _applyButton.Enabled = true;
+            }
+        }
+
+        MouseWheel += (_, e) => SetZoom(_zoom * (e.Delta > 0 ? 1.2f : 1f / 1.2f), e.Location);
         KeyDown += (_, e) =>
         {
             if (e.KeyCode == Keys.Escape)
             {
-                DialogResult = DialogResult.Cancel;
-                Close();
+                CancelSelection();
+            }
+            else if (e.KeyCode is Keys.Add or Keys.Oemplus)
+            {
+                SetZoom(_zoom * 1.25f, ViewportCenter());
+            }
+            else if (e.KeyCode is Keys.Subtract or Keys.OemMinus)
+            {
+                SetZoom(_zoom / 1.25f, ViewportCenter());
             }
         };
     }
@@ -53,7 +152,7 @@ internal sealed class RegionPicker : Form
         SetWindowPos(Handle, HwndTopmost, Left, Top, Width, Height, SwpShowWindow);
         SetForegroundWindow(Handle);
         Activate();
-        SetFocus(Handle);
+        Focus();
         ClipCursor(IntPtr.Zero);
     }
 
@@ -61,25 +160,151 @@ internal sealed class RegionPicker : Form
     {
         base.OnPaint(e);
         e.Graphics.Clear(BackColor);
-        e.Graphics.DrawImage(_snapshot, _imageBounds);
-
-        using var headerBackground = new SolidBrush(Color.FromArgb(230, 14, 17, 24));
-        using var textFont = new Font("Segoe UI", 13, FontStyle.Bold);
-        using var hintFont = new Font("Segoe UI", 9, FontStyle.Regular);
-        using var textBrush = new SolidBrush(Color.White);
-        using var hintBrush = new SolidBrush(Color.FromArgb(205, 215, 225));
-        using var outline = new Pen(Color.FromArgb(255, 246, 187, 67), 3);
-        e.Graphics.FillRectangle(headerBackground, 0, 0, Width, 60);
-        e.Graphics.DrawString("Select the square slot tightly, including its border and cooldown-line area", textFont, textBrush, 18, 8);
-        e.Graphics.DrawString("The preview is frozen. Esc cancels.", hintFont, hintBrush, 20, 34);
-
-        if (_dragging)
+        e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+        var destination = ImageDestination();
+        using var oldClip = e.Graphics.Clip;
+        e.Graphics.SetClip(_viewport);
+        e.Graphics.DrawImage(_snapshot, destination);
+        if (_selection is { } selected)
         {
-            e.Graphics.DrawRectangle(outline, Rectangle.FromLTRB(
-                Math.Min(_start.X, _current.X),
-                Math.Min(_start.Y, _current.Y),
-                Math.Max(_start.X, _current.X),
-                Math.Max(_start.Y, _current.Y)));
+            var selectionBounds = SourceToScreen(selected);
+            using var shade = new SolidBrush(Color.FromArgb(145, 0, 0, 0));
+            using var outside = new Region(_viewport);
+            outside.Exclude(selectionBounds);
+            e.Graphics.FillRegion(shade, outside);
+            using var outline = new Pen(Color.FromArgb(255, 246, 187, 67), 3);
+            using var handleBrush = new SolidBrush(Color.FromArgb(255, 246, 187, 67));
+            e.Graphics.DrawRectangle(outline, selectionBounds.X, selectionBounds.Y, selectionBounds.Width, selectionBounds.Height);
+            foreach (var corner in SelectionCorners(selectionBounds))
+            {
+                e.Graphics.FillEllipse(handleBrush, corner.X - 6, corner.Y - 6, 12, 12);
+            }
+        }
+
+        e.Graphics.Clip = oldClip;
+    }
+
+    protected override void OnMouseDown(MouseEventArgs e)
+    {
+        base.OnMouseDown(e);
+        if (!_viewport.Contains(e.Location))
+        {
+            return;
+        }
+
+        if (e.Button is MouseButtons.Right or MouseButtons.Middle)
+        {
+            _panning = true;
+            _lastSource = new PointF(e.X, e.Y);
+            Cursor = Cursors.Hand;
+            return;
+        }
+
+        if (e.Button != MouseButtons.Left)
+        {
+            return;
+        }
+
+        _startSource = ClampSource(ScreenToSource(e.Location));
+        _lastSource = _startSource;
+        if (_selection is { } selection)
+        {
+            var corner = HitSelectionCorner(selection, e.Location);
+            if (corner >= 0)
+            {
+                _resizeAnchor = corner switch
+                {
+                    0 => new PointF(selection.Right, selection.Bottom),
+                    1 => new PointF(selection.Left, selection.Bottom),
+                    2 => new PointF(selection.Left, selection.Top),
+                    _ => new PointF(selection.Right, selection.Top)
+                };
+                _resizingSelection = true;
+            }
+            else if (selection.Contains(_startSource))
+            {
+                _movingSelection = true;
+            }
+            else
+            {
+                _selection = null;
+                _draggingSelection = true;
+                _selection = RectangleF.FromLTRB(_startSource.X, _startSource.Y, _startSource.X, _startSource.Y);
+            }
+        }
+        else
+        {
+            _draggingSelection = true;
+            _selection = RectangleF.FromLTRB(_startSource.X, _startSource.Y, _startSource.X, _startSource.Y);
+        }
+
+        Invalidate();
+    }
+
+    protected override void OnMouseMove(MouseEventArgs e)
+    {
+        base.OnMouseMove(e);
+        if (_panning)
+        {
+            var deltaX = (e.X - _lastSource.X) / _scale;
+            var deltaY = (e.Y - _lastSource.Y) / _scale;
+            _sourceCenter = ClampCenter(new PointF(_sourceCenter.X - deltaX, _sourceCenter.Y - deltaY));
+            _lastSource = e.Location;
+            Invalidate();
+            return;
+        }
+
+        var sourcePoint = ClampSource(ScreenToSource(e.Location));
+        if (_draggingSelection)
+        {
+            _selection = RectangleF.FromLTRB(
+                Math.Min(_startSource.X, sourcePoint.X),
+                Math.Min(_startSource.Y, sourcePoint.Y),
+                Math.Max(_startSource.X, sourcePoint.X),
+                Math.Max(_startSource.Y, sourcePoint.Y));
+            _applyButton.Enabled = IsValidSelection(_selection.Value);
+            Invalidate();
+        }
+        else if (_movingSelection && _selection is { } moving)
+        {
+            var delta = new PointF(sourcePoint.X - _lastSource.X, sourcePoint.Y - _lastSource.Y);
+            _selection = ClampSelection(new RectangleF(moving.X + delta.X, moving.Y + delta.Y, moving.Width, moving.Height));
+            _lastSource = sourcePoint;
+            Invalidate();
+        }
+        else if (_resizingSelection && _selection is not null)
+        {
+            _selection = RectangleF.FromLTRB(
+                Math.Min(_resizeAnchor.X, sourcePoint.X),
+                Math.Min(_resizeAnchor.Y, sourcePoint.Y),
+                Math.Max(_resizeAnchor.X, sourcePoint.X),
+                Math.Max(_resizeAnchor.Y, sourcePoint.Y));
+            _applyButton.Enabled = IsValidSelection(_selection.Value);
+            Invalidate();
+        }
+    }
+
+    protected override void OnMouseUp(MouseEventArgs e)
+    {
+        base.OnMouseUp(e);
+        if (e.Button is MouseButtons.Right or MouseButtons.Middle)
+        {
+            _panning = false;
+            Cursor = Cursors.Cross;
+        }
+
+        if (e.Button == MouseButtons.Left)
+        {
+            _draggingSelection = false;
+            _movingSelection = false;
+            _resizingSelection = false;
+            if (_selection is { } selection && !IsValidSelection(selection))
+            {
+                _selection = null;
+            }
+
+            _applyButton.Enabled = _selection is { } validSelection && IsValidSelection(validSelection);
+            Invalidate();
         }
     }
 
@@ -93,80 +318,153 @@ internal sealed class RegionPicker : Form
         base.Dispose(disposing);
     }
 
-    protected override void OnMouseDown(MouseEventArgs e)
+    private void ApplySelection()
     {
-        base.OnMouseDown(e);
-        if (e.Button != MouseButtons.Left || !_imageBounds.Contains(e.Location))
+        if (_selection is not { } selected || !IsValidSelection(selected))
         {
             return;
         }
 
-        _start = e.Location;
-        _current = e.Location;
-        _dragging = true;
-        Invalidate();
-    }
-
-    protected override void OnMouseMove(MouseEventArgs e)
-    {
-        base.OnMouseMove(e);
-        if (_dragging)
-        {
-            _current = ClampToImage(e.Location);
-            Invalidate();
-        }
-    }
-
-    protected override void OnMouseUp(MouseEventArgs e)
-    {
-        base.OnMouseUp(e);
-        if (!_dragging)
-        {
-            return;
-        }
-
-        _current = ClampToImage(e.Location);
-        _dragging = false;
-        var left = Math.Min(_start.X, _current.X);
-        var top = Math.Min(_start.Y, _current.Y);
-        var right = Math.Max(_start.X, _current.X);
-        var bottom = Math.Max(_start.Y, _current.Y);
-        var sourceLeft = (int)Math.Floor((left - _imageBounds.Left) * _snapshot.Width / _imageBounds.Width);
-        var sourceTop = (int)Math.Floor((top - _imageBounds.Top) * _snapshot.Height / _imageBounds.Height);
-        var sourceRight = (int)Math.Ceiling((right - _imageBounds.Left) * _snapshot.Width / _imageBounds.Width);
-        var sourceBottom = (int)Math.Ceiling((bottom - _imageBounds.Top) * _snapshot.Height / _imageBounds.Height);
-        var selected = Rectangle.FromLTRB(sourceLeft, sourceTop, sourceRight, sourceBottom);
-        if (selected.Width < 18 || selected.Height < 18)
-        {
-            Invalidate();
-            return;
-        }
-
-        SelectedRegion = new Rectangle(
-            _monitorBounds.Left + selected.Left,
-            _monitorBounds.Top + selected.Top,
-            selected.Width,
-            selected.Height);
+        var left = (int)Math.Floor(selected.Left);
+        var top = (int)Math.Floor(selected.Top);
+        var right = (int)Math.Ceiling(selected.Right);
+        var bottom = (int)Math.Ceiling(selected.Bottom);
+        var absolute = new Rectangle(
+            _sourceBounds.Left + left,
+            _sourceBounds.Top + top,
+            right - left,
+            bottom - top);
+        SelectedRegion = Rectangle.Intersect(absolute, _monitorBounds);
         DialogResult = DialogResult.OK;
         Close();
     }
 
-    private Point ClampToImage(Point point) => new(
-        Math.Clamp(point.X, (int)_imageBounds.Left, (int)_imageBounds.Right),
-        Math.Clamp(point.Y, (int)_imageBounds.Top, (int)_imageBounds.Bottom));
+    private void CancelSelection()
+    {
+        DialogResult = DialogResult.Cancel;
+        Close();
+    }
+
+    private void ShowGuide()
+    {
+        MessageBox.Show(
+            this,
+            "1. Keep Destiny 2 visible while selecting; the frozen preview is taken from its window when available.\n" +
+            "2. Select the full square ability slot, including its border and the space where the cooldown line travels.\n" +
+            "3. Do not select only the ability artwork. The tracker reads the slot background and cooldown line.\n" +
+            "4. Scroll or use +/- to zoom. Right- or middle-drag to pan. Drag inside the selection to move it, or drag a corner to resize it.\n" +
+            "5. Review the outline, then choose Use selection. Escape or Cancel leaves the saved area unchanged.",
+            "Region selection guide",
+            MessageBoxButtons.OK,
+            MessageBoxIcon.Information);
+    }
+
+    private RectangleF ImageDestination()
+    {
+        _scale = FitScale() * _zoom;
+        var width = _snapshot.Width * _scale;
+        var height = _snapshot.Height * _scale;
+        return new RectangleF(
+            _viewport.Left + _viewport.Width / 2 - _sourceCenter.X * _scale,
+            _viewport.Top + _viewport.Height / 2 - _sourceCenter.Y * _scale,
+            width,
+            height);
+    }
+
+    private RectangleF SourceToScreen(RectangleF source) => new(
+        _viewport.Left + _viewport.Width / 2 + (source.Left - _sourceCenter.X) * _scale,
+        _viewport.Top + _viewport.Height / 2 + (source.Top - _sourceCenter.Y) * _scale,
+        source.Width * _scale,
+        source.Height * _scale);
+
+    private PointF ScreenToSource(Point point) => new(
+        _sourceCenter.X + (point.X - (_viewport.Left + _viewport.Width / 2)) / _scale,
+        _sourceCenter.Y + (point.Y - (_viewport.Top + _viewport.Height / 2)) / _scale);
+
+    private PointF ClampSource(PointF point) => new(
+        Math.Clamp(point.X, 0, _snapshot.Width),
+        Math.Clamp(point.Y, 0, _snapshot.Height));
+
+    private PointF ViewportCenter() => new(_viewport.Left + _viewport.Width / 2, _viewport.Top + _viewport.Height / 2);
+
+    private float FitScale() => Math.Min(_viewport.Width / _snapshot.Width, _viewport.Height / _snapshot.Height);
+
+    private void SetZoom(float zoom, PointF screenAnchor)
+    {
+        var nextZoom = Math.Clamp(zoom, 0.5f, 8f);
+        if (Math.Abs(nextZoom - _zoom) < 0.001f)
+        {
+            return;
+        }
+
+        var sourceAnchor = ScreenToSource(Point.Round(screenAnchor));
+        _zoom = nextZoom;
+        _scale = FitScale() * _zoom;
+        _sourceCenter = new PointF(
+            sourceAnchor.X - (screenAnchor.X - (_viewport.Left + _viewport.Width / 2)) / _scale,
+            sourceAnchor.Y - (screenAnchor.Y - (_viewport.Top + _viewport.Height / 2)) / _scale);
+        _sourceCenter = ClampCenter(_sourceCenter);
+        _zoomLabel.Text = $"{_zoom:P0}";
+        Invalidate();
+    }
+
+    private PointF ClampCenter(PointF center)
+    {
+        var visibleWidth = _viewport.Width / _scale;
+        var visibleHeight = _viewport.Height / _scale;
+        return new PointF(
+            _snapshot.Width <= visibleWidth
+                ? _snapshot.Width / 2f
+                : Math.Clamp(center.X, visibleWidth / 2, _snapshot.Width - visibleWidth / 2),
+            _snapshot.Height <= visibleHeight
+                ? _snapshot.Height / 2f
+                : Math.Clamp(center.Y, visibleHeight / 2, _snapshot.Height - visibleHeight / 2));
+    }
+
+    private RectangleF ClampSelection(RectangleF selection)
+    {
+        var x = Math.Clamp(selection.X, 0, _snapshot.Width - selection.Width);
+        var y = Math.Clamp(selection.Y, 0, _snapshot.Height - selection.Height);
+        return new RectangleF(x, y, selection.Width, selection.Height);
+    }
+
+    private int HitSelectionCorner(RectangleF selection, Point point)
+    {
+        var bounds = SourceToScreen(selection);
+        var corners = SelectionCorners(bounds);
+        for (var index = 0; index < corners.Length; index++)
+        {
+            if (Math.Abs(point.X - corners[index].X) <= 12 && Math.Abs(point.Y - corners[index].Y) <= 12)
+            {
+                return index;
+            }
+        }
+
+        return -1;
+    }
+
+    private static PointF[] SelectionCorners(RectangleF bounds) =>
+    [
+        new(bounds.Left, bounds.Top),
+        new(bounds.Right, bounds.Top),
+        new(bounds.Right, bounds.Bottom),
+        new(bounds.Left, bounds.Bottom)
+    ];
+
+    private bool IsValidSelection(RectangleF selection) => selection.Width >= 18 && selection.Height >= 18;
 
     private static readonly IntPtr HwndTopmost = new(-1);
     private const uint SwpShowWindow = 0x0040;
 
-    [DllImport("user32.dll", SetLastError = true)]
+    [System.Runtime.InteropServices.DllImport("user32.dll", SetLastError = true)]
     private static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int x, int y, int cx, int cy, uint flags);
 
-    [DllImport("user32.dll")]
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
     private static extern bool SetForegroundWindow(IntPtr hWnd);
 
-    [DllImport("user32.dll")]
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
     private static extern IntPtr SetFocus(IntPtr hWnd);
 
-    [DllImport("user32.dll")]
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
     private static extern bool ClipCursor(IntPtr rect);
 }

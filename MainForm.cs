@@ -113,10 +113,18 @@ internal sealed class MainForm : Form
 
         var help = new Label
         {
-            Text = "Select each square slot tightly, including its border and the area where the cooldown line travels.",
-            AutoSize = true,
-            Location = new Point(20, 112)
+            Text = "Select each square slot tightly, including its border and cooldown-line path.",
+            AutoEllipsis = true,
+            Location = new Point(20, 112),
+            Size = new Size(620, 22)
         };
+        var selectionGuideButton = new Button
+        {
+            Text = "Selection guide",
+            Location = new Point(654, 106),
+            Size = new Size(116, 30)
+        };
+        selectionGuideButton.Click += (_, _) => ShowSelectionGuide();
 
         var divider = new Label { BorderStyle = BorderStyle.Fixed3D, Height = 2, Width = 650, Location = new Point(20, 137) };
         foreach (var kind in AbilityKinds)
@@ -247,7 +255,7 @@ internal sealed class MainForm : Form
 
         _stateStatus.SetBounds(20, 600, 750, 24);
         _stateStatus.ForeColor = Color.FromArgb(90, 90, 90);
-        Controls.AddRange([title, intro, monitorLabel, _monitorPicker, help, divider, testGroup, _toggleButton,
+        Controls.AddRange([title, intro, monitorLabel, _monitorPicker, help, selectionGuideButton, divider, testGroup, _toggleButton,
             hotkeyLabel, _pauseBindingButton, anchorLabel, _anchorPicker, _stateStatus]);
     }
 
@@ -265,9 +273,46 @@ internal sealed class MainForm : Form
     private void SelectRegion(AbilityKind kind)
     {
         RefreshDisplays();
-        if (_monitorPicker.SelectedItem is not DisplayChoice display)
+        var target = ScreenCapture.FindDestiny2Window();
+        DisplayChoice? display;
+        Rectangle sourceBounds;
+        string sourceDescription;
+        if (target is not null)
         {
-            MessageBox.Show(this, "Windows did not report an available display.", Text, MessageBoxButtons.OK, MessageBoxIcon.Error);
+            var monitor = Screen.AllScreens.FirstOrDefault(
+                screen => screen.DeviceName.Equals(target.DeviceName, StringComparison.OrdinalIgnoreCase));
+            display = monitor is null
+                ? null
+                : new DisplayChoice(monitor.DeviceName, monitor.Bounds, $"Display · {monitor.Bounds.Width} × {monitor.Bounds.Height} · {monitor.DeviceName}");
+            sourceBounds = target.Bounds;
+            sourceDescription = "the Destiny 2 window";
+            if (display is not null)
+            {
+                _monitorPicker.SelectedItem = _monitorPicker.Items.Cast<DisplayChoice>()
+                    .FirstOrDefault(choice => choice.DeviceName.Equals(display.DeviceName, StringComparison.OrdinalIgnoreCase));
+            }
+        }
+        else
+        {
+            var result = MessageBox.Show(
+                this,
+                "Destiny 2's window wasn't found. Show the selected display's frozen preview instead?",
+                Text,
+                MessageBoxButtons.YesNo,
+                MessageBoxIcon.Information);
+            if (result != DialogResult.Yes || _monitorPicker.SelectedItem is not DisplayChoice fallbackDisplay)
+            {
+                return;
+            }
+
+            display = fallbackDisplay;
+            sourceBounds = fallbackDisplay.Bounds;
+            sourceDescription = "the selected display";
+        }
+
+        if (display is null)
+        {
+            MessageBox.Show(this, "Windows could not identify the display containing Destiny 2.", Text, MessageBoxButtons.OK, MessageBoxIcon.Error);
             return;
         }
 
@@ -278,11 +323,19 @@ internal sealed class MainForm : Form
             Hide();
             _overlay.Hide();
             Thread.Sleep(150);
-            using var snapshot = ScreenCapture.Capture(display.Bounds);
-            using var picker = new RegionPicker(snapshot, display.Bounds);
+            using var snapshot = ScreenCapture.Capture(sourceBounds);
+            var slot = GetSlot(kind);
+            Rectangle? initialSelection = null;
+            if (slot.Region is { } savedRegion &&
+                slot.MonitorBounds == display.Bounds &&
+                string.Equals(slot.MonitorDeviceName, display.DeviceName, StringComparison.OrdinalIgnoreCase))
+            {
+                initialSelection = Rectangle.Intersect(savedRegion, sourceBounds);
+            }
+
+            using var picker = new RegionPicker(snapshot, sourceBounds, display.Bounds, sourceDescription, initialSelection);
             if (picker.ShowDialog() == DialogResult.OK && picker.SelectedRegion is { } region)
             {
-                var slot = GetSlot(kind);
                 slot.Region = region;
                 slot.MonitorBounds = display.Bounds;
                 slot.MonitorDeviceName = display.DeviceName;
@@ -291,6 +344,7 @@ internal sealed class MainForm : Form
                 UpdateStatus();
             }
         }
+
         catch (Exception exception)
         {
             MessageBox.Show(this, $"Couldn't open the screen selector: {exception.Message}", Text, MessageBoxButtons.OK, MessageBoxIcon.Error);
@@ -306,6 +360,20 @@ internal sealed class MainForm : Form
                 SetMonitoring(true);
             }
         }
+    }
+
+    private void ShowSelectionGuide()
+    {
+        MessageBox.Show(
+            this,
+            "1. Keep Destiny 2 visible, then choose Select area. The app looks for its window and opens a frozen preview of it automatically.\n" +
+            "2. Select the full square ability slot, including its border and the path where the cooldown line travels.\n" +
+            "3. Avoid selecting only the icon. Detection uses the slot background and cooldown line, not the artwork.\n" +
+            "4. Zoom with the mouse wheel or +/-; right- or middle-drag to pan. Drag inside the outline to move it, or drag a corner to resize it.\n" +
+            "5. Review and adjust the outline, then click Use selection. If Destiny 2 is not found, you can choose the selected display preview instead.",
+            "Region selection guide",
+            MessageBoxButtons.OK,
+            MessageBoxIcon.Information);
     }
 
     private void CaptureLoop()
