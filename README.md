@@ -4,8 +4,8 @@ A Windows overlay for timing grenade, melee, and class-ability recharge from the
 
 ## Run
 
-1. Install the .NET 9 SDK on Windows.
-2. From this folder, run `dotnet run`.
+1. Download `D2AbilityTracker-win-x64.zip` from the [latest release](https://github.com/Database-Clarity/d2-ability-recharge-tracker/releases/latest).
+2. Extract the entire ZIP and run `D2AbilityTracker.exe` on Windows x64. No separate .NET installation is required. These builds are unsigned, so Windows may show an unknown-publisher warning.
 3. Keep Destiny 2 visible and select an ability slot. The selector finds the Destiny 2 window and opens a frozen preview of it; if the game is not found, it offers the selected display preview as a fallback. Select the square slot, including its border and the area where the cooldown line travels. Repeat for grenade, melee, and class ability as desired.
 4. Leave detection on. The timer starts when the cooldown line appears. When that line disappears, the tracker waits for the slot's ready fill to return to confirm the brief blank completion flash, but records the disappearance time as the end. The measured duration remains visible after completion.
 
@@ -18,3 +18,9 @@ Capture runs independently from the control-window UI, targets up to 240 samples
 Click the pause-binding button and press any key or mouse button to configure the global pause/resume shortcut; Ctrl, Alt, Shift, and Windows modifiers are recorded with it. Keyboard keys, mouse buttons, and wheel directions are supported. Pressing the shortcut never blocks that input from reaching Destiny 2.
 
 Click the ability-use binding button and press the desired keyboard key, mouse button, or wheel direction; modifiers are recorded as well. To repeat a recharge measurement, select an ability with a configured HUD region, record its ability-use input, set the cycle count and post-recharge delay, then start the test. Manually use the ability once to begin cycle one. After each confirmed full recharge the overlay records its duration; if more cycles remain, it waits the configured delay and sends the recorded input through Windows `SendInput` only when `destiny2.exe` is in the foreground and the selected HUD region still appears charged. If a menu hides the HUD, the next use waits until gameplay is visible again. The test stops after the requested number of measured recharges, reports their average, and can be stopped early with the Stop test or pause control. Settings are stored locally under `%AppData%\D2AbilityTracker`.
+
+## Development and automatic releases
+
+Install the .NET 9 SDK on Windows and run `dotnet run` from this folder to build from source. Run `dotnet run --project tests\D2AbilityTracker.Tests.csproj --configuration Release` for automated checks.
+
+GitHub Actions checks formatting, runs the automated checks, and packages a self-contained Windows x64 build on pushes to `main` and pull requests targeting `main`. Each successful `main` update automatically creates a release with the ZIP and generated change notes, tagged `build-<run number>.<attempt>`. Pull requests produce downloadable workflow artifacts but never releases. You can also run **Build and release** manually from the Actions tab; only runs on `main` publish a release. Repository Actions must be enabled.
