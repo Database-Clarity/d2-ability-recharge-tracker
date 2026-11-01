@@ -62,23 +62,26 @@ jobs:
       - name: Run automated checks
         run: dotnet run --project tests\D2AbilityTracker.Tests.csproj --configuration Release --no-restore
 
-      - name: Publish single-file self-contained app
+      - name: Publish framework-dependent app
         env:
           RELEASE_VERSION: ${{ steps.version.outputs.version }}
         run: |
-          dotnet publish D2AbilityTracker.csproj --configuration Release --runtime win-x64 --self-contained true --output "$env:RUNNER_TEMP\publish" -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:DebugType=None -p:DebugSymbols=false -p:Version="$env:RELEASE_VERSION" -p:InformationalVersion="$env:RELEASE_VERSION+$env:GITHUB_SHA"
+          dotnet publish D2AbilityTracker.csproj --configuration Release --runtime win-x64 --self-contained false --output "$env:RUNNER_TEMP\publish" -p:PublishSingleFile=true -p:DebugType=None -p:DebugSymbols=false -p:Version="$env:RELEASE_VERSION" -p:InformationalVersion="$env:RELEASE_VERSION+$env:GITHUB_SHA"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $files = @(Get-ChildItem "$env:RUNNER_TEMP\publish" -File)
           if ($files.Count -ne 1 -or $files[0].Name -ne "D2AbilityTracker.exe") {
             throw "Expected a standalone D2AbilityTracker.exe, but publish produced: $($files.Name -join ', ')"
           }
-          Rename-Item "$env:RUNNER_TEMP\publish\D2AbilityTracker.exe" "D2AbilityTracker-v$env:RELEASE_VERSION.exe"
+
+      - name: Build installer with on-demand runtime download
+        run: |
+          & .\installer\Build-Installer.ps1 -Version '${{ steps.version.outputs.version }}' -PublishPath "$env:RUNNER_TEMP\publish" -OutputPath "$env:RUNNER_TEMP\installer"
 
       - name: Upload Windows package
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: windows-x64
-          path: ${{ runner.temp }}\publish\D2AbilityTracker-v${{ steps.version.outputs.version }}.exe
+          path: ${{ runner.temp }}\installer\D2AbilityTracker-v${{ steps.version.outputs.version }}-Setup.exe
           if-no-files-found: error
           retention-days: 14
 
@@ -104,4 +107,4 @@ jobs:
           RELEASE_VERSION: ${{ needs.build.outputs.version }}
         run: |
           $tag = "v$env:RELEASE_VERSION"
-          gh release create $tag "$env:RUNNER_TEMP\release\D2AbilityTracker-v$env:RELEASE_VERSION.exe" --target $env:GITHUB_SHA --title "Destiny 2 Ability Recharge Tracker $tag" --generate-notes --latest
+          gh release create $tag "$env:RUNNER_TEMP\release\D2AbilityTracker-v$env:RELEASE_VERSION-Setup.exe" --target $env:GITHUB_SHA --title "Destiny 2 Ability Recharge Tracker $tag" --generate-notes --latest
