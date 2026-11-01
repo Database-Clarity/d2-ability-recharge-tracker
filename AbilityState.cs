@@ -60,7 +60,11 @@ internal readonly record struct AbilitySignal(
     float ChargedBackgroundRatio,
     float CooldownLineRatio,
     float BottomBorderThickness = 0,
-    float? ChargeProgress = null);
+    float? ChargeProgress = null,
+    float? FillHue = null,
+    Color? FillColor = null,
+    bool UseFlash = false,
+    bool PixelEvidence = false);
 
 internal sealed class AbilitySlotTracker
 {
@@ -72,6 +76,9 @@ internal sealed class AbilitySlotTracker
     private float? _lastProgress;
     private int _progressSamples;
     private readonly RechargeEstimate _estimate = new();
+    private float? _readyHue;
+    private Color? _readyColor;
+    private DateTime? _readyCandidateSince;
 
     public AbilityKind Kind { get; }
     public AbilityState State { get; private set; } = AbilityState.Unknown;
@@ -83,6 +90,17 @@ internal sealed class AbilitySlotTracker
     public bool MeasurementDiscarded { get; private set; }
     public TimeSpan? EstimatedDuration => _estimate.TotalDuration;
     public double? EstimateConfidence => _estimate.Confidence;
+
+    public float ProgressSearchTolerance(DateTime timestamp)
+    {
+        if (_lastProgressAt is not { } seen || _rechargeStarted is not { } started || seen <= started)
+        {
+            return 0.12f;
+        }
+
+        var observedRate = (_lastProgress ?? 0) / (seen - started).TotalSeconds;
+        return (float)Math.Min(1, 0.12 + Math.Max(0, (timestamp - seen).TotalSeconds) * observedRate * 2);
+    }
 
     public AbilitySlotTracker(AbilityKind kind)
     {
@@ -102,6 +120,9 @@ internal sealed class AbilitySlotTracker
         TrackingWarning = null;
         MeasurementDiscarded = false;
         _estimate.Reset();
+        _readyHue = null;
+        _readyColor = null;
+        _readyCandidateSince = null;
         IsCharged = false;
         CurrentDuration = null;
         State = AbilityState.Unknown;
@@ -109,10 +130,44 @@ internal sealed class AbilitySlotTracker
 
     public bool Observe(AbilitySignal signal, DateTime timestamp)
     {
-        IsCharged = signal.Charged;
-        var startFlash = _bottomBorderBaseline is { } baseline &&
-            signal.BottomBorderThickness > baseline + 0.012f;
-        if (_rechargeStarted is null && startFlash)
+        if (signal.FillHue is { } hue)
+        {
+            if (_readyHue is { } readyHue)
+            {
+                var difference = Math.Abs(hue - readyHue);
+                signal = signal with { Charged = signal.Charged && Math.Min(difference, 360 - difference) < 25 };
+            }
+            else if (signal.Charged)
+            {
+                _readyHue = hue;
+            }
+        }
+
+        if (signal.FillColor is { } color)
+        {
+            if (_readyColor is { } readyColor)
+            {
+                signal = signal with
+                {
+                    Charged = signal.Charged && Math.Abs(color.R - readyColor.R) < 30 &&
+                        Math.Abs(color.G - readyColor.G) < 30 && Math.Abs(color.B - readyColor.B) < 30
+                };
+            }
+            else if (signal.Charged)
+            {
+                _readyColor = color;
+            }
+        }
+
+        if (signal.Charged) { _readyCandidateSince ??= timestamp; }
+        else { _readyCandidateSince = null; }
+        var confirmedReady = signal.Charged && (!signal.PixelEvidence ||
+            timestamp - _readyCandidateSince >= TimeSpan.FromMilliseconds(150));
+        IsCharged = confirmedReady;
+        var startFlash = _rechargeStarted is null && (signal.UseFlash ||
+            (!signal.PixelEvidence && _bottomBorderBaseline is { } baseline &&
+                signal.BottomBorderThickness > baseline + 0.012f));
+        if (_rechargeStarted is null && startFlash && State is AbilityState.Ready or AbilityState.Complete)
         {
             _rechargeStarted = timestamp;
             _completionCandidateSince = null;
@@ -155,7 +210,9 @@ internal sealed class AbilitySlotTracker
                 (_recovering || _lastProgress is < 0.85f ||
                     (_lastProgressAt is { } lastSeen && timestamp - lastSeen > TimeSpan.FromMilliseconds(500))))
             {
-                if (_recovering && signal.Charged && !signal.CooldownLine)
+                if (_recovering && confirmedReady && !signal.CooldownLine &&
+                    (_lastProgress is < 0.8f || _lastProgressAt is { } seen &&
+                        timestamp - seen > TimeSpan.FromSeconds(2)))
                 {
                     TrackingWarning = "HUD returned charged; endpoint was obscured. Measurement discarded.";
                     MeasurementDiscarded = true;
@@ -167,28 +224,40 @@ internal sealed class AbilitySlotTracker
                     return false;
                 }
 
-                MarkSignalLost(timestamp);
-                return false;
+                if (_lastProgress is < 0.8f || _lastProgressAt is { } lastVisible &&
+                    timestamp - lastVisible > TimeSpan.FromSeconds(2))
+                {
+                    MarkSignalLost(timestamp);
+                    return false;
+                }
             }
 
-            // Start flashes can precede the ready fill disappearing; only a later blank frame is an endpoint.
+            // Pixel visibility loss is not an endpoint; retain the first explicit completion cue.
             if (signal.CooldownLine || startFlash)
             {
                 _completionCandidateSince = null;
             }
-            else if (!signal.Charged)
+            else if (!signal.Charged && (!signal.PixelEvidence || signal.UseFlash))
             {
                 _completionCandidateSince ??= timestamp;
             }
 
-            if (signal.Charged && !startFlash && _completionCandidateSince is { } blank &&
-                (_lastProgressAt is null || timestamp - _lastProgressAt <= TimeSpan.FromMilliseconds(500)))
+            if (signal.PixelEvidence && signal.Charged && _lastProgress is >= 0.8f)
+            {
+                _completionCandidateSince ??= timestamp;
+            }
+
+            if (confirmedReady && !startFlash && (!signal.PixelEvidence || _lastProgress is >= 0.8f) &&
+                _completionCandidateSince is { } blank &&
+                (_lastProgressAt is null || timestamp - _lastProgressAt <= TimeSpan.FromSeconds(2)))
             {
                 LastDuration = blank - started;
                 CurrentDuration = null;
                 _rechargeStarted = null;
                 _completionCandidateSince = null;
                 _bottomBorderBaseline = signal.BottomBorderThickness;
+                _recovering = false;
+                TrackingWarning = null;
                 State = AbilityState.Complete;
                 ChargeProgress = 1;
                 _lastProgress = null;

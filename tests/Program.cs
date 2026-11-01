@@ -4,6 +4,12 @@ using System.Drawing;
 using System.Diagnostics;
 using D2AbilityTracker;
 
+if (args.Length > 0 && args[0] == "--replay")
+{
+    FootageReplay.Run(args);
+    return;
+}
+
 var start = DateTime.UnixEpoch;
 var ability = AbilityKind.Grenade;
 var useBinding = new InputBinding(InputDevice.Keyboard, 0x47, InputModifiers.Control | InputModifiers.Shift);
@@ -94,7 +100,8 @@ foreach (var size in new[] { 40, 80, 160 })
     var pixelTracker = new AbilitySlotTracker(ability);
     pixelTracker.Observe(normalBorder with { Charged = true }, start);
     pixelTracker.Observe(thickBorder, start.AddSeconds(1));
-    Assert(pixelTracker.State == AbilityState.Recharging, "Pixel-based bottom flash should start recharge.");
+    Assert(pixelTracker.State != AbilityState.Recharging,
+        "Border thickening alone in pixel footage must not mistake a bright scene edge for ability use.");
     var progressSignal = ReadSyntheticProgress(size, 0.6f);
     Assert(progressSignal.ChargeProgress is { } observed && Math.Abs(observed - 0.6f) < 0.08f,
         "Matching side-strip boundaries should expose resolution-scaled charge progress.");
@@ -125,6 +132,26 @@ recovered.Observe(empty, start.AddSeconds(10).AddMilliseconds(100));
 Assert(recovered.Observe(charged, start.AddSeconds(10).AddMilliseconds(150)) &&
     recovered.LastDuration == TimeSpan.FromSeconds(9.1),
     "A visible endpoint after recovery must retain the original start timestamp.");
+var calibrated = new AbilitySlotTracker(ability);
+var greenReady = charged with { FillHue = 127.5f, FillColor = Color.FromArgb(60, 160, 80), PixelEvidence = true };
+calibrated.Observe(greenReady, start);
+calibrated.Observe(greenReady, start.AddMilliseconds(200));
+calibrated.Observe(greenReady with { BottomBorderThickness = 0.2f }, start.AddMilliseconds(300));
+Assert(calibrated.State == AbilityState.Ready,
+    "A bright scene edge under an already charged pixel slot must not start another cycle.");
+calibrated.Observe(empty with { UseFlash = true, PixelEvidence = true }, start.AddSeconds(1));
+calibrated.Observe(line with { ChargeProgress = 0.4f, PixelEvidence = true }, start.AddSeconds(4));
+calibrated.Observe(greenReady with { FillHue = 247.5f, FillColor = Color.FromArgb(80, 80, 180) }, start.AddSeconds(5));
+Assert(!calibrated.IsCharged && calibrated.State == AbilityState.Recharging && !calibrated.MeasurementDiscarded,
+    "A saturated scene of another color must not become the slot's charged fill or discard its timer.");
+Assert(calibrated.ProgressSearchTolerance(start.AddSeconds(8)) > 0.12f,
+    "Recovery must expand the boundary search using elapsed time and observed charge rate.");
+calibrated.Observe(line with { ChargeProgress = 0.95f, PixelEvidence = true }, start.AddSeconds(10));
+calibrated.Observe(greenReady, start.AddSeconds(10).AddMilliseconds(100));
+Assert(!calibrated.IsCharged, "Automatic ability use must wait for confirmed ready fill.");
+Assert(calibrated.Observe(greenReady, start.AddSeconds(10).AddMilliseconds(300)) &&
+    calibrated.LastDuration == TimeSpan.FromSeconds(9.1),
+    "Debouncing the returning color must preserve its first endpoint timestamp.");
 Assert(MainForm.MapRegion(new Rectangle(100, 100, 40, 40), new Rectangle(0, 0, 1000, 1000),
     new Rectangle(200, 300, 500, 500)) == new Rectangle(250, 350, 20, 20),
     "Window-relative regions should follow movement and resizing.");
@@ -294,7 +321,7 @@ static AbilitySignal ReadSyntheticSlot(int size, bool thickBorder, bool interior
 static AbilitySignal ReadSyntheticProgress(int size, float progress)
 {
     var data = new byte[size * size * 4];
-    for (var y = 0; y < (int)(size * (1 - progress)); y++)
+    for (var y = (int)(size * (1 - progress)); y < size; y++)
     {
         for (var x = 0; x < size; x++)
         {

@@ -544,7 +544,9 @@ internal sealed class MainForm : Form
                                 region.Top - bounds.Top,
                                 region.Width,
                                 region.Height,
-                                slot.BottomPadding),
+                                slot.BottomPadding,
+                                tracker.ChargeProgress,
+                                tracker.ProgressSearchTolerance(timestamp)),
                             timestamp);
                         _repeatTest.ObserveState(slot.Kind, tracker.State, timestamp);
                         if (completed && tracker.LastDuration is { } duration)

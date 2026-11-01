@@ -3,8 +3,8 @@ namespace D2AbilityTracker;
 internal static class AbilitySignalDetector
 {
     private const float ChargedSaturationThreshold = 0.32f;
-    private const float MinimumChargedBackgroundRatio = 0.24f;
-    private const float MinimumLineContrast = 0.18f;
+    private const float MinimumChargedBackgroundRatio = 0.65f;
+    private const float MinimumLineContrast = 0.10f;
     private const int LineContrastOffset = 3;
 
     public static unsafe AbilitySignal Read(
@@ -14,7 +14,9 @@ internal static class AbilitySignalDetector
         int cropY,
         int width,
         int height,
-        int bottomPadding = 0)
+        int bottomPadding = 0,
+        float? previousProgress = null,
+        float progressTolerance = 0.12f)
     {
         if (pixels == IntPtr.Zero || stride <= 0 || cropX < 0 || cropY < 0 || width <= 0 || height <= 0 ||
             (long)cropX + width > stride / 4 || bottomPadding < 0)
@@ -29,6 +31,12 @@ internal static class AbilitySignalDetector
         var rightOuter = Math.Clamp((int)(width * 0.88f), rightInner + 1, width);
         var saturatedPixels = 0;
         var fillPixels = 0;
+        var redTotal = 0;
+        var greenTotal = 0;
+        var blueTotal = 0;
+        var flashPixels = 0;
+        Span<int> hues = stackalloc int[24];
+        hues.Clear();
 
         var pixelData = (byte*)pixels;
         for (var side = 0; side < 2; side++)
@@ -51,9 +59,18 @@ internal static class AbilitySignalDetector
                         var maximum = Math.Max(red, Math.Max(green, blue));
                         var minimum = Math.Min(red, Math.Min(green, blue));
                         var saturation = maximum == 0 ? 0f : (maximum - minimum) / (float)maximum;
-                        if (saturation >= ChargedSaturationThreshold)
+                        if (maximum - minimum < 35 && GetLuminance(pixel) > 0.72f) { flashPixels++; }
+                        if (saturation >= ChargedSaturationThreshold && maximum - minimum >= 40)
                         {
                             saturatedPixels++;
+                            redTotal += red;
+                            greenTotal += green;
+                            blueTotal += blue;
+                            var hue = maximum == red ? (green - blue) / (float)(maximum - minimum) :
+                                maximum == green ? 2 + (blue - red) / (float)(maximum - minimum) :
+                                4 + (red - green) / (float)(maximum - minimum);
+                            hue = (hue * 60 + 360) % 360;
+                            hues[(int)(hue / 15)]++;
                         }
 
                         fillPixels++;
@@ -64,6 +81,11 @@ internal static class AbilitySignalDetector
 
         // The four side/corner patches sample slot fill, avoiding the ability artwork.
         var chargedRatio = fillPixels == 0 ? 0 : saturatedPixels / (float)fillPixels;
+        var dominantHue = 0;
+        for (var bin = 1; bin < hues.Length; bin++)
+        {
+            if (hues[bin] > hues[dominantHue]) { dominantHue = bin; }
+        }
         var lineRatio = FindCooldownLineContrast(
             pixelData,
             width,
@@ -73,14 +95,21 @@ internal static class AbilitySignalDetector
             Math.Clamp((int)(width * 0.20f), 1, width),
             Math.Clamp((int)(width * 0.80f), 0, width - 1),
             Math.Clamp((int)(width * 0.93f), 1, width),
-            out var progress);
+            out var progress,
+            previousProgress,
+            progressTolerance);
         return new AbilitySignal(
             chargedRatio >= MinimumChargedBackgroundRatio,
             lineRatio >= MinimumLineContrast,
             chargedRatio,
             lineRatio,
             ReadBottomBorderThickness(pixelData, stride, width, height, bottomPadding),
-            progress);
+            progress,
+            saturatedPixels == 0 ? null : dominantHue * 15 + 7.5f,
+            saturatedPixels == 0 ? null : System.Drawing.Color.FromArgb(redTotal / saturatedPixels,
+                greenTotal / saturatedPixels, blueTotal / saturatedPixels),
+            fillPixels > 0 && flashPixels / (float)fillPixels > 0.65f,
+            true);
     }
 
     public static int BottomPadding(int height) => Math.Max(3, (int)Math.Ceiling(height * 0.1));
@@ -125,7 +154,9 @@ internal static class AbilitySignalDetector
         int leftEnd,
         int rightStart,
         int rightEnd,
-        out float? progress)
+        out float? progress,
+        float? previousProgress,
+        float progressTolerance)
     {
         progress = null;
         var innerWidth = leftEnd - leftStart + rightEnd - rightStart;
@@ -134,72 +165,57 @@ internal static class AbilitySignalDetector
             return 0;
         }
 
-        var firstRow = Math.Clamp((int)(height * 0.04f), 0, height - 1);
-        var lastRow = Math.Clamp((int)(height * 0.96f), firstRow + 1, height);
-        Span<float> luminanceByRow = stackalloc float[height];
-        Span<float> leftByRow = stackalloc float[height];
-        Span<float> rightByRow = stackalloc float[height];
-        for (var y = firstRow; y < lastRow; y++)
-        {
-            var luminanceTotal = 0f;
-            var leftTotal = 0f;
-            var rightTotal = 0f;
-            var row = pixelData + y * stride;
-            for (var x = leftStart; x < leftEnd; x++)
-            {
-                leftTotal += GetLuminance(row + x * 4);
-            }
-
-            for (var x = rightStart; x < rightEnd; x++)
-            {
-                rightTotal += GetLuminance(row + x * 4);
-            }
-
-            luminanceTotal = leftTotal + rightTotal;
-            luminanceByRow[y] = luminanceTotal / innerWidth;
-            leftByRow[y] = leftTotal / Math.Max(1, leftEnd - leftStart);
-            rightByRow[y] = rightTotal / Math.Max(1, rightEnd - rightStart);
-        }
-
         var strongestLine = 0f;
-        var leftStrength = 0f;
-        var rightStrength = 0f;
-        var leftRow = 0;
-        var rightRow = 0;
-        for (var y = firstRow + LineContrastOffset; y < lastRow - LineContrastOffset; y++)
+        // HUD fill is brighter below the rising boundary; scene edges of the opposite polarity are not recharge.
+        ReadOnlySpan<float> slopes = [-0.08f, 0f];
+        foreach (var slope in slopes)
         {
-            var above = 0f;
-            var below = 0f;
-            var leftContrast = 0f;
-            var rightContrast = 0f;
-            for (var offset = 1; offset <= LineContrastOffset; offset++)
+            for (var y = Math.Max(LineContrastOffset + 3, (int)(height * 0.06f)); y < (int)(height * 0.85f); y++)
             {
-                above += luminanceByRow[y - offset];
-                below += luminanceByRow[y + offset];
-                leftContrast += leftByRow[y - offset] - leftByRow[y + offset];
-                rightContrast += rightByRow[y - offset] - rightByRow[y + offset];
-            }
-
-            var contrast = Math.Abs(above - below) / LineContrastOffset;
-            leftContrast = Math.Abs(leftContrast) / LineContrastOffset;
-            rightContrast = Math.Abs(rightContrast) / LineContrastOffset;
-            if (leftContrast > leftStrength) { leftStrength = leftContrast; leftRow = y; }
-            if (rightContrast > rightStrength) { rightStrength = rightContrast; rightRow = y; }
-            if (contrast > strongestLine)
-            {
-                strongestLine = contrast;
-                // The fill boundary rises from the bottom as recharge progresses.
-                progress = 1f - y / (float)height;
+                var candidate = 1f - y / (float)height;
+                if (previousProgress is { } previous &&
+                    Math.Abs(candidate - previous) > (previous == 0 ? 0.25f : progressTolerance)) { continue; }
+                var left = BoundaryContrast(pixelData, stride, width, height, y, leftStart, leftEnd, slope);
+                var right = BoundaryContrast(pixelData, stride, width, height, y, rightStart, rightEnd, slope);
+                var contrast = Math.Min(left, right);
+                if (contrast > strongestLine)
+                {
+                    strongestLine = contrast;
+                    progress = 1f - y / (float)height;
+                }
             }
         }
 
-        if (strongestLine < MinimumLineContrast || leftStrength < MinimumLineContrast ||
-            rightStrength < MinimumLineContrast || Math.Abs(leftRow - rightRow) > Math.Max(2, height * 0.08f))
+        if (strongestLine < MinimumLineContrast)
         {
             progress = null;
         }
 
         return strongestLine;
+    }
+
+    private static unsafe float BoundaryContrast(byte* pixels, int stride, int width, int height,
+        int y, int start, int end, float slope)
+    {
+        var total = 0f;
+        var supported = 0;
+        for (var x = start; x < end; x++)
+        {
+            var row = Math.Clamp(y + (int)Math.Round((x - width / 2f) * slope),
+                LineContrastOffset, height - LineContrastOffset - 1);
+            var difference = 0f;
+            for (var offset = 1; offset <= LineContrastOffset; offset++)
+            {
+                difference += GetLuminance(pixels + (row + offset) * stride + x * 4) -
+                    GetLuminance(pixels + (row - offset) * stride + x * 4);
+            }
+
+            difference /= LineContrastOffset;
+            total += difference;
+            if (difference >= MinimumLineContrast) { supported++; }
+        }
+
+        return supported >= (end - start) * 0.7f ? total / Math.Max(1, end - start) : 0;
     }
 
     private static unsafe float GetLuminance(byte* pixel)
