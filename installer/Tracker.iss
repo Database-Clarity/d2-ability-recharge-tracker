@@ -68,10 +68,11 @@ begin
 end;
 
 function HasDesktopRuntime: Boolean;
-const
-  RuntimeKey = 'SOFTWARE\dotnet\Setup\InstalledVersions\x64\sharedfx\Microsoft.WindowsDesktop.App';
 begin
-  Result := HasDesktopRuntimeAt(HKLM64, RuntimeKey) or HasDesktopRuntimeAt(HKCU, RuntimeKey);
+  Result := HasDesktopRuntimeAt(HKLM64,
+    'SOFTWARE\dotnet\Setup\InstalledVersions\x64\sharedfx\Microsoft.WindowsDesktop.App') or
+    HasDesktopRuntimeAt(HKCU,
+    'SOFTWARE\dotnet\Setup\InstalledVersions\x64\sharedfx\Microsoft.WindowsDesktop.App');
 end;
 
 function HasLocalDesktopRuntime: Boolean;
