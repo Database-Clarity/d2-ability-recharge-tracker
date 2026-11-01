@@ -1,5 +1,6 @@
 using System.Runtime.InteropServices;
 using System.Text.Json;
+using System.Drawing;
 using D2AbilityTracker;
 
 var start = DateTime.UnixEpoch;
@@ -60,6 +61,17 @@ Assert(useBinding.ToString() == "Ctrl+Shift+G", "Key names and modifiers should 
 var mouseBinding = new InputBinding(InputDevice.Mouse, MouseInputCode.X1, InputModifiers.Alt);
 Assert(mouseBinding.ToString() == "Alt+Mouse X1", "Mouse buttons should retain their modifier and readable label.");
 Assert(Marshal.SizeOf<InputBindingSender.InputEvent>() == (IntPtr.Size == 8 ? 40 : 28), "SendInput structure must match the Windows ABI.");
+
+var viewport = new RectangleF(0, 86, 1080, 900);
+var submitSize = new Size(112, 32);
+Assert(RegionPicker.SelectionSubmitLocation(new RectangleF(100, 200, 50, 50), viewport, submitSize) == new Point(164, 200),
+    "Submit should sit beside the selection with clearance for its resize handles.");
+Assert(RegionPicker.SelectionSubmitLocation(new RectangleF(1000, 200, 50, 50), viewport, submitSize) == new Point(874, 200),
+    "Submit should switch to the left near the viewport's right edge.");
+Assert(RegionPicker.SelectionSubmitLocation(new RectangleF(0, 900, 1080, 86), viewport, submitSize) == new Point(0, 854),
+    "Submit should fit above a wide selection at the bottom edge.");
+Assert(RegionPicker.SelectionSubmitLocation(viewport, viewport, submitSize) == new Point(0, 86),
+    "Submit must stay accessible even when the selection fills the viewport.");
 
 Console.WriteLine("All recharge, repeat-test, input-binding, and native-input layout checks passed.");
 

@@ -17,6 +17,7 @@ internal sealed class RegionPicker : Form
     private readonly Button _zoomInButton = new();
     private readonly Button _guideButton = new();
     private readonly Button _applyButton = new();
+    private readonly Button _selectionApplyButton = new();
     private readonly RectangleF _viewport;
     private PointF _sourceCenter;
     private PointF _startSource;
@@ -112,6 +113,12 @@ internal sealed class RegionPicker : Form
         cancelButton.Click += (_, _) => CancelSelection();
         _footer.Controls.AddRange([footerHint, _applyButton, cancelButton]);
         Controls.AddRange([_toolbar, _footer]);
+        _selectionApplyButton.Text = "Use selection";
+        _selectionApplyButton.Size = new Size(112, 32);
+        _selectionApplyButton.Cursor = Cursors.Hand;
+        _selectionApplyButton.Visible = false;
+        _selectionApplyButton.Click += (_, _) => ApplySelection();
+        Controls.Add(_selectionApplyButton);
 
         _scale = FitScale();
         if (initialSelection is { } existing)
@@ -162,6 +169,7 @@ internal sealed class RegionPicker : Form
         e.Graphics.Clear(BackColor);
         e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
         var destination = ImageDestination();
+        UpdateSelectionApplyButton();
         using var oldClip = e.Graphics.Clip;
         e.Graphics.SetClip(_viewport);
         e.Graphics.DrawImage(_snapshot, destination);
@@ -182,6 +190,51 @@ internal sealed class RegionPicker : Form
         }
 
         e.Graphics.Clip = oldClip;
+    }
+
+    private void UpdateSelectionApplyButton()
+    {
+        if (_selection is not { } selected || !IsValidSelection(selected) ||
+            _draggingSelection || _movingSelection || _resizingSelection || _panning)
+        {
+            _selectionApplyButton.Visible = false;
+            return;
+        }
+
+        var visibleSelection = RectangleF.Intersect(SourceToScreen(selected), _viewport);
+        if (visibleSelection.Width <= 0 || visibleSelection.Height <= 0)
+        {
+            _selectionApplyButton.Visible = false;
+            return;
+        }
+
+        _selectionApplyButton.Location = SelectionSubmitLocation(visibleSelection, _viewport, _selectionApplyButton.Size);
+        _selectionApplyButton.Visible = true;
+    }
+
+    internal static Point SelectionSubmitLocation(RectangleF selection, RectangleF viewport, Size buttonSize)
+    {
+        const int gap = 14;
+        var x = selection.Right + gap;
+        if (x + buttonSize.Width > viewport.Right)
+        {
+            x = selection.Left - gap - buttonSize.Width;
+        }
+
+        var y = selection.Top;
+        if (x < viewport.Left)
+        {
+            x = selection.Left;
+            y = selection.Bottom + gap;
+            if (y + buttonSize.Height > viewport.Bottom)
+            {
+                y = selection.Top - gap - buttonSize.Height;
+            }
+        }
+
+        return new Point(
+            (int)Math.Clamp(x, viewport.Left, Math.Max(viewport.Left, viewport.Right - buttonSize.Width)),
+            (int)Math.Clamp(y, viewport.Top, Math.Max(viewport.Top, viewport.Bottom - buttonSize.Height)));
     }
 
     protected override void OnMouseDown(MouseEventArgs e)
@@ -291,6 +344,7 @@ internal sealed class RegionPicker : Form
         {
             _panning = false;
             Cursor = Cursors.Cross;
+            Invalidate();
         }
 
         if (e.Button == MouseButtons.Left)
