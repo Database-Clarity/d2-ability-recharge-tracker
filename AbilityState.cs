@@ -64,7 +64,9 @@ internal readonly record struct AbilitySignal(
     float? FillHue = null,
     Color? FillColor = null,
     bool UseFlash = false,
-    bool PixelEvidence = false);
+    bool PixelEvidence = false,
+    bool Blank = false,
+    float? FillLuminance = null);
 
 internal sealed class AbilitySlotTracker
 {
@@ -79,6 +81,9 @@ internal sealed class AbilitySlotTracker
     private float? _readyHue;
     private Color? _readyColor;
     private DateTime? _readyCandidateSince;
+    private DateTime? _useObservedAt;
+    private float? _consumedBorderBaseline;
+    private float? _previousFillLuminance;
 
     public AbilityKind Kind { get; }
     public AbilityState State { get; private set; } = AbilityState.Unknown;
@@ -123,6 +128,9 @@ internal sealed class AbilitySlotTracker
         _readyHue = null;
         _readyColor = null;
         _readyCandidateSince = null;
+        _useObservedAt = null;
+        _consumedBorderBaseline = null;
+        _previousFillLuminance = null;
         IsCharged = false;
         CurrentDuration = null;
         State = AbilityState.Unknown;
@@ -130,12 +138,23 @@ internal sealed class AbilitySlotTracker
 
     public bool Observe(AbilitySignal signal, DateTime timestamp)
     {
+        var fillDisappeared = signal.FillLuminance is { } luminance &&
+            _previousFillLuminance is { } previousLuminance && previousLuminance - luminance > 0.12f;
+        _previousFillLuminance = signal.FillLuminance;
         if (signal.FillHue is { } hue)
         {
             if (_readyHue is { } readyHue)
             {
                 var difference = Math.Abs(hue - readyHue);
                 signal = signal with { Charged = signal.Charged && Math.Min(difference, 360 - difference) < 25 };
+            }
+            else if (_useObservedAt is not null)
+            {
+                State = AbilityState.Consumed;
+                if (timestamp - _useObservedAt > TimeSpan.FromSeconds(10))
+                {
+                    TrackingWarning = "Ability use seen, but recharge-start border pulse was not captured. Reset detection with the ability charged.";
+                }
             }
             else if (signal.Charged)
             {
@@ -164,11 +183,29 @@ internal sealed class AbilitySlotTracker
         var confirmedReady = signal.Charged && (!signal.PixelEvidence ||
             timestamp - _readyCandidateSince >= TimeSpan.FromMilliseconds(150));
         IsCharged = confirmedReady;
-        var startFlash = _rechargeStarted is null && (signal.UseFlash ||
-            (!signal.PixelEvidence && _bottomBorderBaseline is { } baseline &&
-                signal.BottomBorderThickness > baseline + 0.012f));
-        if (_rechargeStarted is null && startFlash && State is AbilityState.Ready or AbilityState.Complete)
+        if (signal.PixelEvidence && _rechargeStarted is null && _useObservedAt is null &&
+            signal.UseFlash && State is AbilityState.Ready or AbilityState.Complete)
         {
+            _useObservedAt = timestamp;
+            _consumedBorderBaseline = null;
+            State = AbilityState.Consumed;
+        }
+
+        var startFlash = _rechargeStarted is null && (signal.PixelEvidence
+            ? _useObservedAt is not null && !signal.UseFlash && _consumedBorderBaseline is { } consumed &&
+                signal.BottomBorderThickness > consumed + 0.012f
+            : _bottomBorderBaseline is { } baseline && signal.BottomBorderThickness > baseline + 0.012f);
+        if (_useObservedAt is not null && signal.Blank && !signal.UseFlash && !startFlash)
+        {
+            _consumedBorderBaseline = Math.Min(_consumedBorderBaseline ?? signal.BottomBorderThickness,
+                signal.BottomBorderThickness);
+        }
+
+        if (_rechargeStarted is null && startFlash &&
+            (_useObservedAt is not null || State is AbilityState.Ready or AbilityState.Complete))
+        {
+            _useObservedAt = null;
+            _consumedBorderBaseline = null;
             _rechargeStarted = timestamp;
             _completionCandidateSince = null;
             ChargeProgress = 0;
@@ -237,7 +274,8 @@ internal sealed class AbilitySlotTracker
             {
                 _completionCandidateSince = null;
             }
-            else if (!signal.Charged && (!signal.PixelEvidence || signal.UseFlash))
+            else if (!signal.Charged && (!signal.PixelEvidence ||
+                (signal.Blank || fillDisappeared) && _lastProgress is >= 0.8f))
             {
                 _completionCandidateSince ??= timestamp;
             }

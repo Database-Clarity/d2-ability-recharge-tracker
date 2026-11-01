@@ -140,6 +140,14 @@ calibrated.Observe(greenReady with { BottomBorderThickness = 0.2f }, start.AddMi
 Assert(calibrated.State == AbilityState.Ready,
     "A bright scene edge under an already charged pixel slot must not start another cycle.");
 calibrated.Observe(empty with { UseFlash = true, PixelEvidence = true }, start.AddSeconds(1));
+Assert(calibrated.State == AbilityState.Consumed && calibrated.CurrentDuration is null,
+    "The use animation must arm start detection without including its animation delay in recharge timing.");
+calibrated.Observe(empty with { Blank = true, PixelEvidence = true, BottomBorderThickness = 0.01f },
+    start.AddSeconds(1).AddMilliseconds(100));
+calibrated.Observe(empty with { Blank = true, PixelEvidence = true, BottomBorderThickness = 0.04f },
+    start.AddSeconds(1).AddMilliseconds(500));
+Assert(calibrated.State == AbilityState.Recharging && calibrated.CurrentDuration == TimeSpan.Zero,
+    "The later consumed-slot border pulse must establish the actual recharge start.");
 calibrated.Observe(line with { ChargeProgress = 0.4f, PixelEvidence = true }, start.AddSeconds(4));
 calibrated.Observe(greenReady with { FillHue = 247.5f, FillColor = Color.FromArgb(80, 80, 180) }, start.AddSeconds(5));
 Assert(!calibrated.IsCharged && calibrated.State == AbilityState.Recharging && !calibrated.MeasurementDiscarded,
@@ -150,8 +158,21 @@ calibrated.Observe(line with { ChargeProgress = 0.95f, PixelEvidence = true }, s
 calibrated.Observe(greenReady, start.AddSeconds(10).AddMilliseconds(100));
 Assert(!calibrated.IsCharged, "Automatic ability use must wait for confirmed ready fill.");
 Assert(calibrated.Observe(greenReady, start.AddSeconds(10).AddMilliseconds(300)) &&
-    calibrated.LastDuration == TimeSpan.FromSeconds(9.1),
+    calibrated.LastDuration == TimeSpan.FromSeconds(8.6),
     "Debouncing the returning color must preserve its first endpoint timestamp.");
+var contrastEndpoint = new AbilitySlotTracker(ability);
+contrastEndpoint.Observe(greenReady, start);
+contrastEndpoint.Observe(empty with { UseFlash = true, PixelEvidence = true }, start.AddSeconds(1));
+contrastEndpoint.Observe(empty with { Blank = true, PixelEvidence = true, BottomBorderThickness = 0.01f }, start.AddSeconds(1.1));
+contrastEndpoint.Observe(empty with { Blank = true, PixelEvidence = true, BottomBorderThickness = 0.04f }, start.AddSeconds(1.5));
+contrastEndpoint.Observe(line with { PixelEvidence = true, ChargeProgress = 0.8f, FillLuminance = 0.5f }, start.AddSeconds(8));
+contrastEndpoint.Observe(line with { PixelEvidence = true, ChargeProgress = 0.95f, FillLuminance = 0.5f }, start.AddSeconds(10));
+contrastEndpoint.Observe(empty with { PixelEvidence = true, FillLuminance = 0.25f }, start.AddSeconds(10.1));
+Assert(contrastEndpoint.LastDuration is null, "A luminance drop alone must not complete a measurement.");
+contrastEndpoint.Observe(greenReady, start.AddSeconds(10.2));
+Assert(contrastEndpoint.Observe(greenReady, start.AddSeconds(10.4)) &&
+    contrastEndpoint.LastDuration is { } contrastDuration && Math.Abs(contrastDuration.TotalSeconds - 8.6) < 0.000001,
+    "A relative fill disappearance on a bright scene must preserve the blank endpoint, confirmed by ready color.");
 Assert(MainForm.MapRegion(new Rectangle(100, 100, 40, 40), new Rectangle(0, 0, 1000, 1000),
     new Rectangle(200, 300, 500, 500)) == new Rectangle(250, 350, 20, 20),
     "Window-relative regions should follow movement and resizing.");

@@ -980,6 +980,11 @@ internal sealed class MainForm : Form
                     return $"{label}  Endpoint obscured · measurement discarded";
                 }
 
+                if (tracker?.State == AbilityState.Consumed && tracker.TrackingWarning is not null)
+                {
+                    return $"{label}  Recharge-start pulse missed · reset detection";
+                }
+
                 return tracker?.State switch
                 {
                     AbilityState.Ready => $"{label}  Ready{DurationSuffix(tracker.LastDuration)}",

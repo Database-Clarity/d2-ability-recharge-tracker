@@ -35,6 +35,8 @@ internal static class AbilitySignalDetector
         var greenTotal = 0;
         var blueTotal = 0;
         var flashPixels = 0;
+        var blankPixels = 0;
+        var fillLuminance = 0f;
         Span<int> hues = stackalloc int[24];
         hues.Clear();
 
@@ -59,7 +61,9 @@ internal static class AbilitySignalDetector
                         var maximum = Math.Max(red, Math.Max(green, blue));
                         var minimum = Math.Min(red, Math.Min(green, blue));
                         var saturation = maximum == 0 ? 0f : (maximum - minimum) / (float)maximum;
+                        fillLuminance += GetLuminance(pixel);
                         if (maximum - minimum < 35 && GetLuminance(pixel) > 0.72f) { flashPixels++; }
+                        if (GetLuminance(pixel) < 0.18f) { blankPixels++; }
                         if (saturation >= ChargedSaturationThreshold && maximum - minimum >= 40)
                         {
                             saturatedPixels++;
@@ -109,7 +113,9 @@ internal static class AbilitySignalDetector
             saturatedPixels == 0 ? null : System.Drawing.Color.FromArgb(redTotal / saturatedPixels,
                 greenTotal / saturatedPixels, blueTotal / saturatedPixels),
             fillPixels > 0 && flashPixels / (float)fillPixels > 0.65f,
-            true);
+            true,
+            fillPixels > 0 && blankPixels / (float)fillPixels > 0.65f,
+            fillPixels == 0 ? null : fillLuminance / fillPixels);
     }
 
     public static int BottomPadding(int height) => Math.Max(3, (int)Math.Ceiling(height * 0.1));
@@ -118,31 +124,27 @@ internal static class AbilitySignalDetector
     {
         var left = (int)(width * 0.12f);
         var right = Math.Max(left + 1, (int)(width * 0.88f));
-        var runLength = 0;
-        var bottommostRunLength = 0;
-        for (var y = (int)(height * 0.85f); y < height + padding; y++)
+        var thickness = 0f;
+        for (var x = left; x < right; x++)
         {
-            var brightPixels = 0;
-            for (var x = left; x < right; x++)
+            var runLength = 0;
+            var longest = 0;
+            for (var y = (int)(height * 0.85f); y < height + padding; y++)
             {
-                if (GetLuminance(pixels + y * stride + x * 4) >= 0.55f)
+                var value = GetLuminance(pixels + y * stride + x * 4);
+                var above = GetLuminance(pixels + Math.Max(0, y - 6) * stride + x * 4);
+                if (value >= 0.4f && value - above >= 0.15f)
                 {
-                    brightPixels++;
+                    runLength++;
+                    longest = Math.Max(longest, runLength);
                 }
+                else { runLength = 0; }
             }
 
-            if (brightPixels >= (right - left) * 0.65f)
-            {
-                runLength++;
-                bottommostRunLength = runLength;
-            }
-            else
-            {
-                runLength = 0;
-            }
+            thickness += longest;
         }
 
-        return bottommostRunLength / (float)height;
+        return thickness / (right - left) / height;
     }
 
     private static unsafe float FindCooldownLineContrast(
