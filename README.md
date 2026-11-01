@@ -1,6 +1,6 @@
 # Destiny 2 Ability Recharge Tracker
 
-A Windows overlay for timing grenade, melee, and class-ability recharge from the visible Destiny 2 HUD. It samples screen pixels only and does not read game memory. Global low-level keyboard and mouse hooks support configurable input bindings; they pass all input through to other applications.
+A Windows overlay for timing grenade, melee, and class-ability recharge from the visible Destiny 2 HUD. It samples screen pixels only and does not read game memory. Global low-level keyboard and mouse hooks support configurable input bindings; they pass all input through to other applications. Gameplay input is sent only while an explicitly started repeatability test is active and only when Destiny 2 is the foreground application.
 
 ## Run
 
@@ -15,4 +15,6 @@ No sample calibration is required. The detector follows the moving horizontal co
 
 Capture runs independently from the control-window UI, targets up to 240 samples per second, combines selected slots into one capture per display, reuses native screen-capture buffers, and scans their pixel data directly. The control window reports the measured capture rate. This is a best-effort desktop capture rate, not a guarantee of observing every game-rendered frame: Windows can only provide frames actually presented to the desktop, and system load or capture permissions can reduce the rate.
 
-Click the pause-binding button and press any key or mouse button to configure the global pause/resume shortcut; Ctrl, Alt, Shift, and Windows modifiers are recorded with it. Keyboard keys, mouse buttons, and wheel directions are supported. Pressing the shortcut never blocks that input from reaching Destiny 2. Settings are stored locally under `%AppData%\D2AbilityTracker`.
+Click the pause-binding button and press any key or mouse button to configure the global pause/resume shortcut; Ctrl, Alt, Shift, and Windows modifiers are recorded with it. Keyboard keys, mouse buttons, and wheel directions are supported. Pressing the shortcut never blocks that input from reaching Destiny 2.
+
+Click the ability-use binding button and press the desired keyboard key, mouse button, or wheel direction; modifiers are recorded as well. To repeat a recharge measurement, select an ability with a configured HUD region, record its ability-use input, set the cycle count and post-recharge delay, then start the test. Manually use the ability once to begin cycle one. After each confirmed full recharge the overlay records its duration; if more cycles remain, it waits the configured delay and sends the recorded input through Windows `SendInput` only when `destiny2.exe` is in the foreground and the selected HUD region still appears charged. If a menu hides the HUD, the next use waits until gameplay is visible again. The test stops after the requested number of measured recharges, reports their average, and can be stopped early with the Stop test or pause control. Settings are stored locally under `%AppData%\D2AbilityTracker`.

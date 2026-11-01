@@ -22,8 +22,16 @@ internal sealed class MainForm : Form
     private readonly Label _stateStatus = new();
     private readonly Button _toggleButton = new();
     private readonly Button _pauseBindingButton = new();
+    private readonly Button _abilityUseBindingButton = new();
+    private readonly Button _startTestButton = new();
+    private readonly Button _stopTestButton = new();
     private readonly ComboBox _anchorPicker = new();
     private readonly ComboBox _monitorPicker = new();
+    private readonly ComboBox _testAbilityPicker = new();
+    private readonly NumericUpDown _testCyclesPicker = new();
+    private readonly NumericUpDown _testDelayPicker = new();
+    private readonly Label _testStatus = new();
+    private readonly RepeatTestSession _repeatTest = new();
     private readonly Dictionary<AbilityKind, AbilitySlotTracker> _trackers = [];
     private readonly Dictionary<AbilityKind, Label> _regionLabels = [];
     private readonly Dictionary<AbilityKind, Label> _statusLabels = [];
@@ -33,19 +41,22 @@ internal sealed class MainForm : Form
     private CaptureBatch[] _captureBatches = [];
     private volatile bool _monitoring;
     private volatile bool _refreshCaptureRegionsRequested;
-    private bool _capturingPauseBinding;
+    private BindingCaptureTarget? _bindingCaptureTarget;
     private bool _inputListenerAvailable;
     private double _captureRate;
     private string? _captureLoopError;
+    private string? _inputListenerError;
+    private long _lastGameFocusCheck;
+    private bool _destiny2Foreground;
 
     public MainForm()
     {
         _settings = LoadSettings();
         EnsureSlotSettings();
         Text = "D2 Ability Recharge Tracker";
-        ClientSize = new Size(740, 480);
-        MinimumSize = new Size(740, 480);
-        MaximumSize = new Size(740, 480);
+        ClientSize = new Size(790, 640);
+        MinimumSize = new Size(790, 640);
+        MaximumSize = new Size(790, 640);
         FormBorderStyle = FormBorderStyle.FixedDialog;
         MaximizeBox = false;
         StartPosition = FormStartPosition.CenterScreen;
@@ -62,7 +73,7 @@ internal sealed class MainForm : Form
         }
         catch (Exception exception)
         {
-            _captureLoopError = $"Input bindings unavailable: {exception.Message}";
+            _inputListenerError = exception.Message;
         }
 
         SetMonitoring(true);
@@ -144,16 +155,81 @@ internal sealed class MainForm : Form
             Controls.AddRange([name, selectButton, regionLabel, statusLabel]);
         }
 
-        var bottomDivider = new Label { BorderStyle = BorderStyle.Fixed3D, Height = 2, Width = 650, Location = new Point(20, 371) };
-        _toggleButton.SetBounds(20, 388, 185, 36);
+        var testGroup = new GroupBox
+        {
+            Text = "Repeatability test",
+            Location = new Point(20, 360),
+            Size = new Size(750, 175)
+        };
+        var testAbilityLabel = new Label { Text = "Ability", AutoSize = true, Location = new Point(15, 30) };
+        _testAbilityPicker.SetBounds(75, 25, 150, 28);
+        _testAbilityPicker.DropDownStyle = ComboBoxStyle.DropDownList;
+        var abilityChoices = AbilityKinds.Select(kind => new AbilityChoice(kind, KindName(kind) == "Class" ? "Class ability" : KindName(kind))).ToArray();
+        _testAbilityPicker.Items.AddRange(abilityChoices);
+        _testAbilityPicker.SelectedItem = abilityChoices.FirstOrDefault(choice => choice.Kind == _settings.TestAbility);
+        _testAbilityPicker.SelectedIndexChanged += (_, _) =>
+        {
+            if (_testAbilityPicker.SelectedItem is AbilityChoice choice)
+            {
+                _settings.TestAbility = choice.Kind;
+                SaveSettings();
+                UpdateStatus();
+            }
+        };
+
+        var cyclesLabel = new Label { Text = "Recharge cycles", AutoSize = true, Location = new Point(245, 30) };
+        _testCyclesPicker.SetBounds(345, 25, 65, 28);
+        _testCyclesPicker.Minimum = 1;
+        _testCyclesPicker.Maximum = 100;
+        _testCyclesPicker.Value = Math.Clamp(_settings.TestCycles, 1, 100);
+        _testCyclesPicker.ValueChanged += (_, _) =>
+        {
+            _settings.TestCycles = decimal.ToInt32(_testCyclesPicker.Value);
+            SaveSettings();
+        };
+
+        var delayLabel = new Label { Text = "Delay before reuse", AutoSize = true, Location = new Point(430, 30) };
+        _testDelayPicker.SetBounds(535, 25, 70, 28);
+        _testDelayPicker.DecimalPlaces = 1;
+        _testDelayPicker.Increment = 0.1m;
+        _testDelayPicker.Minimum = 0;
+        _testDelayPicker.Maximum = 30;
+        _testDelayPicker.Value = Math.Clamp(_settings.TestDelaySeconds, 0, 30);
+        _testDelayPicker.ValueChanged += (_, _) =>
+        {
+            _settings.TestDelaySeconds = _testDelayPicker.Value;
+            SaveSettings();
+        };
+        var secondsLabel = new Label { Text = "sec", AutoSize = true, Location = new Point(610, 30) };
+
+        var abilityInputLabel = new Label { Text = "Ability use input", AutoSize = true, Location = new Point(15, 75) };
+        _abilityUseBindingButton.SetBounds(120, 69, 150, 30);
+        _abilityUseBindingButton.Text = _settings.AbilityUseBinding?.ToString() ?? "Record input…";
+        _abilityUseBindingButton.Click += (_, _) => ToggleBindingCapture(BindingCaptureTarget.AbilityUse);
+        _startTestButton.SetBounds(290, 68, 115, 32);
+        _startTestButton.Text = "Start test";
+        _startTestButton.Click += (_, _) => StartRepeatabilityTest();
+        _stopTestButton.SetBounds(415, 68, 100, 32);
+        _stopTestButton.Text = "Stop test";
+        _stopTestButton.Click += (_, _) => StopRepeatabilityTest();
+        _testStatus.SetBounds(15, 112, 715, 48);
+        _testStatus.AutoEllipsis = true;
+        _testStatus.ForeColor = Color.DimGray;
+        testGroup.Controls.AddRange([
+            testAbilityLabel, _testAbilityPicker, cyclesLabel, _testCyclesPicker,
+            delayLabel, _testDelayPicker, secondsLabel, abilityInputLabel,
+            _abilityUseBindingButton, _startTestButton, _stopTestButton, _testStatus
+        ]);
+
+        _toggleButton.SetBounds(20, 553, 185, 36);
         _toggleButton.Click += (_, _) => SetMonitoring(!_monitoring);
-        var hotkeyLabel = new Label { Text = "Toggle key", AutoSize = true, Location = new Point(224, 399) };
-        _pauseBindingButton.SetBounds(300, 393, 130, 30);
+        var hotkeyLabel = new Label { Text = "Pause / resume", AutoSize = true, Location = new Point(224, 563) };
+        _pauseBindingButton.SetBounds(335, 557, 140, 30);
         _pauseBindingButton.Text = PauseBinding.ToString();
         _pauseBindingButton.Click += (_, _) => TogglePauseBindingCapture();
 
-        var anchorLabel = new Label { Text = "Overlay position", AutoSize = true, Location = new Point(455, 399) };
-        _anchorPicker.SetBounds(560, 393, 150, 28);
+        var anchorLabel = new Label { Text = "Overlay position", AutoSize = true, Location = new Point(495, 563) };
+        _anchorPicker.SetBounds(610, 557, 150, 28);
         _anchorPicker.DropDownStyle = ComboBoxStyle.DropDownList;
         _anchorPicker.Items.AddRange(["Top left", "Top right", "Bottom left", "Bottom right"]);
         _anchorPicker.SelectedItem = _settings.OverlayAnchor;
@@ -169,9 +245,9 @@ internal sealed class MainForm : Form
             SaveSettings();
         };
 
-        _stateStatus.SetBounds(20, 438, 700, 24);
+        _stateStatus.SetBounds(20, 600, 750, 24);
         _stateStatus.ForeColor = Color.FromArgb(90, 90, 90);
-        Controls.AddRange([title, intro, monitorLabel, _monitorPicker, help, divider, bottomDivider, _toggleButton,
+        Controls.AddRange([title, intro, monitorLabel, _monitorPicker, help, divider, testGroup, _toggleButton,
             hotkeyLabel, _pauseBindingButton, anchorLabel, _anchorPicker, _stateStatus]);
     }
 
@@ -328,6 +404,7 @@ internal sealed class MainForm : Form
     private bool CaptureFrame(IntPtr desktopDeviceContext)
     {
         var capturedAny = false;
+        var testAbilityCaptured = false;
         var timestamp = DateTime.UtcNow;
         lock (_captureSync)
         {
@@ -354,7 +431,9 @@ internal sealed class MainForm : Form
                     foreach (var slot in batch.Slots)
                     {
                         var region = slot.Bounds;
-                        _trackers[slot.Kind].Observe(
+                        var tracker = _trackers[slot.Kind];
+                        testAbilityCaptured |= _repeatTest.Ability == slot.Kind;
+                        var completed = tracker.Observe(
                             AbilitySignalDetector.Read(
                                 surface.Pixels,
                                 surface.Stride,
@@ -363,6 +442,12 @@ internal sealed class MainForm : Form
                                 region.Width,
                                 region.Height),
                             timestamp);
+                        _repeatTest.ObserveState(slot.Kind, tracker.State, timestamp);
+                        if (completed && tracker.LastDuration is { } duration)
+                        {
+                            _repeatTest.RecordRecharge(slot.Kind, duration, timestamp);
+                        }
+
                         _captureErrors.Remove(slot.Kind);
                     }
                 }
@@ -371,6 +456,33 @@ internal sealed class MainForm : Form
                     foreach (var slot in batch.Slots)
                     {
                         _captureErrors[slot.Kind] = exception.Message;
+                    }
+                }
+
+            }
+
+            if (testAbilityCaptured &&
+                _repeatTest.IsUseDue(timestamp) &&
+                _repeatTest.Ability is { } testAbility &&
+                !_captureErrors.ContainsKey(testAbility) &&
+                _trackers[testAbility].IsCharged)
+            {
+                var now = Stopwatch.GetTimestamp();
+                if (now - _lastGameFocusCheck >= Stopwatch.Frequency / 10)
+                {
+                    _destiny2Foreground = InputBindingSender.IsDestiny2Foreground();
+                    _lastGameFocusCheck = now;
+                }
+
+                if (_repeatTest.TryGetDueUse(timestamp, _destiny2Foreground, out var binding))
+                {
+                    try
+                    {
+                        InputBindingSender.PressAndRelease(binding);
+                    }
+                    catch (Exception exception) when (exception is InvalidOperationException or ArgumentOutOfRangeException)
+                    {
+                        _repeatTest.Fail(exception.Message);
                     }
                 }
             }
@@ -459,9 +571,22 @@ internal sealed class MainForm : Form
             _toggleButton.Text = _monitoring ? "Pause detection" : "Resume detection";
             _stateStatus.Text = _captureLoopError is { } captureLoopError
                 ? $"Capture stopped: {captureLoopError}"
+                : _inputListenerError is { } inputListenerError
+                ? $"Input shortcuts unavailable: {inputListenerError}"
                 : _monitoring
                 ? $"Starts on the cooldown line; confirms the blank end flash · capture {_captureRate:F0}/{TargetCaptureRate} Hz"
                 : $"Paused · {PauseBinding} to resume";
+            _testStatus.Text = _repeatTest.Status(DateTime.UtcNow);
+            _testAbilityPicker.Enabled = !_repeatTest.IsActive;
+            _testCyclesPicker.Enabled = !_repeatTest.IsActive;
+            _testDelayPicker.Enabled = !_repeatTest.IsActive;
+            _abilityUseBindingButton.Enabled = !_repeatTest.IsActive;
+            _startTestButton.Enabled = !_repeatTest.IsActive &&
+                _inputListenerAvailable &&
+                _settings.AbilityUseBinding is not null &&
+                    GetSlot(_settings.TestAbility).Region is not null &&
+                    _bindingCaptureTarget is null;
+            _stopTestButton.Enabled = _repeatTest.IsActive;
         }
     }
 
@@ -469,22 +594,35 @@ internal sealed class MainForm : Form
 
     private void TogglePauseBindingCapture()
     {
+        ToggleBindingCapture(BindingCaptureTarget.Pause);
+    }
+
+    private void ToggleBindingCapture(BindingCaptureTarget target)
+    {
         if (!_inputListenerAvailable)
         {
-            MessageBox.Show(this, _captureLoopError ?? "Global input hooks are unavailable.", Text, MessageBoxButtons.OK, MessageBoxIcon.Error);
+            MessageBox.Show(this, $"Global keyboard and mouse hooks are unavailable: {_inputListenerError}", Text, MessageBoxButtons.OK, MessageBoxIcon.Error);
             return;
         }
 
-        if (_capturingPauseBinding)
+        if (_bindingCaptureTarget == target)
         {
             _inputListener.CancelCapture();
-            _capturingPauseBinding = false;
-            _pauseBindingButton.Text = PauseBinding.ToString();
+            _bindingCaptureTarget = null;
+            UpdateBindingButtonText(target);
+            UpdateStatus();
             return;
         }
 
-        _capturingPauseBinding = true;
-        _pauseBindingButton.Text = "Press a key/button…";
+        if (_bindingCaptureTarget is { } previousTarget)
+        {
+            _inputListener.CancelCapture();
+            UpdateBindingButtonText(previousTarget);
+        }
+
+        _bindingCaptureTarget = target;
+        GetBindingButton(target).Text = "Press a key/button…";
+        UpdateStatus();
         _inputListener.BeginCapture(binding =>
         {
             if (IsDisposed || !IsHandleCreated)
@@ -492,18 +630,112 @@ internal sealed class MainForm : Form
                 return;
             }
 
-            BeginInvoke((Action)(() =>
+            try
             {
-                _capturingPauseBinding = false;
-                _settings.PauseBinding = binding;
-                _settings.Hotkey = binding.Device == InputDevice.Keyboard && binding.Modifiers == InputModifiers.None
-                    ? ((Keys)binding.Code).ToString()
-                    : binding.ToString();
-                _pauseBindingButton.Text = binding.ToString();
-                SaveSettings();
-                UpdateStatus();
-            }));
+                BeginInvoke((Action)(() =>
+                {
+                    _bindingCaptureTarget = null;
+                    var conflicts = target == BindingCaptureTarget.Pause
+                        ? _settings.AbilityUseBinding == binding
+                        : PauseBinding == binding;
+                    if (conflicts)
+                    {
+                        MessageBox.Show(this, "Use a different input for pause/resume and ability use.", Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                        UpdateBindingButtonText(target);
+                        UpdateStatus();
+                        return;
+                    }
+
+                    if (target == BindingCaptureTarget.Pause)
+                    {
+                        _settings.PauseBinding = binding;
+                        _settings.Hotkey = binding.Device == InputDevice.Keyboard && binding.Modifiers == InputModifiers.None
+                            ? ((Keys)binding.Code).ToString()
+                            : binding.ToString();
+                    }
+                    else
+                    {
+                        _settings.AbilityUseBinding = binding;
+                    }
+
+                    UpdateBindingButtonText(target);
+                    SaveSettings();
+                    UpdateStatus();
+                }));
+            }
+            catch (InvalidOperationException) when (IsDisposed)
+            {
+            }
         });
+    }
+
+    private Button GetBindingButton(BindingCaptureTarget target) => target switch
+    {
+        BindingCaptureTarget.Pause => _pauseBindingButton,
+        BindingCaptureTarget.AbilityUse => _abilityUseBindingButton,
+        _ => throw new ArgumentOutOfRangeException(nameof(target))
+    };
+
+    private void UpdateBindingButtonText(BindingCaptureTarget target)
+    {
+        GetBindingButton(target).Text = target switch
+        {
+            BindingCaptureTarget.Pause => PauseBinding.ToString(),
+            BindingCaptureTarget.AbilityUse => _settings.AbilityUseBinding?.ToString() ?? "Record input…",
+            _ => throw new ArgumentOutOfRangeException(nameof(target))
+        };
+    }
+
+    private void StartRepeatabilityTest()
+    {
+        if (_bindingCaptureTarget is not null)
+        {
+            MessageBox.Show(this, "Finish recording the input binding before starting a test.", Text, MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
+        if (_testAbilityPicker.SelectedItem is not AbilityChoice choice || GetSlot(choice.Kind).Region is null)
+        {
+            MessageBox.Show(this, "Select a HUD region for the ability you want to test.", Text, MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
+        var ability = choice.Kind;
+        if (_settings.AbilityUseBinding is not { } binding)
+        {
+            MessageBox.Show(this, "Record the ability-use key or mouse button first.", Text, MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
+        if (!_monitoring)
+        {
+            SetMonitoring(true);
+        }
+
+        lock (_captureSync)
+        {
+            _repeatTest.Start(
+                ability,
+                decimal.ToInt32(_testCyclesPicker.Value),
+                TimeSpan.FromSeconds((double)_testDelayPicker.Value),
+                binding);
+            _settings.TestAbility = ability;
+            _settings.TestCycles = decimal.ToInt32(_testCyclesPicker.Value);
+            _settings.TestDelaySeconds = _testDelayPicker.Value;
+        }
+
+        SaveSettings();
+        UpdateStatus();
+    }
+
+    private void StopRepeatabilityTest()
+    {
+        lock (_captureSync)
+        {
+            _repeatTest.Stop();
+        }
+
+        UpdateStatus();
     }
 
     private void OnGlobalBindingPressed(object? sender, InputBindingEventArgs args)
@@ -569,6 +801,11 @@ internal sealed class MainForm : Form
             }
 
             _monitoring = enabled;
+            if (!enabled)
+            {
+                _repeatTest.Stop();
+            }
+
             foreach (var tracker in _trackers.Values)
             {
                 tracker.ResetCycle();
@@ -778,6 +1015,17 @@ internal sealed class MainForm : Form
     private sealed record DisplayChoice(string DeviceName, Rectangle Bounds, string Label)
     {
         public override string ToString() => Label;
+    }
+
+    private sealed record AbilityChoice(AbilityKind Kind, string Label)
+    {
+        public override string ToString() => Label;
+    }
+
+    private enum BindingCaptureTarget
+    {
+        Pause,
+        AbilityUse
     }
 
     private sealed record CaptureSlot(AbilityKind Kind, Rectangle Bounds);

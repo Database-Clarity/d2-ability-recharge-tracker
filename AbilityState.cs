@@ -43,6 +43,10 @@ internal sealed class TrackerSettings
     public float[]? RechargingSignature { get; set; }
     public string Hotkey { get; set; } = "F8";
     public InputBinding? PauseBinding { get; set; }
+    public InputBinding? AbilityUseBinding { get; set; }
+    public AbilityKind TestAbility { get; set; } = AbilityKind.Grenade;
+    public int TestCycles { get; set; } = 5;
+    public decimal TestDelaySeconds { get; set; } = 1;
     public string OverlayAnchor { get; set; } = "Bottom right";
 }
 
@@ -58,6 +62,7 @@ internal sealed class AbilitySlotTracker
 
     public AbilityKind Kind { get; }
     public AbilityState State { get; private set; } = AbilityState.Unknown;
+    public bool IsCharged { get; private set; }
     public TimeSpan? LastDuration { get; private set; }
     public TimeSpan? CurrentDuration { get; private set; }
 
@@ -73,12 +78,14 @@ internal sealed class AbilitySlotTracker
         _rechargeStarted = null;
         _completionCandidateSince = null;
         _hasSeenRechargeLine = false;
+        IsCharged = false;
         CurrentDuration = null;
         State = AbilityState.Unknown;
     }
 
     public bool Observe(AbilitySignal signal, DateTime timestamp)
     {
+        IsCharged = signal.Charged;
         var completed = false;
         if (signal.CooldownLine && !signal.Charged)
         {

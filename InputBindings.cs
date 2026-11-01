@@ -1,4 +1,6 @@
 using System.Runtime.InteropServices;
+using System.Diagnostics;
+using System.ComponentModel;
 using System.Windows.Forms;
 
 namespace D2AbilityTracker;
@@ -241,11 +243,17 @@ internal sealed class GlobalInputListener : IDisposable
     private InputModifiers CurrentModifiers()
     {
         var modifiers = InputModifiers.None;
-        if (_pressedKeys.Contains((int)Keys.LControlKey) || _pressedKeys.Contains((int)Keys.RControlKey))
+        if (_pressedKeys.Contains((int)Keys.ControlKey) ||
+            _pressedKeys.Contains((int)Keys.LControlKey) ||
+            _pressedKeys.Contains((int)Keys.RControlKey))
             modifiers |= InputModifiers.Control;
-        if (_pressedKeys.Contains((int)Keys.LMenu) || _pressedKeys.Contains((int)Keys.RMenu))
+        if (_pressedKeys.Contains((int)Keys.Menu) ||
+            _pressedKeys.Contains((int)Keys.LMenu) ||
+            _pressedKeys.Contains((int)Keys.RMenu))
             modifiers |= InputModifiers.Alt;
-        if (_pressedKeys.Contains((int)Keys.LShiftKey) || _pressedKeys.Contains((int)Keys.RShiftKey))
+        if (_pressedKeys.Contains((int)Keys.ShiftKey) ||
+            _pressedKeys.Contains((int)Keys.LShiftKey) ||
+            _pressedKeys.Contains((int)Keys.RShiftKey))
             modifiers |= InputModifiers.Shift;
         if (_pressedKeys.Contains((int)Keys.LWin) || _pressedKeys.Contains((int)Keys.RWin))
             modifiers |= InputModifiers.Windows;
@@ -253,9 +261,9 @@ internal sealed class GlobalInputListener : IDisposable
     }
 
     private static bool IsModifier(int key) => key is
-        (int)Keys.LControlKey or (int)Keys.RControlKey or
-        (int)Keys.LMenu or (int)Keys.RMenu or
-        (int)Keys.LShiftKey or (int)Keys.RShiftKey or
+        (int)Keys.ControlKey or (int)Keys.LControlKey or (int)Keys.RControlKey or
+        (int)Keys.Menu or (int)Keys.LMenu or (int)Keys.RMenu or
+        (int)Keys.ShiftKey or (int)Keys.LShiftKey or (int)Keys.RShiftKey or
         (int)Keys.LWin or (int)Keys.RWin;
 
     public void Dispose()
@@ -304,6 +312,159 @@ internal sealed class GlobalInputListener : IDisposable
     }
 }
 
+internal static class InputBindingSender
+{
+    private const uint InputKeyboard = 1;
+    private const uint InputMouse = 0;
+    private const uint KeyUp = 0x0002;
+    private const uint MouseLeftDown = 0x0002;
+    private const uint MouseLeftUp = 0x0004;
+    private const uint MouseRightDown = 0x0008;
+    private const uint MouseRightUp = 0x0010;
+    private const uint MouseMiddleDown = 0x0020;
+    private const uint MouseMiddleUp = 0x0040;
+    private const uint MouseXDown = 0x0080;
+    private const uint MouseXUp = 0x0100;
+    private const uint MouseWheel = 0x0800;
+    private const uint MouseHorizontalWheel = 0x1000;
+
+    public static bool IsDestiny2Foreground()
+    {
+        var foregroundWindow = InputNativeMethods.GetForegroundWindow();
+        if (foregroundWindow == IntPtr.Zero)
+        {
+            return false;
+        }
+
+        InputNativeMethods.GetWindowThreadProcessId(foregroundWindow, out var processId);
+        if (processId == 0)
+        {
+            return false;
+        }
+
+        try
+        {
+            using var process = Process.GetProcessById(checked((int)processId));
+            return process.ProcessName.Equals("destiny2", StringComparison.OrdinalIgnoreCase);
+        }
+        catch (ArgumentException)
+        {
+            return false;
+        }
+        catch (InvalidOperationException)
+        {
+            return false;
+        }
+        catch (Win32Exception)
+        {
+            return false;
+        }
+    }
+
+    public static void PressAndRelease(InputBinding binding)
+    {
+        var inputs = new List<InputEvent>(6);
+        var modifierKeys = new List<ushort>(4);
+        if (binding.Modifiers.HasFlag(InputModifiers.Control)) modifierKeys.Add(0x11);
+        if (binding.Modifiers.HasFlag(InputModifiers.Alt)) modifierKeys.Add(0x12);
+        if (binding.Modifiers.HasFlag(InputModifiers.Shift)) modifierKeys.Add(0x10);
+        if (binding.Modifiers.HasFlag(InputModifiers.Windows)) modifierKeys.Add(0x5B);
+        foreach (var modifier in modifierKeys)
+        {
+            inputs.Add(new InputEvent
+            {
+                Type = InputKeyboard,
+                Data = new InputUnion { Keyboard = new KeyboardInput { VirtualKey = modifier } }
+            });
+        }
+
+        if (binding.Device == InputDevice.Keyboard)
+        {
+            if (binding.Code is <= 0 or > ushort.MaxValue)
+            {
+                throw new ArgumentOutOfRangeException(nameof(binding), "The recorded keyboard key is invalid.");
+            }
+
+            inputs.Add(new InputEvent { Type = InputKeyboard, Data = new InputUnion { Keyboard = new KeyboardInput { VirtualKey = (ushort)binding.Code } } });
+            inputs.Add(new InputEvent { Type = InputKeyboard, Data = new InputUnion { Keyboard = new KeyboardInput { VirtualKey = (ushort)binding.Code, Flags = KeyUp } } });
+        }
+        else
+        {
+            var (downFlags, upFlags, mouseData) = binding.Code switch
+            {
+                MouseInputCode.Left => (MouseLeftDown, MouseLeftUp, 0u),
+                MouseInputCode.Right => (MouseRightDown, MouseRightUp, 0u),
+                MouseInputCode.Middle => (MouseMiddleDown, MouseMiddleUp, 0u),
+                MouseInputCode.X1 => (MouseXDown, MouseXUp, 1u),
+                MouseInputCode.X2 => (MouseXDown, MouseXUp, 2u),
+                MouseInputCode.WheelUp => (MouseWheel, 0u, 120u),
+                MouseInputCode.WheelDown => (MouseWheel, 0u, unchecked((uint)-120)),
+                MouseInputCode.WheelRight => (MouseHorizontalWheel, 0u, 120u),
+                MouseInputCode.WheelLeft => (MouseHorizontalWheel, 0u, unchecked((uint)-120)),
+                _ => throw new ArgumentOutOfRangeException(nameof(binding), "The recorded mouse input is unsupported.")
+            };
+            inputs.Add(new InputEvent { Type = InputMouse, Data = new InputUnion { Mouse = new MouseInput { Flags = downFlags, MouseData = mouseData } } });
+            if (upFlags != 0)
+            {
+                inputs.Add(new InputEvent { Type = InputMouse, Data = new InputUnion { Mouse = new MouseInput { Flags = upFlags, MouseData = mouseData } } });
+            }
+        }
+
+        for (var index = modifierKeys.Count - 1; index >= 0; index--)
+        {
+            inputs.Add(new InputEvent
+            {
+                Type = InputKeyboard,
+                Data = new InputUnion { Keyboard = new KeyboardInput { VirtualKey = modifierKeys[index], Flags = KeyUp } }
+            });
+        }
+
+        var sent = InputNativeMethods.SendInput((uint)inputs.Count, [.. inputs], Marshal.SizeOf<InputEvent>());
+        if (sent != inputs.Count)
+        {
+            throw new InvalidOperationException($"Windows could not send the ability input (error {Marshal.GetLastWin32Error()}).");
+        }
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct InputEvent
+    {
+        public uint Type;
+        public InputUnion Data;
+    }
+
+    [StructLayout(LayoutKind.Explicit)]
+    internal struct InputUnion
+    {
+        [FieldOffset(0)]
+        public MouseInput Mouse;
+
+        [FieldOffset(0)]
+        public KeyboardInput Keyboard;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct MouseInput
+    {
+        public int X;
+        public int Y;
+        public uint MouseData;
+        public uint Flags;
+        public uint Time;
+        public UIntPtr ExtraInfo;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct KeyboardInput
+    {
+        public ushort VirtualKey;
+        public ushort ScanCode;
+        public uint Flags;
+        public uint Time;
+        public UIntPtr ExtraInfo;
+    }
+}
+
 internal static class InputNativeMethods
 {
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
@@ -321,4 +482,17 @@ internal static class InputNativeMethods
 
     [DllImport("user32.dll")]
     internal static extern IntPtr CallNextHookEx(IntPtr hook, int code, IntPtr message, IntPtr data);
+
+    [DllImport("user32.dll")]
+    internal static extern IntPtr GetForegroundWindow();
+
+    [DllImport("user32.dll", SetLastError = true)]
+    internal static extern uint GetWindowThreadProcessId(IntPtr window, out uint processId);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    internal static extern uint SendInput(
+        uint inputCount,
+        [In] InputBindingSender.InputEvent[] inputs,
+        int inputSize);
+
 }
