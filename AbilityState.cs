@@ -199,6 +199,7 @@ internal sealed class AbilitySlotTracker
     internal const float ProgressGain = 0.982f;
     internal const float ProgressOffset = 0.0264f;
     private const double EndGapForModel = 0.1;
+    private const double MinimumRegressionCoverage = 0.2;
 
     public AbilityKind Kind { get; }
     public AbilityState State { get; private set; } = AbilityState.Unknown;
@@ -206,6 +207,9 @@ internal sealed class AbilitySlotTracker
     public TimeSpan? LastDuration { get; private set; }
     public TimeSpan? LastUncertainty { get; private set; }
     public MeasurementSource? LastSource { get; private set; }
+    /// <summary>Total recharge time from the linear regression of fill progress over the completed cycle.</summary>
+    public TimeSpan? LastRegressionDuration { get; private set; }
+    public TimeSpan? LastRegressionUncertainty { get; private set; }
     public TimeSpan? CurrentDuration { get; private set; }
     public float? ChargeProgress { get; private set; }
     public float? DisplayProgress { get; private set; }
@@ -661,6 +665,19 @@ internal sealed class AbilitySlotTracker
 
     private void Complete(AbilitySignal signal, TimeSpan duration, TimeSpan uncertainty, MeasurementSource source)
     {
+        // Keep the linear fit of the fill-up as an independent cross-check of the measured endpoint.
+        if (_model.IsReady && _model.ObservedMaximumProgress >= MinimumRegressionCoverage &&
+            _model.SecondsAt(1) is { } fitEnd && _model.SecondsUncertaintyAt(1) is { } fitSigma)
+        {
+            LastRegressionDuration = TimeSpan.FromSeconds(Math.Max(0, fitEnd + _startShiftSeconds));
+            LastRegressionUncertainty = TimeSpan.FromSeconds(fitSigma);
+        }
+        else
+        {
+            LastRegressionDuration = null;
+            LastRegressionUncertainty = null;
+        }
+
         LastDuration = duration;
         LastUncertainty = uncertainty;
         LastSource = source;

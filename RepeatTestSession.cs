@@ -17,6 +17,7 @@ internal sealed class RepeatTestSession
     private DateTime? _nextUseAt;
     private DateTime? _automaticUseDeadline;
     private readonly List<TimeSpan> _durations = [];
+    private readonly List<TimeSpan> _regressionDurations = [];
 
     public AbilityKind? Ability { get; private set; }
     public InputBinding? UseBinding { get; private set; }
@@ -30,6 +31,10 @@ internal sealed class RepeatTestSession
     public TimeSpan? AverageDuration => _durations.Count == 0
         ? null
         : TimeSpan.FromTicks((long)_durations.Average(duration => duration.Ticks));
+    /// <summary>Mean of the per-cycle linear-regression totals, for cycles where the fill could be fitted.</summary>
+    public TimeSpan? AverageRegressionDuration => _regressionDurations.Count == 0
+        ? null
+        : TimeSpan.FromTicks((long)_regressionDurations.Average(duration => duration.Ticks));
 
     public string Status(DateTime now)
     {
@@ -45,7 +50,7 @@ internal sealed class RepeatTestSession
             RepeatTestPhase.AwaitingRechargeAfterAutomaticUse =>
                 $"Sent ability input · waiting for the next cooldown (cycle {CompletedCycles + 1}/{TargetCycles}).",
             RepeatTestPhase.Completed =>
-                $"Finished {CompletedCycles}/{TargetCycles} cycles · average {FormatDuration(AverageDuration)}.",
+                $"Finished {CompletedCycles}/{TargetCycles} cycles · average {FormatDuration(AverageDuration)}{RegressionSummary()}.",
             RepeatTestPhase.Stopped => "Test stopped.",
             RepeatTestPhase.Failed => $"Test stopped: {FailureReason}",
             _ => "Test ready."
@@ -103,7 +108,7 @@ internal sealed class RepeatTestSession
         }
     }
 
-    public void RecordRecharge(AbilityKind ability, TimeSpan duration, DateTime timestamp)
+    public void RecordRecharge(AbilityKind ability, TimeSpan duration, DateTime timestamp, TimeSpan? regression = null)
     {
         if (ability != Ability || Phase != RepeatTestPhase.WaitingForRecharge || duration <= TimeSpan.Zero)
         {
@@ -168,6 +173,11 @@ internal sealed class RepeatTestSession
 
     private static bool IsAbilityUsed(AbilityState state) =>
         state == AbilityState.Recharging;
+
+    private string RegressionSummary() =>
+        AverageRegressionDuration is { } fitted
+            ? $" · regression {FormatDuration(fitted)} ({_regressionDurations.Count}/{CompletedCycles})"
+            : string.Empty;
 
     private static string FormatDuration(TimeSpan? duration) =>
         DurationDisplay.Format(duration);

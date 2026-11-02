@@ -21,16 +21,16 @@ internal sealed partial class MainForm : Form
     private readonly GlobalInputListener _inputListener = new();
     private readonly Thread _captureThread;
     private readonly Label _stateStatus = new();
-    private readonly Button _toggleButton = new();
-    private readonly Button _pauseBindingButton = new();
-    private readonly Button _abilityUseBindingButton = new();
-    private readonly Button _startTestButton = new();
-    private readonly Button _stopTestButton = new();
-    private readonly Button _repeatTestBindingButton = new();
-    private readonly Button _recordHudButton = new();
-    private readonly Button _overlayToggleButton = new();
-    private readonly Button _overlayBindingButton = new();
-    private readonly Button _updateButton = new();
+    private readonly Button _toggleButton = new TrackerButton();
+    private readonly Button _pauseBindingButton = new TrackerButton();
+    private readonly Button _abilityUseBindingButton = new TrackerButton();
+    private readonly Button _startTestButton = new TrackerButton();
+    private readonly Button _stopTestButton = new TrackerButton();
+    private readonly Button _repeatTestBindingButton = new TrackerButton();
+    private readonly Button _recordHudButton = new TrackerButton();
+    private readonly Button _overlayToggleButton = new TrackerButton();
+    private readonly Button _overlayBindingButton = new TrackerButton();
+    private readonly Button _updateButton = new TrackerButton();
     private readonly NumericUpDown _captureRatePicker = new();
     private readonly ComboBox _anchorPicker = new();
     private readonly ComboBox _monitorPicker = new();
@@ -82,6 +82,9 @@ internal sealed partial class MainForm : Form
         StartPosition = FormStartPosition.CenterScreen;
         Font = new Font("Segoe UI", 9);
         BuildControls();
+        InitializeOverlayInteractions();
+        OverlayMoveModeChanged += _ => SyncOverlayMoveToggle();
+        Icon = AppIcon.Load();
         ShowOverlayIfEnabled();
         UpdateOverlay();
         UpdateStatus();
@@ -158,12 +161,14 @@ internal sealed partial class MainForm : Form
         _captureThread.Start();
     }
 
-    private const int GridWidth = 770;
+    private readonly CheckBox _overlayMoveToggle = new TrackerToggle();
+    private const int GridWidth = 976;
 
     private static Label GridLabel(string text) => new()
     {
         Text = text,
         AutoSize = true,
+        ForeColor = TrackerTheme.Muted,
         Anchor = AnchorStyles.Left,
         Margin = new Padding(3, 0, 3, 0)
     };
@@ -182,7 +187,6 @@ internal sealed partial class MainForm : Form
         {
             grid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, width));
         }
-
         return grid;
     }
 
@@ -192,12 +196,11 @@ internal sealed partial class MainForm : Form
         {
             control.Anchor = AnchorStyles.Left | AnchorStyles.Right;
         }
-
         if (control is Button or CheckBox { Appearance: Appearance.Button })
         {
-            control.Height = 30;
+            control.Height = 32;
         }
-
+        control.Margin = new Padding(3, 4, 5, 4);
         grid.Controls.Add(control, column, row);
         if (span > 1)
         {
@@ -205,25 +208,51 @@ internal sealed partial class MainForm : Form
         }
     }
 
-    private static GroupBox Section(string title, Control content)
+    private static Panel Section(string title, Control content)
     {
-        var group = new GroupBox
+        var card = new TrackerCard
         {
-            Text = title,
             AutoSize = true,
             AutoSizeMode = AutoSizeMode.GrowAndShrink,
             Dock = DockStyle.Fill,
-            Padding = new Padding(8, 6, 8, 8),
-            Margin = new Padding(0, 0, 0, 10)
+            Padding = new Padding(14, 12, 14, 12),
+            Margin = new Padding(0, 0, 0, 12)
         };
-        group.Controls.Add(content);
-        return group;
+        var stack = new TableLayoutPanel
+        {
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            Dock = DockStyle.Fill,
+            ColumnCount = 1,
+            Margin = Padding.Empty
+        };
+        var heading = GridLabel(title.ToUpperInvariant());
+        TrackerTheme.SetTypography(heading, 9, FontStyle.Bold);
+        heading.ForeColor = TrackerTheme.Accent;
+        heading.Margin = new Padding(3, 0, 3, 8);
+        stack.Controls.Add(heading);
+        stack.Controls.Add(content);
+        card.Controls.Add(stack);
+        return card;
+    }
+
+    private void SyncOverlayMoveToggle()
+    {
+        _overlayMoveToggle.Checked = _overlayMoveMode;
     }
 
     private void BuildControls()
     {
-        // Header: title, short explanation, and updates.
-        var header = Grid(GridWidth - 140, 140);
+        BackColor = TrackerTheme.Background;
+        ForeColor = TrackerTheme.Text;
+        Font = new Font("Segoe UI", 9);
+        AutoScaleDimensions = new SizeF(96, 96);
+        AutoScaleMode = AutoScaleMode.Dpi;
+        HandleCreated += (_, _) => TrackerTheme.DarkTitleBar(Handle);
+        _toolTip.BackColor = TrackerTheme.Surface;
+        _toolTip.ForeColor = TrackerTheme.Text;
+
+        var header = Grid(GridWidth - 158, 158);
         var titleStack = new FlowLayoutPanel
         {
             FlowDirection = FlowDirection.TopDown,
@@ -234,25 +263,20 @@ internal sealed partial class MainForm : Form
         };
         titleStack.Controls.Add(new Label
         {
-            Text = "D2 Ability Recharge Tracker",
-            Font = new Font(Font.FontFamily, 13, FontStyle.Bold),
+            Text = $"D2  /  ABILITY RECHARGE     v{UpdateChecker.CurrentVersion.ToString(3)}",
+            Font = new Font("Segoe UI", 17, FontStyle.Bold),
+            ForeColor = TrackerTheme.Text,
             AutoSize = true,
-            Margin = new Padding(3, 0, 3, 2)
+            Margin = new Padding(3, 0, 3, 5)
         });
-        titleStack.Controls.Add(new Label
-        {
-            Text = "Times recharges from the HUD: starts on the bottom-border flash, ends when the slot is full.",
-            ForeColor = Color.DimGray,
-            AutoSize = true,
-            Margin = new Padding(3, 0, 3, 0)
-        });
+        TrackerTheme.SetTypography(titleStack.Controls[0], 17, FontStyle.Bold);
+        titleStack.Controls.Add(GridLabel("Precision timing from your HUD. From the first flash to a full charge."));
         Place(header, titleStack, 0, 0, stretch: false);
         _updateButton.Text = "Check for updates";
         _updateButton.Click += (_, _) => CheckOrInstallUpdate();
         Place(header, _updateButton, 1, 0);
 
-        // Detection: display, rate, pause.
-        var detection = Grid(130, 300, 130, 80, 130);
+        var detection = Grid(414, 114, 204, 216);
         _monitorPicker.DropDownStyle = ComboBoxStyle.DropDownList;
         RefreshDisplays();
         _captureRatePicker.Minimum = 30;
@@ -269,42 +293,41 @@ internal sealed partial class MainForm : Form
         _pauseBindingButton.Text = PauseBinding?.ToString() ?? "Record input…";
         _pauseBindingButton.Click += (_, _) => TogglePauseBindingCapture();
         _toolTip.SetToolTip(_pauseBindingButton, "Global pause / resume shortcut. Press Esc while recording to clear it.");
-        Place(detection, GridLabel("Display"), 0, 0, stretch: false);
-        Place(detection, _monitorPicker, 1, 0);
-        Place(detection, GridLabel("Capture target (Hz)"), 2, 0, stretch: false);
-        Place(detection, _captureRatePicker, 3, 0);
-        Place(detection, _toggleButton, 4, 0);
-        Place(detection, GridLabel("Pause shortcut"), 0, 1, stretch: false);
-        _pauseBindingButton.Width = 160;
-        Place(detection, _pauseBindingButton, 1, 1, stretch: false);
+        Place(detection, GridLabel("DISPLAY"), 0, 0);
+        Place(detection, GridLabel("TARGET · Hz"), 1, 0);
+        Place(detection, GridLabel("PAUSE SHORTCUT"), 2, 0);
+        Place(detection, GridLabel("MONITORING"), 3, 0);
+        Place(detection, _monitorPicker, 0, 1);
+        Place(detection, _captureRatePicker, 1, 1);
+        Place(detection, _pauseBindingButton, 2, 1);
+        Place(detection, _toggleButton, 3, 1);
 
-        // Abilities: one aligned row per slot.
-        var abilities = Grid(80, 115, 80, 290, 80, 125);
-        var headerFont = new Font(Font, FontStyle.Bold);
-        string[] headings = ["Ability", "Area", "Size", "Status", "Solo", "Solo shortcut"];
+        var abilities = Grid(116, 324, 76, 118, 118, 66, 130);
+        string[] headings = ["ABILITY", "LIVE STATUS", "AREA", "", "", "SOLO", "SHORTCUT"];
         for (var column = 0; column < headings.Length; column++)
         {
-            var heading = GridLabel(headings[column]);
-            heading.ForeColor = Color.DimGray;
-            Place(abilities, heading, column, 0, stretch: false);
+            Place(abilities, GridLabel(headings[column]), column, 0);
         }
-
         foreach (var kind in AbilityKinds)
         {
             var row = 1 + (int)kind;
             var name = GridLabel(KindName(kind));
-            name.Font = headerFont;
-            var selectButton = new Button { Text = "Select area…" };
+            TrackerTheme.SetTypography(name, 9, FontStyle.Bold);
+            name.ForeColor = TrackerTheme.Text;
+            var selectButton = new TrackerButton { Text = "Select area…" };
             selectButton.Click += (_, _) => SelectRegion(kind);
+            var autoButton = new TrackerButton { Text = "Auto-detect" };
+            autoButton.Click += (_, _) => AutoDetectRegion(kind);
+            _toolTip.SetToolTip(autoButton, "Find this ability slot automatically on the selected display.");
             var regionLabel = GridLabel(string.Empty);
             var statusLabel = new Label
             {
                 AutoEllipsis = true,
-                ForeColor = Color.DimGray,
+                ForeColor = TrackerTheme.Muted,
                 TextAlign = ContentAlignment.MiddleLeft,
-                Height = 30
+                Height = 42
             };
-            var soloToggle = new CheckBox
+            var soloToggle = new TrackerToggle
             {
                 Text = "Solo",
                 Appearance = Appearance.Button,
@@ -313,7 +336,7 @@ internal sealed partial class MainForm : Form
             };
             _toolTip.SetToolTip(soloToggle, "Track only this ability (captures one slot for best performance). Click again to track all.");
             soloToggle.Click += (_, _) => ToggleSolo(kind);
-            var soloBindingButton = new Button
+            var soloBindingButton = new TrackerButton
             {
                 Text = _settings.SoloBindings.TryGetValue(kind, out var soloBinding) ? soloBinding.ToString() : "Record…",
                 AutoEllipsis = true
@@ -321,31 +344,29 @@ internal sealed partial class MainForm : Form
             _toolTip.SetToolTip(soloBindingButton, "Keyboard shortcut that toggles solo tracking of this ability. Press Esc while recording to clear it.");
             soloBindingButton.Click += (_, _) => ToggleBindingCapture(SoloCaptureTarget(kind));
             Place(abilities, name, 0, row, stretch: false);
-            Place(abilities, selectButton, 1, row);
+            Place(abilities, statusLabel, 1, row);
             Place(abilities, regionLabel, 2, row, stretch: false);
-            Place(abilities, statusLabel, 3, row);
-            Place(abilities, soloToggle, 4, row);
-            Place(abilities, soloBindingButton, 5, row);
+            Place(abilities, selectButton, 3, row);
+            Place(abilities, autoButton, 4, row);
+            Place(abilities, soloToggle, 5, row);
+            Place(abilities, soloBindingButton, 6, row);
             _selectButtons.Add(kind, selectButton);
             _regionLabels.Add(kind, regionLabel);
             _statusLabels.Add(kind, statusLabel);
             _soloToggles.Add(kind, soloToggle);
             _soloBindingButtons.Add(kind, soloBindingButton);
         }
-
-        var selectionHint = GridLabel("Select the full square slot border tightly; pixels below it are captured automatically.");
-        selectionHint.ForeColor = Color.DimGray;
-        Place(abilities, selectionHint, 0, 4, 4, stretch: false);
-        var selectionGuideButton = new Button { Text = "Guide" };
+        var selectionHint = GridLabel("Select the square slot border tightly. The flash below is captured automatically.");
+        Place(abilities, selectionHint, 0, 4, 5, stretch: false);
+        var selectionGuideButton = new TrackerButton { Text = "Guide" };
         _toolTip.SetToolTip(selectionGuideButton, "Show how to select an ability slot.");
         selectionGuideButton.Click += (_, _) => ShowSelectionGuide();
-        var resetSelectionsButton = new Button { Text = "Reset areas" };
+        var resetSelectionsButton = new TrackerButton { Text = "Reset areas" };
         resetSelectionsButton.Click += (_, _) => ResetSelections();
-        Place(abilities, selectionGuideButton, 4, 4);
-        Place(abilities, resetSelectionsButton, 5, 4);
+        Place(abilities, selectionGuideButton, 5, 4);
+        Place(abilities, resetSelectionsButton, 6, 4);
 
-        // Repeatability test.
-        var test = Grid(130, 160, 150, 120, 105, 105);
+        var test = Grid(142, 138, 150, 114);
         _testAbilityPicker.DropDownStyle = ComboBoxStyle.DropDownList;
         var abilityChoices = AbilityKinds.Select(kind => new AbilityChoice(kind, KindName(kind) == "Class" ? "Class ability" : KindName(kind))).ToArray();
         _testAbilityPicker.Items.AddRange(abilityChoices);
@@ -390,22 +411,23 @@ internal sealed partial class MainForm : Form
         _testStatus.Height = 38;
         _testStatus.ForeColor = Color.DimGray;
         _testStatus.AutoEllipsis = true;
-        Place(test, GridLabel("Ability"), 0, 0, stretch: false);
+        _testStatus.ForeColor = TrackerTheme.Muted;
+        _testStatus.Height = 44;
+        Place(test, GridLabel("Ability"), 0, 0);
         Place(test, _testAbilityPicker, 1, 0);
-        Place(test, GridLabel("Recharge cycles"), 2, 0, stretch: false);
+        Place(test, GridLabel("Recharge cycles"), 2, 0);
         Place(test, _testCyclesPicker, 3, 0);
-        Place(test, GridLabel("Ability use input"), 0, 1, stretch: false);
+        Place(test, GridLabel("Ability use input"), 0, 1);
         Place(test, _abilityUseBindingButton, 1, 1);
-        Place(test, GridLabel("Delay before reuse (s)"), 2, 1, stretch: false);
+        Place(test, GridLabel("Reuse delay · s"), 2, 1);
         Place(test, _testDelayPicker, 3, 1);
-        Place(test, _startTestButton, 4, 1);
-        Place(test, _stopTestButton, 5, 1);
-        Place(test, GridLabel("Start / stop shortcut"), 0, 2, stretch: false);
+        Place(test, GridLabel("Start / stop shortcut"), 0, 2);
         Place(test, _repeatTestBindingButton, 1, 2);
-        Place(test, _testStatus, 0, 3, 6);
+        Place(test, _startTestButton, 2, 2);
+        Place(test, _stopTestButton, 3, 2);
+        Place(test, _testStatus, 0, 3, 4);
 
-        // Overlay.
-        var overlay = Grid(130, 160, 150, 120, 210);
+        var overlay = Grid(172, 172);
         _anchorPicker.DropDownStyle = ComboBoxStyle.DropDownList;
         _anchorPicker.Items.AddRange(["Top left", "Top right", "Bottom left", "Bottom right"]);
         _anchorPicker.SelectedItem = _settings.OverlayAnchor;
@@ -425,18 +447,30 @@ internal sealed partial class MainForm : Form
         _overlayBindingButton.Click += (_, _) => ToggleBindingCapture(BindingCaptureTarget.ToggleOverlay);
         _toolTip.SetToolTip(_overlayBindingButton, "Global show / hide overlay shortcut. Press Esc while recording to clear it.");
         UpdateOverlayToggleText();
-        Place(overlay, GridLabel("Show / hide shortcut"), 0, 0, stretch: false);
-        Place(overlay, _overlayBindingButton, 1, 0);
-        Place(overlay, GridLabel("Position"), 2, 0, stretch: false);
-        Place(overlay, _anchorPicker, 3, 0);
-        Place(overlay, _overlayToggleButton, 4, 0);
+        var linePicker = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList };
+        linePicker.Items.AddRange(["1 line per ability", "2 lines per ability"]);
+        linePicker.SelectedIndex = _settings.OverlayTwoLines ? 1 : 0;
+        linePicker.SelectedIndexChanged += (_, _) => SetOverlayTwoLines(linePicker.SelectedIndex == 1);
+        _overlayMoveToggle.Text = "Move overlay";
+        _overlayMoveToggle.Appearance = Appearance.Button;
+        _overlayMoveToggle.TextAlign = ContentAlignment.MiddleCenter;
+        SyncOverlayMoveToggle();
+        _overlayMoveToggle.Click += (_, _) => SetOverlayMoveMode(_overlayMoveToggle.Checked);
+        _toolTip.SetToolTip(_overlayMoveToggle, "Unlock the overlay to drag it. Turn off to restore click-through.");
+        Place(overlay, GridLabel("POSITION ANCHOR"), 0, 0);
+        Place(overlay, GridLabel("LAYOUT"), 1, 0);
+        Place(overlay, _anchorPicker, 0, 1);
+        Place(overlay, linePicker, 1, 1);
+        Place(overlay, GridLabel("SHOW / HIDE SHORTCUT"), 0, 2);
+        Place(overlay, _overlayBindingButton, 1, 2);
+        Place(overlay, _overlayToggleButton, 0, 3);
+        Place(overlay, _overlayMoveToggle, 1, 3);
 
-        // Debug recording.
-        var recording = Grid(130, 160, 480);
+        var recording = Grid(142, 138, 668);
         _recordHudButton.Text = "Record HUD";
         _recordHudButton.Click += (_, _) => ToggleHudRecording();
         _toolTip.SetToolTip(_recordHudButton, "Record the tracked ability slots at 60 FPS for troubleshooting.");
-        var openFolderButton = new Button { Text = "Open folder" };
+        var openFolderButton = new TrackerButton { Text = "Open folder" };
         openFolderButton.Click += (_, _) => OpenHudRecordingsFolder();
         _toolTip.SetToolTip(openFolderButton, AbilityHudRecorder.DefaultFolder);
         _hudRecordingStatus.AutoSize = false;
@@ -445,36 +479,75 @@ internal sealed partial class MainForm : Form
         _hudRecordingStatus.TextAlign = ContentAlignment.MiddleLeft;
         _hudRecordingStatus.ForeColor = Color.DimGray;
         _hudRecordingStatus.Text = "Saved to Documents\\D2AbilityTracker\\HUD recordings";
+        _hudRecordingStatus.ForeColor = TrackerTheme.Muted;
         Place(recording, _recordHudButton, 0, 0);
         Place(recording, openFolderButton, 1, 0);
         Place(recording, _hudRecordingStatus, 2, 0);
 
-        // Status bar.
         _stateStatus.AutoSize = false;
-        _stateStatus.Height = 22;
+        _stateStatus.Height = 24;
         _stateStatus.AutoEllipsis = true;
         _stateStatus.TextAlign = ContentAlignment.MiddleLeft;
-        _stateStatus.ForeColor = Color.FromArgb(90, 90, 90);
+        _stateStatus.ForeColor = TrackerTheme.Muted;
 
         var root = new TableLayoutPanel
         {
             AutoSize = true,
             AutoSizeMode = AutoSizeMode.GrowAndShrink,
             ColumnCount = 1,
-            Padding = new Padding(12, 10, 12, 6),
-            Location = Point.Empty
+            Padding = new Padding(20, 16, 20, 10),
+            Location = Point.Empty,
+            Margin = Padding.Empty
         };
         root.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        header.Margin = new Padding(0, 0, 0, 10);
+        header.Margin = new Padding(0, 0, 0, 18);
+        var lower = Grid(584, 392);
+        var testSection = Section("03  /  Repeatability test", test);
+        testSection.Margin = new Padding(0, 0, 12, 12);
+        Place(lower, testSection, 0, 0);
+        testSection.Margin = new Padding(0, 0, 12, 12);
+        Place(lower, Section("04  /  Overlay", overlay), 1, 0);
+        lower.Controls[1].Margin = new Padding(0, 0, 0, 12);
+        testSection.Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right;
+        lower.Controls[1].Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right;
         root.Controls.Add(header);
-        root.Controls.Add(Section("Detection", detection));
-        root.Controls.Add(Section("Abilities", abilities));
-        root.Controls.Add(Section("Repeatability test", test));
-        root.Controls.Add(Section("Overlay", overlay));
-        root.Controls.Add(Section("Debug recording", recording));
+        root.Controls.Add(Section("01  /  Detection", detection));
+        root.Controls.Add(Section("02  /  Abilities", abilities));
+        root.Controls.Add(lower);
+        root.Controls.Add(Section("05  /  Debug recording", recording));
         _stateStatus.Anchor = AnchorStyles.Left | AnchorStyles.Right;
         root.Controls.Add(_stateStatus);
-        Controls.Add(root);
+        AutoSize = false;
+        var viewport = new Panel { Dock = DockStyle.Fill, AutoScroll = true };
+        viewport.Controls.Add(root);
+        Controls.Add(viewport);
+        TrackerTheme.Apply(root);
+        TrackerTheme.Primary(_startTestButton);
+        TrackerTheme.Primary(_recordHudButton);
+        void FitWindowToDisplay()
+        {
+            var workArea = Screen.FromControl(this).WorkingArea;
+            var desired = root.GetPreferredSize(Size.Empty);
+            var chrome = Size - ClientSize;
+            var available = new Size(Math.Max(320, workArea.Width - chrome.Width - 24),
+                Math.Max(240, workArea.Height - chrome.Height - 24));
+            var height = Math.Min(desired.Height, available.Height);
+            var width = Math.Min(desired.Width + (height < desired.Height ? SystemInformation.VerticalScrollBarWidth : 0), available.Width);
+            ClientSize = new Size(width, height);
+            Location = new Point(workArea.Left + (workArea.Width - Width) / 2,
+                workArea.Top + (workArea.Height - Height) / 2);
+        }
+        Shown += (_, _) =>
+        {
+            TrackerTheme.ScaleTypography(root, DeviceDpi / 96f);
+            FitWindowToDisplay();
+        };
+        DpiChanged += (_, _) => BeginInvoke((Action)(() =>
+        {
+            TrackerTheme.ScaleTypography(root, DeviceDpi / 96f);
+            FitWindowToDisplay();
+        }));
+        ClientSize = root.GetPreferredSize(Size.Empty);
     }
     private async void ToggleHudRecording()
     {
@@ -809,22 +882,6 @@ internal sealed partial class MainForm : Form
             using var picker = new RegionPicker(snapshot, sourceBounds, display.Bounds, pickerDescription, initialSelection);
             if (picker.ShowDialog() == DialogResult.OK && picker.SelectedRegion is { } region)
             {
-                if (suggestions.Length == AbilityKinds.Length)
-                {
-                    for (var index = 0; index < AbilityKinds.Length; index++)
-                    {
-                        var suggestedSlot = GetSlot(AbilityKinds[index]);
-                        if (suggestedSlot.Region is null)
-                        {
-                            suggestedSlot.Region = suggestions[index];
-                            suggestedSlot.MonitorBounds = display.Bounds;
-                            suggestedSlot.MonitorDeviceName = display.DeviceName;
-                            suggestedSlot.GameWindowBounds = target?.Bounds;
-                            suggestedSlot.RegionAutoDetected = true;
-                        }
-                    }
-                }
-
                 slot.Region = region;
                 slot.MonitorBounds = display.Bounds;
                 slot.MonitorDeviceName = display.DeviceName;
@@ -1012,7 +1069,7 @@ internal sealed partial class MainForm : Form
                         _repeatTest.ObserveState(slot.Kind, tracker.State, timestamp);
                         if (completed && tracker.LastDuration is { } duration)
                         {
-                            _repeatTest.RecordRecharge(slot.Kind, duration, timestamp);
+                            _repeatTest.RecordRecharge(slot.Kind, duration, timestamp, tracker.LastRegressionDuration);
                         }
                         if (tracker.MeasurementDiscarded && _repeatTest.Ability == slot.Kind && _repeatTest.IsActive)
                         {
@@ -1114,7 +1171,7 @@ internal sealed partial class MainForm : Form
                 if (_captureErrors.TryGetValue(kind, out var captureError))
                 {
                     _statusLabels[kind].Text = $"Capture failed: {captureError}";
-                    _statusLabels[kind].ForeColor = Color.Firebrick;
+                    _statusLabels[kind].ForeColor = TrackerTheme.Red;
                     continue;
                 }
 
@@ -1122,38 +1179,38 @@ internal sealed partial class MainForm : Form
                 if (!IsTracked(kind))
                 {
                     _statusLabels[kind].Text = $"Not tracked · solo: {KindName(_settings.SoloAbility!.Value)}";
-                    _statusLabels[kind].ForeColor = Color.DimGray;
+                    _statusLabels[kind].ForeColor = TrackerTheme.Muted;
                     continue;
                 }
 
                 if (!_monitoring)
                 {
                     _statusLabels[kind].Text = "Paused";
-                    _statusLabels[kind].ForeColor = Color.DimGray;
+                    _statusLabels[kind].ForeColor = TrackerTheme.Muted;
                     continue;
                 }
 
                 _statusLabels[kind].Text = tracker.State switch
                 {
-                    AbilityState.Ready => $"Ready{DurationSuffix(tracker.LastDuration)}",
-                    AbilityState.Consumed => "Used · waiting for the bottom-border flash",
+                    AbilityState.Ready => $"Ready{DurationSuffix(tracker.LastDuration)}{RegressionSuffix(tracker)}",
+                    AbilityState.Consumed => "Used · waiting for the start flash",
                     AbilityState.Recharging => $"Recharging · {FormatDuration(tracker.CurrentDuration)}",
-                    AbilityState.Complete => $"Recharge complete · {FormatDuration(tracker.LastDuration)}{MeasurementSuffix(tracker)}",
+                    AbilityState.Complete => $"Recharge complete · {FormatDuration(tracker.LastDuration)}{MeasurementSuffix(tracker)}{RegressionSuffix(tracker)}",
                     _ => slot.Region is null
                         ? "Select this ability slot to track it"
-                        : slot.RegionAutoDetected ? "Auto-detected · click to refine" : "Watching slot background and bottom border…"
+                        : slot.RegionAutoDetected ? "Auto-detected · click to refine" : "Watching for the start flash…"
                 };
                 _statusLabels[kind].ForeColor = tracker.State switch
                 {
-                    AbilityState.Consumed => Color.DarkOrange,
-                    AbilityState.Recharging => Color.RoyalBlue,
-                    AbilityState.Complete => Color.SeaGreen,
-                    _ => Color.DimGray
+                    AbilityState.Consumed => TrackerTheme.Orange,
+                    AbilityState.Recharging => TrackerTheme.Accent,
+                    AbilityState.Complete => TrackerTheme.Green,
+                    _ => TrackerTheme.Muted
                 };
                 if (tracker.TrackingWarning is { } warning)
                 {
                     _statusLabels[kind].Text = $"{FormatDuration(tracker.CurrentDuration)} · {warning}";
-                    _statusLabels[kind].ForeColor = Color.DarkOrange;
+                    _statusLabels[kind].ForeColor = TrackerTheme.Orange;
                 }
                 else if (tracker.State == AbilityState.Recharging && tracker.DisplayProgress is { } progress)
                 {
@@ -1951,6 +2008,11 @@ internal sealed partial class MainForm : Form
 
     private static string DurationSuffix(TimeSpan? duration) =>
         duration is { } value ? $" · last {FormatDuration(value)}" : string.Empty;
+
+    private static string RegressionSuffix(AbilitySlotTracker tracker) =>
+        tracker.LastRegressionDuration is { } fitted && tracker.LastRegressionUncertainty is { } spread
+            ? $" · regression {fitted.TotalSeconds:F2} ± {spread.TotalSeconds:F2} s"
+            : string.Empty;
 
     private static string MeasurementSuffix(AbilitySlotTracker tracker) =>
         (tracker.LastUncertainty, tracker.LastSource) switch

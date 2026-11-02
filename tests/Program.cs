@@ -281,17 +281,35 @@ using (var graphics = Graphics.FromImage(hudPreview))
         graphics.FillRectangle(pink, x, y - 2, 1, 5);
     }
 
+    using var outline = new Pen(Color.FromArgb(220, 220, 225), 1.5f);
+    for (var index = 0; index < 3; index++)
+    {
+        var left = 110 + index * 67;
+        var top = 83 - index * 4;
+        var side = 61;
+        var corners = new[]
+        {
+            new PointF(left, top), new PointF(left + side, top - side * 0.055f),
+            new PointF(left + side, top + side - side * 0.055f), new PointF(left, top + side)
+        };
+        graphics.DrawPolygon(outline, corners);
+    }
+
     var window = new Rectangle(500, 300, hudPreview.Width, hudPreview.Height);
     var suggestions = AbilitySlotRegionFinder.Find(hudPreview, window);
-    Assert(suggestions.Length == 3, "The HUD's pink ability-row anchor should suggest all three slot regions.");
-    Assert(Math.Abs(suggestions[0].Left - 610) < 3 && suggestions[0].Top is >= 377 and <= 385 &&
-        suggestions[0].Width is >= 60 and <= 72 && suggestions[0].Height is >= 60 and <= 72,
-        "The first suggested ability selection should cover the square HUD slot at screen coordinates.");
-    Assert(suggestions[1].Left - suggestions[0].Left is >= 64 and <= 72 &&
-        suggestions[2].Left - suggestions[1].Left is >= 64 and <= 72,
-        "The melee and class suggestions should follow the evenly spaced adjacent HUD slots.");
-    Assert(suggestions[1].Top < suggestions[0].Top && suggestions[2].Top < suggestions[1].Top,
-        "Suggested rectangles should follow the HUD row's slight upward slant.");
+    Assert(suggestions.Length == 3, "The pink HUD anchor and outlined ability squares should produce three regions.");
+    var expected = new[]
+    {
+        new Rectangle(610, 380, 61, 65), new Rectangle(677, 376, 61, 65), new Rectangle(744, 372, 61, 65)
+    };
+    for (var index = 0; index < expected.Length; index++)
+    {
+        Assert(Math.Abs(suggestions[index].Left - expected[index].Left) <= 3 &&
+            Math.Abs(suggestions[index].Top - expected[index].Top) <= 3 &&
+            Math.Abs(suggestions[index].Width - expected[index].Width) <= 3 &&
+            Math.Abs(suggestions[index].Height - expected[index].Height) <= 3,
+            $"Synthetic slot {index} should be refined to its visible border; got {suggestions[index]}.");
+    }
 }
 
 var recordingDisplayBounds = new Rectangle(100, 50, 1000, 800);
@@ -411,6 +429,112 @@ using (var hookThreadResponded = new ManualResetEventSlim())
     dispatcher.BeginInvoke((Action)(() => hookThreadResponded.Set()));
     Assert(hookThreadResponded.Wait(TimeSpan.FromSeconds(2)),
         "The hook message pump must keep running while the calling/UI thread is blocked.");
+}
+
+var autoDetectFixtures = new[]
+{
+    "hud-2-5.png", "hud-30.png", "hud-60.png", "hud-100.png", "hud-140.png", "hud-163.png"
+};
+var expectedAbilityRegions = new[]
+{
+    new Rectangle(110, 82, 60, 63),
+    new Rectangle(176, 77, 60, 63),
+    new Rectangle(242, 73, 61, 63)
+};
+foreach (var fixtureName in autoDetectFixtures)
+{
+    var fixturePath = Path.Combine(AppContext.BaseDirectory, "fixtures", fixtureName);
+    using var fixture = new Bitmap(fixturePath);
+    var detected = AbilitySlotRegionFinder.Find(fixture, new Rectangle(0, 0, fixture.Width, fixture.Height));
+    Console.WriteLine($"{fixtureName}: {string.Join("; ", detected)}");
+    Assert(detected.Length == expectedAbilityRegions.Length,
+        $"Auto-detection should find three square borders in {fixtureName}; found {detected.Length}.");
+    for (var index = 0; index < expectedAbilityRegions.Length; index++)
+    {
+        var expectedRegion = expectedAbilityRegions[index];
+        var foundRegion = detected[index];
+        Assert(Math.Abs(foundRegion.Left - expectedRegion.Left) <= 3 &&
+            Math.Abs(foundRegion.Top - expectedRegion.Top) <= 3 &&
+            Math.Abs(foundRegion.Width - expectedRegion.Width) <= 3 &&
+            Math.Abs(foundRegion.Height - expectedRegion.Height) <= 3,
+            $"Auto-detection of {fixtureName} slot {index} should match the visible border within 3 px; expected {expectedRegion}, found {foundRegion}.");
+    }
+}
+
+using (var yellowFixture = new Bitmap(Path.Combine(AppContext.BaseDirectory, "fixtures", "hud-solar-yellow.png")))
+{
+    var detected = AbilitySlotRegionFinder.Find(
+        yellowFixture, new Rectangle(0, 0, yellowFixture.Width, yellowFixture.Height));
+    Console.WriteLine($"hud-solar-yellow.png: {string.Join("; ", detected)}");
+    Assert(detected.Length == 3, "Auto-detection should find the three slots below the yellow subclass strip.");
+    var expected = new[]
+    {
+        new Rectangle(123, 72, 60, 64),
+        new Rectangle(189, 67, 60, 64),
+        new Rectangle(255, 63, 59, 63)
+    };
+    for (var index = 0; index < expected.Length; index++)
+    {
+        var found = detected[index];
+        var region = expected[index];
+        Assert(Math.Abs(found.Left - region.Left) <= 3 &&
+            Math.Abs(found.Top - region.Top) <= 3 &&
+            Math.Abs(found.Width - region.Width) <= 3 &&
+            Math.Abs(found.Height - region.Height) <= 3,
+            $"Yellow-strip slot {index} should match the visible border within 3 px; expected {region}, found {found}.");
+    }
+}
+
+var scaleFixturePaths = new[] { "hud-2-5.png" };
+var resolutionScales = new[] { ("720p", 2f / 3), ("1080p", 1f), ("1440p", 4f / 3), ("4K", 2f) };
+foreach (var fixtureName in scaleFixturePaths)
+{
+    using var original = new Bitmap(Path.Combine(AppContext.BaseDirectory, "fixtures", fixtureName));
+    foreach (var (resolution, scale) in resolutionScales)
+    {
+        var scaledWidth = (int)Math.Round(original.Width * scale);
+        var scaledHeight = (int)Math.Round(original.Height * scale);
+        using var scaled = new Bitmap(scaledWidth, scaledHeight);
+        using (var graphics = Graphics.FromImage(scaled))
+        {
+            graphics.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.NearestNeighbor;
+            graphics.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.Half;
+            graphics.DrawImage(original, new Rectangle(0, 0, scaledWidth, scaledHeight));
+        }
+
+        var detected = AbilitySlotRegionFinder.Find(scaled, new Rectangle(0, 0, scaled.Width, scaled.Height));
+        Assert(detected.Length == expectedAbilityRegions.Length,
+            $"Auto-detection should find all slot borders in {fixtureName} scaled for {resolution}.");
+        for (var index = 0; index < expectedAbilityRegions.Length; index++)
+        {
+            var baseRegion = expectedAbilityRegions[index];
+            var expectedRegion = new Rectangle(
+                (int)Math.Round(baseRegion.X * scale), (int)Math.Round(baseRegion.Y * scale),
+                (int)Math.Round(baseRegion.Width * scale), (int)Math.Round(baseRegion.Height * scale));
+            var foundRegion = detected[index];
+            const int tolerance = 3;
+            var error = Math.Max(
+                Math.Max(Math.Abs(foundRegion.Left - expectedRegion.Left), Math.Abs(foundRegion.Top - expectedRegion.Top)),
+                Math.Max(Math.Abs(foundRegion.Width - expectedRegion.Width), Math.Abs(foundRegion.Height - expectedRegion.Height)));
+            Assert(error <= tolerance,
+                $"{resolution} scaling should preserve slot {index} within {tolerance} px; expected {expectedRegion}, found {foundRegion}.");
+            Console.WriteLine($"{fixtureName} at {resolution}: slot {index} max error {error} px.");
+        }
+    }
+}
+
+using (var performanceFrame = new Bitmap(1920, 1080))
+using (var original = new Bitmap(Path.Combine(AppContext.BaseDirectory, "fixtures", "hud-2-5.png")))
+using (var graphics = Graphics.FromImage(performanceFrame))
+{
+    graphics.DrawImageUnscaled(original, 100, 400);
+    var stopwatch = Stopwatch.StartNew();
+    var detected = AbilitySlotRegionFinder.Find(performanceFrame, new Rectangle(0, 0, 1920, 1080));
+    stopwatch.Stop();
+    Assert(detected.Length == expectedAbilityRegions.Length, "The 1920×1080 detection timing check should find all three slots.");
+    Assert(stopwatch.Elapsed.TotalMilliseconds < 300,
+        $"Ability slot detection on a 1920×1080 frame should finish under 300 ms; took {stopwatch.Elapsed.TotalMilliseconds:F1} ms.");
+    Console.WriteLine($"Ability slot detection on a 1920×1080 frame: {stopwatch.Elapsed.TotalMilliseconds:F1} ms.");
 }
 
 Console.WriteLine("All bottom-flash detection, capture scheduling, selection, repeat-test, and input-hook checks passed.");
