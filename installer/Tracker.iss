@@ -51,6 +51,19 @@ Filename: "{sys}\wscript.exe"; Parameters: """{app}\Launch Tracker.vbs"""; Flags
 var
   DownloadPage: TDownloadWizardPage;
   RuntimeWarning: String;
+  PreviousAppVersion: String;
+
+procedure RememberPreviousVersion;
+var
+  Major, Minor, Revision, Build: Cardinal;
+  TrackerPath: String;
+begin
+  PreviousAppVersion := '';
+  TrackerPath := ExpandConstant('{app}\D2AbilityTracker.exe');
+  if FileExists(TrackerPath) and
+    GetVersionComponents(TrackerPath, Major, Minor, Revision, Build) then
+    PreviousAppVersion := Format('%d.%d.%d', [Major, Minor, Revision]);
+end;
 
 function HasDesktopRuntimeAt(RootKey: Integer; const Subkey: String): Boolean;
 var
@@ -160,7 +173,22 @@ begin
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
+var
+  SourceVersionPath: String;
 begin
+  if CurStep = ssInstall then
+    RememberPreviousVersion;
+
+  if (CurStep = ssPostInstall) and (PreviousAppVersion <> '') then
+  begin
+    SourceVersionPath := ExpandConstant('{userappdata}\D2AbilityTracker\update-source-version.txt');
+    if not ForceDirectories(ExtractFileDir(SourceVersionPath)) or
+      not SaveStringToFile(SourceVersionPath, PreviousAppVersion, False) then
+      MsgBox(
+        'The tracker was updated, but its previous version could not be saved for changelog display.',
+        mbInformation, MB_OK);
+  end;
+
   if (CurStep = ssDone) and (RuntimeWarning <> '') then
     MsgBox(
       'Setup completed. The .NET 9 Desktop Runtime is not installed yet, so the tracker cannot start.' + #13#10 +

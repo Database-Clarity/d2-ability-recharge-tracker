@@ -69,6 +69,30 @@ internal sealed class RechargeModel
     public double? SecondsAt(double progress) =>
         IsReady && _slope > 0 ? (progress - _intercept) / _slope : null;
 
+    /// <summary>Full-charge duration fitted only to the 10%-90% portion, independent of start/end events.</summary>
+    public (TimeSpan Duration, TimeSpan Uncertainty)? FinalRegression()
+    {
+        if (!_samples.Any(sample => sample.Progress <= 0.1) ||
+            !_samples.Any(sample => sample.Progress >= 0.9))
+        {
+            return null;
+        }
+
+        var central = new RechargeModel();
+        central._samples.AddRange(_samples.Where(sample => sample.Progress is >= 0.1 and <= 0.9));
+        central.Fit();
+        if (!central.IsReady)
+        {
+            return null;
+        }
+
+        var duration = 1 / central._slope;
+        var statistical = Math.Sqrt(central._slopeVariance) / (central._slope * central._slope);
+        var calibration = CalibrationUncertainty * duration;
+        return (TimeSpan.FromSeconds(duration),
+            TimeSpan.FromSeconds(Math.Sqrt(statistical * statistical + calibration * calibration)));
+    }
+
     /// <summary>One-sigma uncertainty of <see cref="SecondsAt"/>, including extrapolation and calibration terms.</summary>
     public double? SecondsUncertaintyAt(double progress)
     {

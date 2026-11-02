@@ -44,6 +44,38 @@ if (args.Length == 2 && args[0] == "--ui-smoke")
                         form.DrawToBitmap(image, new Rectangle(Point.Empty, image.Size));
                         image.Save(Path.Combine(args[1], $"ui-{link.Text.Replace(' ', '-')}.png"));
                     }
+
+                    var smokeHistory = new MeasurementHistoryStore(Path.Combine(args[1], "smoke-history.json"));
+                    smokeHistory.CreateSession("Grenade stat testing", DateTimeOffset.UtcNow);
+                    smokeHistory.TryAddMeasurement(new MeasurementHistoryEntry(
+                        Guid.NewGuid(), AbilityKind.Grenade, 64.25, 64.22, 0.02, 0.16,
+                        MeasurementSource.Event, DateTimeOffset.UtcNow, "Grenade stat 5", null));
+                    using var historyForm = new MeasurementHistoryForm(smokeHistory);
+                    historyForm.Show(form);
+                    historyForm.PerformLayout();
+                    using (var image = new Bitmap(historyForm.Width, historyForm.Height))
+                    {
+                        historyForm.DrawToBitmap(image, new Rectangle(Point.Empty, image.Size));
+                        image.Save(Path.Combine(args[1], "ui-History.png"));
+                    }
+                    historyForm.Size = historyForm.MinimumSize;
+                    historyForm.PerformLayout();
+                    using (var image = new Bitmap(historyForm.Width, historyForm.Height))
+                    {
+                        historyForm.DrawToBitmap(image, new Rectangle(Point.Empty, image.Size));
+                        image.Save(Path.Combine(args[1], "ui-History-minimum.png"));
+                    }
+                    historyForm.Close();
+                    using var changelogForm = new ChangelogForm("Changelog", "Changes since v0.1.15",
+                        [new ChangelogRelease(new Version(0, 1, 16), "v0.1.16", "Compact utility layout.",
+                            new Uri("https://github.com/Database-Clarity/d2-ability-recharge-tracker/releases/tag/v0.1.16"))]);
+                    changelogForm.Show(form);
+                    using (var image = new Bitmap(changelogForm.Width, changelogForm.Height))
+                    {
+                        changelogForm.DrawToBitmap(image, new Rectangle(Point.Empty, image.Size));
+                        image.Save(Path.Combine(args[1], "ui-Changelog.png"));
+                    }
+                    changelogForm.Close();
                 }
                 catch (Exception exception)
                 {
@@ -81,6 +113,8 @@ if (args.Length > 0 && args[0] == "--replay")
 }
 
 var start = DateTime.UnixEpoch;
+ChangelogTests.Run();
+MeasurementHistoryTests.Run();
 var ability = AbilityKind.Grenade;
 var useBinding = new InputBinding(InputDevice.Keyboard, 0x47, InputModifiers.Control | InputModifiers.Shift);
 var session = new RepeatTestSession();
@@ -266,6 +300,61 @@ for (var sample = 0; sample < 40; sample++)
     model.Add(sample * 0.1, 0.1);
 }
 Assert(model.SecondsAt(1) is null, "Stationary progress must not produce a finish estimate.");
+var centralRegression = new RechargeModel();
+var shiftedRegression = new RechargeModel();
+for (var sample = 0; sample <= 1000; sample++)
+{
+    var progress = sample / 1000d;
+    var seconds = 7 + progress * 100;
+    if (progress < 0.1)
+    {
+        seconds -= 5 * (0.1 - progress);
+    }
+    else if (progress > 0.9)
+    {
+        seconds += 80 * (progress - 0.9);
+    }
+
+    centralRegression.Add(seconds, progress);
+    shiftedRegression.Add(seconds + 50, progress);
+}
+Assert(centralRegression.FinalRegression() is { } finalRegression &&
+    Math.Abs(finalRegression.Duration.TotalSeconds - 100) < 0.001 &&
+    finalRegression.Uncertainty > TimeSpan.Zero,
+    "Final regression must extrapolate the 10%-90% slope, excluding nonlinear edges and event offsets.");
+Assert(shiftedRegression.FinalRegression() is { } shiftedFinal &&
+    Math.Abs(shiftedFinal.Duration.TotalSeconds - 100) < 0.001,
+    "Moving the observed start must not change the full-charge regression duration.");
+var incompleteRegression = new RechargeModel();
+for (var sample = 0; sample <= 85; sample++)
+{
+    incompleteRegression.Add(sample, sample / 100d);
+}
+Assert(incompleteRegression.FinalRegression() is null, "A final 10%-90% fit must wait until 90% is observed.");
+incompleteRegression.Reset();
+for (var sample = 20; sample <= 95; sample++)
+{
+    incompleteRegression.Add(sample, sample / 100d);
+}
+Assert(incompleteRegression.FinalRegression() is null, "A cycle missing the 10% boundary must not report a full-interval fit.");
+centralRegression.Reset();
+Assert(centralRegression.FinalRegression() is null, "Resetting a cycle must also clear the final regression.");
+var finalTracker = new AbilitySlotTracker(ability);
+finalTracker.Observe(charged, start);
+finalTracker.Observe(flash, start.AddSeconds(1));
+for (var sample = 1; sample <= 96; sample++)
+{
+    finalTracker.Observe(line with { ChargeProgress = sample / 100f }, start.AddSeconds(1 + sample / 10d));
+}
+finalTracker.Observe(empty, start.AddSeconds(11));
+finalTracker.Observe(charged, start.AddSeconds(11.2));
+Assert(finalTracker.LastRegressionDuration is { } completedFit &&
+    Math.Abs(completedFit.TotalSeconds - 10) < 0.001 && finalTracker.LastRegressionUncertainty > TimeSpan.Zero,
+    "Completion must retain the 10%-90% regression before clearing the live model.");
+Assert(MainForm.PausedMeasurementStatus(finalTracker).Contains("Complete") &&
+    MainForm.PausedMeasurementStatus(finalTracker).Contains("10.00") &&
+    MainForm.PausedMeasurementStatus(finalTracker).Contains("regression"),
+    "Paused status must preserve the completed measurement and regression.");
 var estimatingTracker = new AbilitySlotTracker(ability);
 estimatingTracker.Observe(charged, start);
 estimatingTracker.Observe(flash, start.AddSeconds(1));
@@ -277,6 +366,9 @@ for (var sample = 1; sample <= 40; sample++)
 Assert(estimatingTracker.EstimatedDuration is { } trackerEstimate && Math.Abs(trackerEstimate.TotalSeconds - 10) < 0.1 &&
     estimatingTracker.EstimateUncertainty is { } trackerSpread && trackerSpread < TimeSpan.FromSeconds(1),
     "The active tracker should expose its fitted estimate with an uncertainty.");
+Assert(MainForm.PausedMeasurementStatus(estimatingTracker).Contains("Recharging") &&
+    MainForm.PausedMeasurementStatus(estimatingTracker).Contains("stopped"),
+    "An interrupted recharge must be identified as stopped, not a completed measurement.");
 estimatingTracker.MarkSignalLost(start.AddSeconds(6));
 Assert(estimatingTracker.EstimatedDuration is not null && estimatingTracker.CurrentDuration == TimeSpan.FromSeconds(5),
     "Signal loss should retain elapsed time and the whole-cycle estimate for fast recovery.");

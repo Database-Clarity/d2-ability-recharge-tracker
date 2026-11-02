@@ -14,6 +14,10 @@ internal sealed partial class MainForm : Form
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
         "D2AbilityTracker",
         "settings.json");
+    private readonly string _updateSourceVersionPath = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+        "D2AbilityTracker",
+        "update-source-version.txt");
     private readonly TrackerSettings _settings;
     private readonly OverlayWindow _overlay = new();
     private readonly CancellationTokenSource _captureCancellation = new();
@@ -31,6 +35,7 @@ internal sealed partial class MainForm : Form
     private readonly Button _overlayToggleButton = new();
     private readonly Button _overlayBindingButton = new();
     private readonly Button _updateButton = new();
+    private readonly Button _changelogButton = new();
     private readonly NumericUpDown _captureRatePicker = new();
     private readonly ComboBox _anchorPicker = new();
     private readonly ComboBox _monitorPicker = new();
@@ -68,10 +73,14 @@ internal sealed partial class MainForm : Form
     private bool _closingAfterHudRecording;
     private UpdateRelease? _availableUpdate;
     private bool _updateBusy;
+    private bool _changelogBusy;
+    private bool _startupChangelogPending;
+    private Version _lastChangelogVersion = UpdateChecker.CurrentVersion;
 
     public MainForm()
     {
         _settings = LoadSettings();
+        InitializeChangelogVersion();
         EnsureSlotSettings();
         Text = $"D2 Ability Recharge Tracker v{UpdateChecker.CurrentVersion.ToString(3)}";
         _targetCaptureRate = Math.Clamp(_settings.CaptureRate, 30, 240);
@@ -82,6 +91,7 @@ internal sealed partial class MainForm : Form
         StartPosition = FormStartPosition.CenterScreen;
         Font = new Font("Segoe UI", 9);
         BuildControls();
+        InitializeMeasurementHistory();
         InitializeOverlayInteractions();
         OverlayMoveModeChanged += _ => SyncOverlayMoveToggle();
         Icon = AppIcon.Load();
@@ -108,6 +118,11 @@ internal sealed partial class MainForm : Form
         SetMonitoring(true);
         Shown += async (_, _) =>
         {
+            if (_startupChangelogPending)
+            {
+                await OpenChangelogAsync(startup: true);
+            }
+
             if (UpdateChecker.IsReleaseBuild && _settings.CheckForUpdatesOnStartup)
             {
                 await CheckForUpdateAsync(interactive: false);
@@ -255,6 +270,8 @@ internal sealed partial class MainForm : Form
         var header = Grid(144, GridWidth - 144);
         _updateButton.Text = "Check for updates";
         _updateButton.Click += (_, _) => CheckOrInstallUpdate();
+        _changelogButton.Text = "Changelog";
+        _changelogButton.Click += async (_, _) => await OpenChangelogAsync(startup: false);
 
         var detection = Grid(118, 292);
         _monitorPicker.DropDownStyle = ComboBoxStyle.DropDownList;
@@ -440,7 +457,9 @@ internal sealed partial class MainForm : Form
         Place(overlay, _overlayToggleButton, 0, 3);
         Place(overlay, _overlayMoveToggle, 1, 3);
 
-        var recording = Grid(120, 110, GridWidth - 464, 104, 130);
+        var recording = Grid(120, 110, 100, GridWidth - 564, 104, 130);
+        var historyButton = new Button { Text = "History…" };
+        historyButton.Click += (_, _) => ShowMeasurementHistory();
         _recordHudButton.Text = "Record HUD";
         _recordHudButton.Click += (_, _) => ToggleHudRecording();
         _toolTip.SetToolTip(_recordHudButton, "Record the tracked ability slots at 60 FPS for troubleshooting.");
@@ -455,9 +474,10 @@ internal sealed partial class MainForm : Form
         _hudRecordingStatus.ForeColor = TrackerTheme.Muted;
         Place(recording, _recordHudButton, 0, 0);
         Place(recording, openFolderButton, 1, 0);
-        Place(recording, _hudRecordingStatus, 2, 0);
-        Place(recording, selectionGuideButton, 3, 0);
-        Place(recording, resetSelectionsButton, 4, 0);
+        Place(recording, historyButton, 2, 0);
+        Place(recording, _hudRecordingStatus, 3, 0);
+        Place(recording, selectionGuideButton, 4, 0);
+        Place(recording, resetSelectionsButton, 5, 0);
 
         _stateStatus.AutoSize = false;
         _stateStatus.Height = 24;
@@ -532,8 +552,9 @@ internal sealed partial class MainForm : Form
         captureSection.Anchor = AnchorStyles.Top | AnchorStyles.Left;
         overlaySection.Anchor = AnchorStyles.Top | AnchorStyles.Left;
         settingsPage.Controls.Add(settingsColumns);
-        var updateRow = Grid(172, GridWidth - 172);
+        var updateRow = Grid(172, 120, GridWidth - 292);
         Place(updateRow, _updateButton, 0, 0);
+        Place(updateRow, _changelogButton, 1, 0);
         settingsPage.Controls.Add(updateRow);
         root.Controls.Add(header);
         root.Controls.Add(navigation);
@@ -1090,6 +1111,7 @@ internal sealed partial class MainForm : Form
                         _repeatTest.ObserveState(slot.Kind, tracker.State, timestamp);
                         if (completed && tracker.LastDuration is { } duration)
                         {
+                            RecordValidatedMeasurement(slot.Kind, tracker, timestamp);
                             _repeatTest.RecordRecharge(slot.Kind, duration, timestamp, tracker.LastRegressionDuration);
                         }
                         if (tracker.MeasurementDiscarded && _repeatTest.Ability == slot.Kind && _repeatTest.IsActive)
@@ -1206,7 +1228,7 @@ internal sealed partial class MainForm : Form
 
                 if (!_monitoring)
                 {
-                    _statusLabels[kind].Text = "Paused";
+                    _statusLabels[kind].Text = PausedMeasurementStatus(tracker);
                     _statusLabels[kind].ForeColor = TrackerTheme.Muted;
                     continue;
                 }
@@ -1327,20 +1349,25 @@ internal sealed partial class MainForm : Form
             return;
         }
 
-        if (_availableUpdate is null)
-        {
-            await CheckForUpdateAsync(interactive: true);
-        }
+        await CheckAndOfferUpdateAsync(
+            () => CheckForUpdateAsync(interactive: true),
+            InstallUpdateAsync);
+    }
 
-        if (_availableUpdate is { } release)
+    internal static async Task CheckAndOfferUpdateAsync(
+        Func<Task<UpdateRelease?>> checkForUpdate,
+        Func<UpdateRelease, Task> offerUpdate)
+    {
+        if (await checkForUpdate() is { } release)
         {
-            await InstallUpdateAsync(release);
+            await offerUpdate(release);
         }
     }
 
-    private async Task CheckForUpdateAsync(bool interactive)
+    private async Task<UpdateRelease?> CheckForUpdateAsync(bool interactive)
     {
         _updateBusy = true;
+        _availableUpdate = null;
         _updateButton.Enabled = false;
         _updateButton.Text = "Checking…";
         try
@@ -1370,6 +1397,8 @@ internal sealed partial class MainForm : Form
                 _updateButton.Font = _availableUpdate is null ? Font : new Font(Font, FontStyle.Bold);
             }
         }
+
+        return _availableUpdate;
     }
 
     private async Task InstallUpdateAsync(UpdateRelease release)
@@ -1400,6 +1429,14 @@ internal sealed partial class MainForm : Form
         {
             var progress = new Progress<double>(fraction => _updateButton.Text = $"Downloading… {fraction:P0}");
             var installer = await UpdateChecker.DownloadAsync(release, progress, CancellationToken.None);
+            if (!SaveSettings())
+            {
+                _updateBusy = false;
+                _updateButton.Enabled = true;
+                _updateButton.Text = $"Update to {release.Tag}…";
+                return;
+            }
+
             _updateButton.Text = "Installing…";
             UpdateChecker.LaunchInstaller(installer);
             Close();
@@ -1418,6 +1455,85 @@ internal sealed partial class MainForm : Form
             if (openPage == DialogResult.Yes)
             {
                 System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(release.PageUrl.ToString()) { UseShellExecute = true });
+            }
+        }
+    }
+
+    private async Task OpenChangelogAsync(bool startup)
+    {
+        if (_changelogBusy)
+        {
+            return;
+        }
+
+        _changelogBusy = true;
+        _changelogButton.Enabled = false;
+        _changelogButton.Text = "Loading…";
+        try
+        {
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            IReadOnlyList<ChangelogRelease> releases;
+            var hasUnseenVersions = _lastChangelogVersion < UpdateChecker.CurrentVersion;
+            if (hasUnseenVersions)
+            {
+                releases = await UpdateChecker.GetChangelogAsync(
+                    _lastChangelogVersion,
+                    UpdateChecker.CurrentVersion,
+                    timeout.Token);
+            }
+            else
+            {
+                releases = await UpdateChecker.GetRecentChangelogAsync(
+                    UpdateChecker.CurrentVersion,
+                    maximumReleases: 10,
+                    timeout.Token);
+            }
+
+            if (releases.Count > 0)
+            {
+                var summary = hasUnseenVersions
+                    ? $"Changes since v{_lastChangelogVersion.ToString(3)} · {releases.Count} release{(releases.Count == 1 ? string.Empty : "s")}"
+                    : $"Recent releases · {releases.Count} release{(releases.Count == 1 ? string.Empty : "s")}";
+                using var dialog = new ChangelogForm("D2 Ability Recharge Tracker — Changelog", summary, releases);
+                dialog.ShowDialog(this);
+            }
+            else if (!startup)
+            {
+                MessageBox.Show(this, "No release notes are available for this version.", Text,
+                    MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+
+            if (hasUnseenVersions)
+            {
+                var previousVersion = _lastChangelogVersion;
+                _settings.LastChangelogVersion = UpdateChecker.CurrentVersion.ToString(3);
+                if (SaveSettings())
+                {
+                    _lastChangelogVersion = UpdateChecker.CurrentVersion;
+                    _startupChangelogPending = false;
+                }
+                else
+                {
+                    _settings.LastChangelogVersion = previousVersion.ToString(3);
+                }
+            }
+        }
+        catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException or System.Text.Json.JsonException or InvalidDataException)
+        {
+            MessageBox.Show(this,
+                $"Couldn't load the changelog: {exception.Message}{Environment.NewLine}{Environment.NewLine}" +
+                "Your version history was not advanced. Try again with the Changelog button.",
+                Text,
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Warning);
+        }
+        finally
+        {
+            _changelogBusy = false;
+            if (!IsDisposed)
+            {
+                _changelogButton.Enabled = true;
+                _changelogButton.Text = "Changelog";
             }
         }
     }
@@ -1722,13 +1838,13 @@ internal sealed partial class MainForm : Form
                 _repeatTest.Stop();
             }
 
-            foreach (var tracker in _trackers.Values)
-            {
-                tracker.ResetCycle();
-            }
-
             if (enabled)
             {
+                foreach (var tracker in _trackers.Values)
+                {
+                    tracker.ResetCycle();
+                }
+
                 RefreshCaptureRegions();
             }
         }
@@ -1738,6 +1854,22 @@ internal sealed partial class MainForm : Form
     }
 
     private bool IsTracked(AbilityKind kind) => _settings.SoloAbility is not { } solo || solo == kind;
+
+    internal static string PausedMeasurementStatus(AbilitySlotTracker tracker)
+    {
+        var state = tracker.State switch
+        {
+            AbilityState.Recharging => $"Recharging · {FormatDuration(tracker.CurrentDuration)} (stopped)",
+            AbilityState.Consumed => "Used · waiting for start flash",
+            AbilityState.Ready => "Ready",
+            AbilityState.Complete => "Complete",
+            _ => "No active measurement"
+        };
+        var last = tracker.LastDuration is { } duration
+            ? $"\nLast {FormatDuration(duration)}{MeasurementSuffix(tracker)}{RegressionSuffix(tracker)}"
+            : string.Empty;
+        return $"{state}{last}";
+    }
 
     private void ToggleSolo(AbilityKind kind) => SetSolo(_settings.SoloAbility == kind ? null : kind);
 
@@ -1946,6 +2078,61 @@ internal sealed partial class MainForm : Form
         return new TrackerSettings();
     }
 
+    private void InitializeChangelogVersion()
+    {
+        Version? installedFromVersion = null;
+        var sourceMarkerExists = File.Exists(_updateSourceVersionPath);
+        if (sourceMarkerExists)
+        {
+            try
+            {
+                if (UpdateChecker.TryParseTag(File.ReadAllText(_updateSourceVersionPath).Trim(), out var parsed))
+                {
+                    installedFromVersion = parsed;
+                }
+                else
+                {
+                    MessageBox.Show(this, "The update's source-version marker was invalid; changelog history will start from this version.",
+                        Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                }
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                MessageBox.Show(this, $"Couldn't read the update's source-version marker: {exception.Message}",
+                    Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
+        }
+
+        var shouldSave = false;
+        if (!UpdateChecker.TryParseTag(_settings.LastChangelogVersion ?? string.Empty, out _lastChangelogVersion))
+        {
+            _lastChangelogVersion = installedFromVersion ?? UpdateChecker.CurrentVersion;
+            _settings.LastChangelogVersion = _lastChangelogVersion.ToString(3);
+            shouldSave = true;
+        }
+        else if (_lastChangelogVersion > UpdateChecker.CurrentVersion)
+        {
+            _lastChangelogVersion = UpdateChecker.CurrentVersion;
+            _settings.LastChangelogVersion = _lastChangelogVersion.ToString(3);
+            shouldSave = true;
+        }
+
+        _startupChangelogPending = UpdateChecker.IsReleaseBuild && _lastChangelogVersion < UpdateChecker.CurrentVersion;
+        var saved = !shouldSave || SaveSettings();
+        if (sourceMarkerExists && saved)
+        {
+            try
+            {
+                File.Delete(_updateSourceVersionPath);
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                MessageBox.Show(this, $"Couldn't remove the update's source-version marker: {exception.Message}",
+                    Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
+        }
+    }
+
     private void EnsureSlotSettings()
     {
         _settings.Slots ??= [];
@@ -1998,16 +2185,18 @@ internal sealed partial class MainForm : Form
 
     private AbilitySlotSettings GetSlot(AbilityKind kind) => _settings.Slots.First(slot => slot.Kind == kind);
 
-    private void SaveSettings()
+    private bool SaveSettings()
     {
         try
         {
             Directory.CreateDirectory(Path.GetDirectoryName(_settingsPath)!);
             File.WriteAllText(_settingsPath, JsonSerializer.Serialize(_settings, new JsonSerializerOptions { WriteIndented = true }));
+            return true;
         }
         catch (Exception exception)
         {
             MessageBox.Show(this, $"Couldn't save settings: {exception.Message}", Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return false;
         }
     }
 

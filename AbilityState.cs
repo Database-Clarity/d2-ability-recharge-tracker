@@ -59,6 +59,7 @@ internal sealed class TrackerSettings
     /// <summary>Custom overlay top-left in screen pixels; null uses <see cref="OverlayAnchor"/>.</summary>
     public Point? OverlayLocation { get; set; }
     public bool CheckForUpdatesOnStartup { get; set; } = true;
+    public string? LastChangelogVersion { get; set; }
     public int CaptureRate { get; set; } = 120;
     public AbilityKind TestAbility { get; set; } = AbilityKind.Grenade;
     public int TestCycles { get; set; } = 5;
@@ -199,7 +200,6 @@ internal sealed class AbilitySlotTracker
     internal const float ProgressGain = 0.982f;
     internal const float ProgressOffset = 0.0264f;
     private const double EndGapForModel = 0.1;
-    private const double MinimumRegressionCoverage = 0.2;
 
     public AbilityKind Kind { get; }
     public AbilityState State { get; private set; } = AbilityState.Unknown;
@@ -207,7 +207,7 @@ internal sealed class AbilitySlotTracker
     public TimeSpan? LastDuration { get; private set; }
     public TimeSpan? LastUncertainty { get; private set; }
     public MeasurementSource? LastSource { get; private set; }
-    /// <summary>Total recharge time from the linear regression of fill progress over the completed cycle.</summary>
+    /// <summary>Total recharge time fitted from samples between 10% and 90% charge.</summary>
     public TimeSpan? LastRegressionDuration { get; private set; }
     public TimeSpan? LastRegressionUncertainty { get; private set; }
     public TimeSpan? CurrentDuration { get; private set; }
@@ -665,12 +665,11 @@ internal sealed class AbilitySlotTracker
 
     private void Complete(AbilitySignal signal, TimeSpan duration, TimeSpan uncertainty, MeasurementSource source)
     {
-        // Keep the linear fit of the fill-up as an independent cross-check of the measured endpoint.
-        if (_model.IsReady && _model.ObservedMaximumProgress >= MinimumRegressionCoverage &&
-            _model.SecondsAt(1) is { } fitEnd && _model.SecondsUncertaintyAt(1) is { } fitSigma)
+        // The inverse slope measures a full charge without depending on either event timestamp.
+        if (_model.FinalRegression() is { } regression)
         {
-            LastRegressionDuration = TimeSpan.FromSeconds(Math.Max(0, fitEnd + _startShiftSeconds));
-            LastRegressionUncertainty = TimeSpan.FromSeconds(fitSigma);
+            LastRegressionDuration = regression.Duration;
+            LastRegressionUncertainty = regression.Uncertainty;
         }
         else
         {

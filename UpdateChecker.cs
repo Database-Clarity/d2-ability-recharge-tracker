@@ -3,6 +3,7 @@ using System.Net.Http.Headers;
 using System.Reflection;
 using System.Security.Cryptography;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 
 namespace D2AbilityTracker;
 
@@ -15,11 +16,16 @@ internal sealed record UpdateRelease(
     string? Sha256,
     Uri PageUrl);
 
+internal sealed record ChangelogRelease(Version Version, string Tag, string Body, Uri PageUrl);
+
 internal static class UpdateChecker
 {
     public const string Repository = "Database-Clarity/d2-ability-recharge-tracker";
+    public const string LatestReleaseEndpoint = $"https://api.github.com/repos/{Repository}/releases/latest";
     private const long MaximumInstallerBytes = 200L * 1024 * 1024;
-    private static readonly Uri LatestReleaseUri = new($"https://api.github.com/repos/{Repository}/releases/latest");
+    private const string ReleasesEndpoint = $"https://api.github.com/repos/{Repository}/releases";
+    private const string GitHubApiHost = "api.github.com";
+    private static readonly Uri LatestReleaseUri = new(LatestReleaseEndpoint);
     private static readonly HttpClient Http = CreateClient();
 
     public static Version CurrentVersion { get; } = ResolveCurrentVersion();
@@ -27,18 +33,87 @@ internal static class UpdateChecker
     // Local builds keep the 0.1.0 project version; CI release builds are always stamped with a later patch version.
     public static bool IsReleaseBuild => CurrentVersion > new Version(0, 1, 0);
 
-    public static async Task<UpdateRelease?> CheckAsync(CancellationToken cancellationToken)
+    public static Task<UpdateRelease?> CheckAsync(CancellationToken cancellationToken) =>
+        CheckAsync(Http, CurrentVersion, cancellationToken);
+
+    internal static async Task<UpdateRelease?> CheckAsync(
+        HttpClient http,
+        Version currentVersion,
+        CancellationToken cancellationToken)
     {
-        using var response = await Http.GetAsync(LatestReleaseUri, cancellationToken);
-        if (!response.IsSuccessStatusCode)
-        {
-            throw new HttpRequestException(response.StatusCode == System.Net.HttpStatusCode.Forbidden
-                ? "GitHub's update check limit was reached; try again later."
-                : $"GitHub returned {(int)response.StatusCode} {response.ReasonPhrase}.");
-        }
+        using var request = new HttpRequestMessage(HttpMethod.Get, LatestReleaseUri);
+        request.Headers.CacheControl = new CacheControlHeaderValue { NoCache = true };
+        using var response = await http.SendAsync(request, cancellationToken);
+        EnsureGitHubSuccess(response);
 
         var json = await response.Content.ReadAsStringAsync(cancellationToken);
-        return ParseLatestRelease(json, CurrentVersion);
+        return ParseLatestRelease(json, currentVersion);
+    }
+
+    public static async Task<IReadOnlyList<ChangelogRelease>> GetChangelogAsync(
+        Version previousVersion,
+        Version currentVersion,
+        CancellationToken cancellationToken)
+    {
+        var releases = await FetchStableReleasesAsync(cancellationToken);
+        return releases
+            .Where(release => Normalize(release.Version) > Normalize(previousVersion) &&
+                Normalize(release.Version) <= Normalize(currentVersion))
+            .OrderByDescending(release => Normalize(release.Version))
+            .ToArray();
+    }
+
+    public static async Task<IReadOnlyList<ChangelogRelease>> GetRecentChangelogAsync(
+        Version currentVersion,
+        int maximumReleases,
+        CancellationToken cancellationToken)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumReleases);
+        var releases = await FetchStableReleasesAsync(cancellationToken);
+        return releases
+            .Where(release => Normalize(release.Version) <= Normalize(currentVersion))
+            .OrderByDescending(release => Normalize(release.Version))
+            .Take(maximumReleases)
+            .ToArray();
+    }
+
+    internal static IReadOnlyList<ChangelogRelease> ParseChangelogReleases(
+        string json,
+        Version previousVersion,
+        Version currentVersion)
+    {
+        return ParseReleasePage(json)
+            .Where(release => Normalize(release.Version) > Normalize(previousVersion) &&
+                Normalize(release.Version) <= Normalize(currentVersion))
+            .OrderByDescending(release => Normalize(release.Version))
+            .ToArray();
+    }
+
+    internal static Uri? ParseNextPageUri(string? linkHeader)
+    {
+        if (string.IsNullOrWhiteSpace(linkHeader))
+        {
+            return null;
+        }
+
+        foreach (var link in linkHeader.Split(','))
+        {
+            var match = Regex.Match(link, @"^\s*<(?<url>[^>]+)>\s*;\s*(?<parameters>.*)$");
+            if (!match.Success)
+            {
+                continue;
+            }
+
+            var relation = Regex.Match(match.Groups["parameters"].Value, @"(?:^|;)\s*rel\s*=\s*""?(?<rel>[^"";\s]+)");
+            if (relation.Success &&
+                string.Equals(relation.Groups["rel"].Value, "next", StringComparison.OrdinalIgnoreCase) &&
+                Uri.TryCreate(match.Groups["url"].Value, UriKind.Absolute, out var next))
+            {
+                return next;
+            }
+        }
+
+        return null;
     }
 
     public static UpdateRelease? ParseLatestRelease(string json, Version currentVersion)
@@ -94,6 +169,12 @@ internal static class UpdateChecker
         if (text.StartsWith('v') || text.StartsWith('V'))
         {
             text = text[1..];
+        }
+
+        if (!Regex.IsMatch(text, @"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$", RegexOptions.CultureInvariant))
+        {
+            version = null!;
+            return false;
         }
 
         return Version.TryParse(text, out version!) && version.Build >= 0;
@@ -158,6 +239,94 @@ internal static class UpdateChecker
 
     private static Version Normalize(Version version) =>
         new(version.Major, version.Minor, Math.Max(version.Build, 0));
+
+    private static async Task<IReadOnlyList<ChangelogRelease>> FetchStableReleasesAsync(CancellationToken cancellationToken)
+    {
+        var releases = new List<ChangelogRelease>();
+        var nextPage = new Uri($"{ReleasesEndpoint}?per_page=100&page=1");
+        var visitedPages = new HashSet<string>(StringComparer.Ordinal);
+        while (true)
+        {
+            if (!visitedPages.Add(nextPage.AbsoluteUri))
+            {
+                throw new InvalidDataException("GitHub returned a repeated release page while loading the changelog.");
+            }
+
+            using var response = await Http.GetAsync(nextPage, cancellationToken);
+            EnsureGitHubSuccess(response);
+            var json = await response.Content.ReadAsStringAsync(cancellationToken);
+            releases.AddRange(ParseReleasePage(json));
+
+            var links = response.Headers.TryGetValues("Link", out var values) ? string.Join(",", values) : null;
+            var followingPage = ParseNextPageUri(links);
+            if (followingPage is null)
+            {
+                break;
+            }
+
+            if (followingPage.Scheme != Uri.UriSchemeHttps ||
+                !string.Equals(followingPage.Host, GitHubApiHost, StringComparison.OrdinalIgnoreCase) ||
+                !string.Equals(followingPage.AbsolutePath, new Uri(ReleasesEndpoint).AbsolutePath, StringComparison.Ordinal))
+            {
+                throw new InvalidDataException("GitHub returned an unexpected release pagination URL.");
+            }
+
+            nextPage = followingPage;
+        }
+
+        return releases
+            .GroupBy(release => release.Tag, StringComparer.OrdinalIgnoreCase)
+            .Select(group => group.First())
+            .ToArray();
+    }
+
+    private static IReadOnlyList<ChangelogRelease> ParseReleasePage(string json)
+    {
+        using var document = JsonDocument.Parse(json);
+        if (document.RootElement.ValueKind != JsonValueKind.Array)
+        {
+            throw new InvalidDataException("GitHub returned an invalid release list.");
+        }
+
+        var releases = new List<ChangelogRelease>();
+        foreach (var root in document.RootElement.EnumerateArray())
+        {
+            if (root.ValueKind != JsonValueKind.Object ||
+                root.TryGetProperty("draft", out var draft) && draft.ValueKind == JsonValueKind.True ||
+                root.TryGetProperty("prerelease", out var prerelease) && prerelease.ValueKind == JsonValueKind.True ||
+                !root.TryGetProperty("tag_name", out var tagElement) ||
+                tagElement.ValueKind != JsonValueKind.String ||
+                tagElement.GetString() is not { } tag ||
+                !TryParseTag(tag, out var version))
+            {
+                continue;
+            }
+
+            var body = root.TryGetProperty("body", out var bodyElement) && bodyElement.ValueKind == JsonValueKind.String
+                ? bodyElement.GetString() ?? string.Empty
+                : string.Empty;
+            var pageUrl = root.TryGetProperty("html_url", out var html) &&
+                html.ValueKind == JsonValueKind.String &&
+                Uri.TryCreate(html.GetString(), UriKind.Absolute, out var page) &&
+                page.Scheme == Uri.UriSchemeHttps &&
+                string.Equals(page.Host, "github.com", StringComparison.OrdinalIgnoreCase)
+                    ? page
+                    : new Uri($"https://github.com/{Repository}/releases/tag/{Uri.EscapeDataString(tag)}");
+            releases.Add(new ChangelogRelease(version, tag, body, pageUrl));
+        }
+
+        return releases;
+    }
+
+    private static void EnsureGitHubSuccess(HttpResponseMessage response)
+    {
+        if (!response.IsSuccessStatusCode)
+        {
+            throw new HttpRequestException(response.StatusCode == System.Net.HttpStatusCode.Forbidden
+                ? "GitHub's update check limit was reached; try again later."
+                : $"GitHub returned {(int)response.StatusCode} {response.ReasonPhrase}.");
+        }
+    }
 
     private static Version ResolveCurrentVersion()
     {
