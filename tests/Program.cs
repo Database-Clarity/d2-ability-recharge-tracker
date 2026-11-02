@@ -100,6 +100,15 @@ if (args.Length == 2 && args[0] == "--ui-smoke")
                     smokeHistory.TryAddMeasurement(new MeasurementHistoryEntry(
                         Guid.NewGuid(), AbilityKind.Grenade, 64.25, 64.22, 0.02, 0.16,
                         MeasurementSource.Event, DateTimeOffset.UtcNow, "Grenade stat 5", null));
+                    var sampleRun = Guid.NewGuid();
+                    var sampleCycles = Enumerable.Range(0, 3).Select(index => new MeasurementHistoryEntry(
+                        Guid.NewGuid(), AbilityKind.Grenade, 64.23 + index * 0.02, 64.20 + index * 0.02,
+                        0.02, 0.16, MeasurementSource.Event, DateTimeOffset.UtcNow.AddSeconds(index),
+                        null, null, RepeatTestId: sampleRun)).ToArray();
+                    foreach (var cycle in sampleCycles) smokeHistory.TryAddMeasurement(cycle);
+                    var sampleMean = RepeatMeasurementSummary.Create(sampleRun, sampleCycles, DateTime.UtcNow.AddSeconds(4));
+                    smokeHistory.TryAddMeasurement(sampleMean);
+                    smokeHistory.SaveNote(sampleMean.Id, "Grenade stat 5 · repeat test");
                     using var historyForm = new MeasurementHistoryForm(smokeHistory);
                     historyForm.Show(form);
                     historyForm.PerformLayout();
@@ -127,6 +136,9 @@ if (args.Length == 2 && args[0] == "--ui-smoke")
                     Assert(sessionActions.Controls.Cast<Control>().Select(control => control.Height).Distinct().Count() == 1,
                         "Session name field and its action buttons must have the same height.");
                     var historyGrid = Descendants(historyForm).OfType<DataGridView>().Single();
+                    Assert(historyGrid.Rows.Cast<DataGridViewRow>().Any(row => row.Cells["Result"].Value?.ToString() == "Mean · 3" &&
+                        row.Cells["Measured"].Value?.ToString()?.Contains("± 0.023 s") == true),
+                        "History must display repeat count and aggregate uncertainty alongside individual cycles.");
                     foreach (var bar in historyGrid.Controls.OfType<ScrollBar>().Where(bar => bar.Visible))
                     {
                         using var scrollbarImage = new Bitmap(bar.Width, bar.Height);
@@ -204,6 +216,10 @@ if (args.Length == 2 && args[0] == "--ui-smoke")
                     using var multiPicker = new RegionPicker(hud, source, new Rectangle(0, 0, 1080, 900),
                         "test HUD", initialSelections: regions);
                     multiPicker.Show(form);
+                    var clusterOnScreen = multiPicker.SelectionClusterOnScreen;
+                    Assert(clusterOnScreen.Width >= 1080 * 0.5f && clusterOnScreen.Width <= 1080 * 0.8f &&
+                        clusterOnScreen.Left >= 0 && clusterOnScreen.Right <= 1080,
+                        "Auto-selection must open zoomed around the entire three-slot cluster with comfortable margins.");
                     using (var image = new Bitmap(multiPicker.Width, multiPicker.Height))
                     {
                         multiPicker.DrawToBitmap(image, new Rectangle(Point.Empty, image.Size));
@@ -214,6 +230,20 @@ if (args.Length == 2 && args[0] == "--ui-smoke")
                     confirm.PerformClick();
                     Assert(multiPicker.DialogResult == DialogResult.OK && multiPicker.SelectedRegions.SequenceEqual(regions),
                         "A single confirmation must return all three regions together.");
+                    using var fullFrame = new Bitmap(3840, 2160);
+                    using (var graphics = Graphics.FromImage(fullFrame)) graphics.DrawImageUnscaled(hud, 100, 1600);
+                    var fullRegions = regions.Select(region => new Rectangle(region.X + 100, region.Y + 1600, region.Width, region.Height)).ToArray();
+                    using var fullPicker = new RegionPicker(fullFrame, new Rectangle(0, 0, 3840, 2160),
+                        new Rectangle(0, 0, 1920, 1080), "full gameplay frame", initialSelections: fullRegions);
+                    fullPicker.Show(form);
+                    var fullCluster = fullPicker.SelectionClusterOnScreen;
+                    Assert(fullCluster.Width >= 960 && fullCluster.Width <= 1536 &&
+                        fullCluster.Left >= 0 && fullCluster.Right <= 1920 &&
+                        fullCluster.Top >= 110 && fullCluster.Bottom <= 1028,
+                        $"A small HUD within a full 4K frame must auto-zoom into a large, entirely visible three-slot cluster; got {fullCluster}.");
+                    Descendants(fullPicker).OfType<Button>().Single(button => button.Text == "Use all three").PerformClick();
+                    Assert(fullPicker.SelectedRegions.SequenceEqual(fullRegions),
+                        "Zoom must preserve original full-frame selection coordinates.");
                 }
                 catch (Exception exception)
                 {
@@ -253,6 +283,7 @@ if (args.Length > 0 && args[0] == "--replay")
 var start = DateTime.UnixEpoch;
 ChangelogTests.Run();
 MeasurementHistoryTests.Run();
+RepeatSummaryTests.Run();
 using (var pathFont = new Font("Segoe UI", 9))
 {
     const string path = @"C:\Users\Somebody\Documents\D2AbilityTracker\HUD recordings\latest-hud.zip";

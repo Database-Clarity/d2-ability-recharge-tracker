@@ -1161,8 +1161,12 @@ internal sealed partial class MainForm : AppWindow
                         _repeatTest.ObserveState(slot.Kind, tracker.State, timestamp);
                         if (completed && tracker.LastDuration is { } duration)
                         {
-                            RecordValidatedMeasurement(slot.Kind, tracker, timestamp);
-                            _repeatTest.RecordRecharge(slot.Kind, duration, timestamp, tracker.LastRegressionDuration);
+                            var validated = RecordValidatedMeasurement(slot.Kind, tracker, timestamp);
+                            var completingRepeat = _repeatTest.Ability == slot.Kind &&
+                                _repeatTest.Phase == RepeatTestPhase.WaitingForRecharge;
+                            _repeatTest.RecordRecharge(slot.Kind, duration, timestamp, tracker.LastRegressionDuration, validated);
+                            if (completingRepeat && _repeatTest.ValidatedSummary is { } summary)
+                                SaveHistoryEntry(summary, _repeatHistorySessionId);
                         }
                         if (tracker.MeasurementDiscarded && _repeatTest.Ability == slot.Kind && _repeatTest.IsActive)
                         {
@@ -1792,6 +1796,7 @@ internal sealed partial class MainForm : AppWindow
 
         lock (_captureSync)
         {
+            _repeatHistorySessionId = _measurementHistory?.ActiveSessionId;
             _repeatTest.Start(
                 ability,
                 decimal.ToInt32(_testCyclesPicker.Value),

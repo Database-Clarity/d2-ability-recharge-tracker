@@ -107,9 +107,10 @@ internal sealed class MeasurementHistoryForm : AppWindow
         foreach (var bar in _measurements.Controls.OfType<ScrollBar>())
             _ = new ScrollBarSkin(bar);
         AddTextColumn("Ability", "Ability", 90);
+        AddTextColumn("Result", "Result", 90);
         AddTextColumn("Measured", "Measured ±", 190);
         AddTextColumn("Regression", "Regression ±", 190);
-        AddTextColumn("Time", "Measured at", 120);
+        AddTextColumn("Time", "Measured at", 110);
         AddTextColumn("Note", "Note", 200, fill: true);
         _measurements.Columns["Measured"]!.ToolTipText = "Observed event-to-event duration ± measurement uncertainty, in seconds.";
         _measurements.Columns["Regression"]!.ToolTipText = "Full duration fitted from 10–90% charge ± regression uncertainty, in seconds.";
@@ -349,11 +350,20 @@ internal sealed class MeasurementHistoryForm : AppWindow
                 : string.Empty;
             var index = _measurements.Rows.Add(
                 AbilityName(measurement.Ability),
+                measurement.Id == measurement.RepeatTestId ? $"Mean · {measurement.CycleCount}" :
+                    measurement.RepeatTestId is not null ? "Cycle" : "Single",
                 $"{DurationDisplay.Format(TimeSpan.FromSeconds(measurement.DurationSeconds))} ± {measurement.UncertaintySeconds:F3} s",
                 regression + regressionUncertainty,
                 measurement.MeasuredAt.ToLocalTime().ToString("g"),
                 measurement.Note ?? string.Empty);
             _measurements.Rows[index].Tag = measurement.Id;
+            if (measurement.Id == measurement.RepeatTestId)
+            {
+                var row = _measurements.Rows[index];
+                row.DefaultCellStyle.ForeColor = TrackerTheme.Accent;
+                row.Cells["Result"].ToolTipText = $"Repeat-test mean of {measurement.CycleCount} validated cycles. Uncertainty combines the mean per-cycle uncertainty floor with the standard error from cycle scatter.";
+                row.Cells["Regression"].ToolTipText = $"Regression mean uses {measurement.RegressionCycleCount}/{measurement.CycleCount} cycles with validated 10–90% fits.";
+            }
         }
 
         if (preferredMeasurementId is { } id)

@@ -94,6 +94,37 @@ internal static class MeasurementHistoryTests
                 "Starting a new session should end the previous active session.");
             Assert(restored.ActiveSessionId == secondSession.Id, "The active named session should persist.");
 
+            var run = Guid.NewGuid();
+            var cycles = new[]
+            {
+                measurement with { Id = Guid.NewGuid(), DurationSeconds = 10, UncertaintySeconds = 0.1, RegressionSeconds = 9.9, RegressionUncertaintySeconds = 0.2, RepeatTestId = run },
+                measurement with { Id = Guid.NewGuid(), DurationSeconds = 12, UncertaintySeconds = 0.3, RegressionSeconds = null, RegressionUncertaintySeconds = null, RepeatTestId = run }
+            };
+            var summary = RepeatMeasurementSummary.Create(run, cycles, measuredAt.AddMinutes(2));
+            Assert(summary.DurationSeconds == 11 &&
+                Math.Abs(summary.UncertaintySeconds - Math.Sqrt(1.04)) < 0.000001,
+                "Aggregate uncertainty must include scatter of the mean and retain the correlated timing floor.");
+            Assert(summary.RegressionCycleCount == 1 && summary.RegressionSeconds == 9.9 &&
+                summary.RegressionUncertaintySeconds == 0.2,
+                "Regression aggregation must include only cycles with a fit and disclose its count.");
+            var repeated = RepeatMeasurementSummary.Aggregate([(10, 0.2), (10, 0.2), (10, 0.2)]);
+            Assert(repeated.Mean == 10 && Math.Abs(repeated.Uncertainty - 0.2) < 0.000001,
+                "Repeated identical cycles must not erase a possibly shared timing uncertainty.");
+            Assert(restored.TryAddMeasurement(summary, firstSession.Id),
+                "A repeat result must remain attached to its original session even after the active session changes.");
+            restored.SaveNote(summary.Id, "Repeated at grenade stat 5");
+            Assert(!restored.TryAddMeasurement(summary, firstSession.Id), "Saving a repeat summary twice must be idempotent.");
+            var restoredRepeat = new MeasurementHistoryStore(path).Measurements.Single(item => item.Id == run);
+            Assert(restoredRepeat.CycleCount == 2 && restoredRepeat.RegressionCycleCount == 1 &&
+                restoredRepeat.RepeatTestId == run && restoredRepeat.SessionId == firstSession.Id &&
+                restoredRepeat.Note == "Repeated at grenade stat 5" && restoredRepeat.UncertaintySeconds == summary.UncertaintySeconds,
+                "Repeat aggregates, uncertainty, notes, counts, and original session must round-trip.");
+            var oneRun = Guid.NewGuid();
+            var oneCycle = cycles[0] with { Id = Guid.NewGuid(), RepeatTestId = oneRun, MeasuredAt = summary.MeasuredAt };
+            var oneSummary = RepeatMeasurementSummary.Create(oneRun, [oneCycle], summary.MeasuredAt.UtcDateTime);
+            Assert(restored.TryAddMeasurement(oneCycle) && restored.TryAddMeasurement(oneSummary),
+                "A one-cycle repeat mean and its individual cycle must both be retained even with identical values and timestamps.");
+
             Assert(restored.EndActiveSession(new DateTimeOffset(measuredAt.AddMinutes(2))),
                 "Ending an active session should succeed.");
             var ended = new MeasurementHistoryStore(path);

@@ -3,6 +3,7 @@ namespace D2AbilityTracker;
 internal sealed partial class MainForm
 {
     private MeasurementHistoryStore? _measurementHistory;
+    private Guid? _repeatHistorySessionId;
 
     private void InitializeMeasurementHistory()
     {
@@ -20,7 +21,7 @@ internal sealed partial class MainForm
         form.ShowDialog(this);
     }
 
-    private void RecordValidatedMeasurement(AbilityKind kind, AbilitySlotTracker tracker, DateTime timestamp)
+    private MeasurementHistoryEntry? RecordValidatedMeasurement(AbilityKind kind, AbilitySlotTracker tracker, DateTime timestamp)
     {
         if (!MeasurementHistoryStore.TryCreateValidatedMeasurement(
             kind,
@@ -36,9 +37,17 @@ internal sealed partial class MainForm
             out var measurement) ||
             measurement is null)
         {
-            return;
+            return null;
         }
 
+        var repeatCycle = _repeatTest.IsActive && _repeatTest.Ability == kind;
+        if (repeatCycle) measurement = measurement with { RepeatTestId = _repeatTest.RunId };
+        SaveHistoryEntry(measurement, repeatCycle ? _repeatHistorySessionId : _measurementHistory?.ActiveSessionId);
+        return measurement;
+    }
+
+    private void SaveHistoryEntry(MeasurementHistoryEntry measurement, Guid? sessionId)
+    {
         void SaveMeasurement()
         {
             try
@@ -46,7 +55,7 @@ internal sealed partial class MainForm
                 _measurementHistory ??= new MeasurementHistoryStore();
                 if (_measurementHistory.CanWrite)
                 {
-                    _measurementHistory.TryAddMeasurement(measurement);
+                    _measurementHistory.TryAddMeasurement(measurement, sessionId);
                 }
             }
             catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException or InvalidOperationException)

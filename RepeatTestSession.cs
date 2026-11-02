@@ -18,6 +18,9 @@ internal sealed class RepeatTestSession
     private DateTime? _automaticUseDeadline;
     private readonly List<TimeSpan> _durations = [];
     private readonly List<TimeSpan> _regressionDurations = [];
+    private readonly List<MeasurementHistoryEntry> _validatedCycles = [];
+    private MeasurementHistoryEntry? _validatedSummary;
+    public Guid RunId { get; private set; }
 
     public AbilityKind? Ability { get; private set; }
     public InputBinding? UseBinding { get; private set; }
@@ -50,7 +53,7 @@ internal sealed class RepeatTestSession
             RepeatTestPhase.AwaitingRechargeAfterAutomaticUse =>
                 $"Sent ability input · waiting for the next cooldown (cycle {CompletedCycles + 1}/{TargetCycles}).",
             RepeatTestPhase.Completed =>
-                $"Finished {CompletedCycles}/{TargetCycles} cycles · average {FormatDuration(AverageDuration)}{RegressionSummary()}.",
+                $"Finished {CompletedCycles}/{TargetCycles} cycles · average {FormatDuration(AverageDuration)}{UncertaintySummary()}{RegressionSummary()}.",
             RepeatTestPhase.Stopped => "Test stopped.",
             RepeatTestPhase.Failed => $"Test stopped: {FailureReason}",
             _ => "Test ready."
@@ -75,6 +78,10 @@ internal sealed class RepeatTestSession
         TargetCycles = targetCycles;
         UseBinding = useBinding;
         _durations.Clear();
+        _regressionDurations.Clear();
+        _validatedCycles.Clear();
+        _validatedSummary = null;
+        RunId = Guid.NewGuid();
         _nextUseAt = null;
         _automaticUseDeadline = null;
         FailureReason = null;
@@ -108,7 +115,8 @@ internal sealed class RepeatTestSession
         }
     }
 
-    public void RecordRecharge(AbilityKind ability, TimeSpan duration, DateTime timestamp, TimeSpan? regression = null)
+    public void RecordRecharge(AbilityKind ability, TimeSpan duration, DateTime timestamp, TimeSpan? regression = null,
+        MeasurementHistoryEntry? validated = null)
     {
         if (ability != Ability || Phase != RepeatTestPhase.WaitingForRecharge || duration <= TimeSpan.Zero)
         {
@@ -116,9 +124,14 @@ internal sealed class RepeatTestSession
         }
 
         _durations.Add(duration);
+        if (regression is { } fitted && fitted > TimeSpan.Zero) _regressionDurations.Add(fitted);
+        if (validated is not null && validated.Ability == ability && validated.DurationSeconds == duration.TotalSeconds)
+            _validatedCycles.Add(validated);
         if (CompletedCycles >= TargetCycles)
         {
             Phase = RepeatTestPhase.Completed;
+            if (_validatedCycles.Count == TargetCycles)
+                _validatedSummary = RepeatMeasurementSummary.Create(RunId, _validatedCycles, timestamp);
             return;
         }
 
@@ -176,8 +189,18 @@ internal sealed class RepeatTestSession
 
     private string RegressionSummary() =>
         AverageRegressionDuration is { } fitted
-            ? $" · regression {FormatDuration(fitted)} ({_regressionDurations.Count}/{CompletedCycles})"
+            ? $" · regression {FormatDuration(fitted)}{RegressionUncertaintySummary()} ({_regressionDurations.Count}/{CompletedCycles})"
             : string.Empty;
+
+    private string UncertaintySummary() => ValidatedSummary is { } summary
+        ? $" ± {summary.UncertaintySeconds:F3} s"
+        : " · aggregate not validated";
+
+    private string RegressionUncertaintySummary() => ValidatedSummary is { RegressionUncertaintySeconds: { } spread }
+        ? $" ± {spread:F3} s" : string.Empty;
+
+    public MeasurementHistoryEntry? ValidatedSummary =>
+        Phase == RepeatTestPhase.Completed ? _validatedSummary : null;
 
     private static string FormatDuration(TimeSpan? duration) =>
         DurationDisplay.Format(duration);

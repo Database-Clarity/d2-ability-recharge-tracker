@@ -194,12 +194,7 @@ internal sealed class RegionPicker : Form
         _applyButton.Enabled = ValidSelections();
         if (initialSelections is not null && _selections.All(selection => selection is not null))
         {
-            var cluster = _selections.Select(selection => selection!.Value).Aggregate(RectangleF.Union);
-            _sourceCenter = new PointF(cluster.Left + cluster.Width / 2, cluster.Top + cluster.Height / 2);
-            _zoom = Math.Clamp(Math.Min(_viewport.Width / (cluster.Width * 1.8f),
-                _viewport.Height / (cluster.Height * 3)) / FitScale(), 1, 8);
-            _scale = FitScale() * _zoom;
-            _zoomLabel.Text = $"{_zoom:P0}";
+            ZoomToSelections();
         }
 
         MouseWheel += (_, e) => SetZoom(_zoom * (e.Delta > 0 ? 1.2f : 1f / 1.2f), e.Location);
@@ -505,6 +500,19 @@ internal sealed class RegionPicker : Form
         guide.ShowDialog(this);
     }
 
+    internal RectangleF SelectionClusterOnScreen =>
+        SourceToScreen(_selections.Where(selection => selection is not null).Select(selection => selection!.Value).Aggregate(RectangleF.Union));
+
+    private void ZoomToSelections()
+    {
+        var cluster = _selections.Select(selection => selection!.Value).Aggregate(RectangleF.Union);
+        _sourceCenter = new PointF(cluster.Left + cluster.Width / 2, cluster.Top + cluster.Height / 2);
+        _zoom = Math.Clamp(Math.Min(_viewport.Width / (cluster.Width * 1.5f),
+            _viewport.Height / (cluster.Height * 2)) / FitScale(), 1, 32);
+        _scale = FitScale() * _zoom;
+        _zoomLabel.Text = $"{_zoom:P0}";
+    }
+
     private RectangleF ImageDestination()
     {
         _scale = FitScale() * _zoom;
@@ -537,7 +545,7 @@ internal sealed class RegionPicker : Form
 
     private void SetZoom(float zoom, PointF screenAnchor)
     {
-        var nextZoom = Math.Clamp(zoom, 0.5f, 8f);
+        var nextZoom = Math.Clamp(zoom, 0.5f, 32f);
         if (Math.Abs(nextZoom - _zoom) < 0.001f)
         {
             return;

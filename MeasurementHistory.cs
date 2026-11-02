@@ -13,7 +13,10 @@ internal sealed record MeasurementHistoryEntry(
     MeasurementSource Source,
     DateTimeOffset MeasuredAt,
     string? Note,
-    Guid? SessionId);
+    Guid? SessionId,
+    int CycleCount = 1,
+    int? RegressionCycleCount = null,
+    Guid? RepeatTestId = null);
 
 internal sealed record MeasurementHistorySession(
     Guid Id,
@@ -98,11 +101,20 @@ internal sealed class MeasurementHistoryStore
 
     public bool TryAddMeasurement(MeasurementHistoryEntry measurement)
     {
+        lock (_sync) return TryAddMeasurement(measurement, _activeSessionId);
+    }
+
+    public bool TryAddMeasurement(MeasurementHistoryEntry measurement, Guid? sessionId)
+    {
         ValidateMeasurement(measurement);
         lock (_sync)
         {
             EnsureWritable();
             if (_measurements.Any(existing =>
+                existing.Id == measurement.Id ||
+                (existing.Id == existing.RepeatTestId) == (measurement.Id == measurement.RepeatTestId) &&
+                existing.CycleCount == measurement.CycleCount &&
+                existing.RepeatTestId == measurement.RepeatTestId &&
                 existing.Ability == measurement.Ability &&
                 existing.MeasuredAt == measurement.MeasuredAt &&
                 existing.DurationSeconds == measurement.DurationSeconds &&
@@ -111,7 +123,7 @@ internal sealed class MeasurementHistoryStore
                 return false;
             }
 
-            var entry = measurement with { SessionId = _activeSessionId };
+            var entry = measurement with { SessionId = sessionId };
             Commit(_sessions, [.. _measurements, entry], _activeSessionId);
             return true;
         }
@@ -356,6 +368,13 @@ internal sealed class MeasurementHistoryStore
     private static void ValidateMeasurement(MeasurementHistoryEntry measurement)
     {
         if (measurement is null || measurement.Id == Guid.Empty ||
+            measurement.CycleCount is < 1 or > 100 ||
+            measurement.RegressionCycleCount is { } count && (count < 0 || count > measurement.CycleCount) ||
+            measurement.RepeatTestId == Guid.Empty ||
+            measurement.CycleCount > 1 && (measurement.RepeatTestId is null || measurement.RegressionCycleCount is null) ||
+            measurement.Id == measurement.RepeatTestId &&
+                (measurement.RegressionCycleCount is null ||
+                 (measurement.RegressionSeconds is null) != (measurement.RegressionCycleCount == 0)) ||
             !Enum.IsDefined(measurement.Ability) ||
             measurement.Source != MeasurementSource.Event ||
             !double.IsFinite(measurement.DurationSeconds) || measurement.DurationSeconds <= 0 ||
