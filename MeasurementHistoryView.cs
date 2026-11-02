@@ -109,12 +109,12 @@ internal sealed class MeasurementHistoryView : UserControl
         _measurements.EnableHeadersVisualStyles = false;
         foreach (var bar in _measurements.Controls.OfType<ScrollBar>())
             _ = new ScrollBarSkin(bar);
-        AddTextColumn("Ability", "Ability", 62);
-        AddTextColumn("Result", "Result", 70);
-        AddTextColumn("Measured", "Measured ±", 132);
-        AddTextColumn("Regression", "Regression ±", 132);
-        AddTextColumn("Time", "Measured at", 104);
-        AddTextColumn("Note", "Note", 120, fill: true);
+        AddTextColumn("Ability", "Ability", 58);
+        AddTextColumn("Result", "Result", 68);
+        AddTextColumn("Measured", "Measured ±", 112);
+        AddTextColumn("Regression", "Regression ±", 112);
+        AddTextColumn("Time", "Measured at", 90);
+        AddTextColumn("Note", "Note", 104, minimumWidth: 104, fill: true);
         AddCustomColumns();
         _measurements.Columns["Measured"]!.ToolTipText = "Observed event-to-event duration ± measurement uncertainty, in seconds.";
         _measurements.Columns["Regression"]!.ToolTipText = "Full duration fitted from 10–90% charge ± regression uncertainty, in seconds.";
@@ -122,7 +122,9 @@ internal sealed class MeasurementHistoryView : UserControl
         _note.Multiline = true;
         _note.ScrollBars = ScrollBars.None;
         _note.Dock = DockStyle.Fill;
-        _note.Height = 54;
+        _note.Height = 44;
+        _note.MaxLength = 240;
+        _note.AccessibleName = "Measurement note";
         _note.BackColor = TrackerTheme.Surface;
         _saveNote.Text = "Save note";
         _assignSession.Text = "Assign to active";
@@ -152,7 +154,7 @@ internal sealed class MeasurementHistoryView : UserControl
         };
         noteRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         noteRow.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        var noteFrame = new InputFrame(_note) { Dock = DockStyle.Fill, Height = 54, MinimumSize = new Size(80, 54) };
+        var noteFrame = new InputFrame(_note) { Dock = DockStyle.Fill, Height = 44, MinimumSize = new Size(80, 44) };
         noteRow.Controls.Add(noteFrame, 0, 0);
         noteRow.Controls.Add(noteActions, 1, 0);
 
@@ -271,7 +273,9 @@ internal sealed class MeasurementHistoryView : UserControl
                 HeaderText = column,
                 Tag = column,
                 ReadOnly = !_history.CanWrite,
-                Width = 120,
+                Width = 80,
+                MinimumWidth = 72,
+                AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill,
                 SortMode = DataGridViewColumnSortMode.NotSortable
             });
         }
@@ -581,14 +585,14 @@ internal sealed class MeasurementHistoryView : UserControl
         _status.ForeColor = error ? TrackerTheme.Red : TrackerTheme.Muted;
     }
 
-    private void AddTextColumn(string name, string header, int width, bool fill = false)
+    private void AddTextColumn(string name, string header, int width, int minimumWidth = 5, bool fill = false)
     {
         _measurements.Columns.Add(new DataGridViewTextBoxColumn
         {
             Name = name,
             HeaderText = header,
             Width = width,
-            MinimumWidth = fill ? 120 : 5,
+            MinimumWidth = minimumWidth,
             AutoSizeMode = fill ? DataGridViewAutoSizeColumnMode.Fill : DataGridViewAutoSizeColumnMode.None,
             SortMode = DataGridViewColumnSortMode.NotSortable,
             ReadOnly = true

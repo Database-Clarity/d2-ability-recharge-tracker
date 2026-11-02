@@ -245,9 +245,20 @@ if (args.Length == 2 && args[0] == "--ui-smoke")
                         Assert(scrollbarImage.GetPixel(1, 1).GetBrightness() < 0.3,
                             "History scrollbars must not expose native light arrow buttons.");
                     }
-                    Assert(historyGrid.Columns["Note"]!.MinimumWidth >= 120 &&
+                    var noteEditor = Descendants(historyForm).OfType<TextBox>()
+                        .Single(textBox => textBox.AccessibleName == "Measurement note");
+                    var noteFrame = noteEditor.Parent!;
+                    var saveNote = Descendants(historyForm).OfType<Button>().Single(button => button.Text == "Save note");
+                    var assignNote = Descendants(historyForm).OfType<Button>().Single(button => button.Text == "Assign to active");
+                    Assert(historyGrid.Columns["Note"]!.MinimumWidth == 104 &&
+                        customColumn.AutoSizeMode == DataGridViewAutoSizeColumnMode.Fill &&
+                        noteEditor.MaxLength == 240 && noteEditor.Height <= 44 &&
+                        saveNote.Top == assignNote.Top &&
+                        Math.Abs(saveNote.PointToScreen(new Point(0, saveNote.Height / 2)).Y -
+                            noteFrame.PointToScreen(new Point(0, noteFrame.Height / 2)).Y) <= 1 &&
+                        !historyGrid.Controls.OfType<HScrollBar>().Any(bar => bar.Visible) &&
                         historyGrid.ScrollBars == ScrollBars.Both,
-                        "A narrow history window must retain a readable note column with horizontal scrolling.");
+                        "A custom column should share the available grid width while the compact note editor and its buttons stay aligned.");
                     Assert(!historyGrid.Columns.Contains("Uncertainty") &&
                         historyGrid.Columns["Measured"]!.HeaderText == "Measured ±" &&
                         historyGrid.Columns["Regression"]!.HeaderText == "Regression ±",

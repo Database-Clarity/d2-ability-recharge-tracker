@@ -145,6 +145,10 @@ internal static class MeasurementHistoryTests
             Assert(csv.Contains("\"Grenade Stat\",\"Loadout, notes\"") && csv.Contains("\"5\",\"'=1+1\n\"\"test\"\"\"") &&
                 csv.Contains("\"Mean\"") && csv.Contains("\"2\",\"1\"") && csv.Contains("\"Repeated at grenade stat 5\""),
                 "CSV must include custom columns, repeat counts, notes and safely quoted formula-like values.");
+            var measurementCsv = MeasurementCsv.Create([savedMeasurement], restored.Sessions, []);
+            Assert(measurementCsv.Contains("\"Measured seconds\",\"Measurement uncertainty seconds\",\"Regression seconds\",\"Regression uncertainty seconds\"") &&
+                measurementCsv.Contains("\"5\",\"0.05\",\"5.1\",\"0.1\""),
+                "CSV must export measured and regression uncertainties in their own respective columns.");
             var culture = System.Globalization.CultureInfo.CurrentCulture;
             try
             {
