@@ -44,27 +44,26 @@ internal sealed class SelectionGuide : AppWindow
         using var white = new SolidBrush(Color.White);
         using var muted = new SolidBrush(Color.FromArgb(200, 211, 224));
         using var good = new SolidBrush(Color.FromArgb(112, 223, 160));
-        using var bad = new SolidBrush(Color.FromArgb(255, 130, 130));
         using var title = new Font(Font, FontStyle.Bold);
         using var selection = new Pen(Color.FromArgb(246, 187, 67), 3) { DashStyle = DashStyle.Dash };
-        graphics.DrawString("1  Select the WHOLE square, not just the artwork", title, white, 22, 18);
+        graphics.DrawString("1  Outline the ability square", title, white, 22, 18);
         DrawSlot(graphics, 65, 65, true);
-        DrawSlot(graphics, 405, 65, true);
         graphics.DrawRectangle(selection, 63, 63, 144, 144);
-        graphics.DrawRectangle(selection, 448, 106, 54, 54);
-        graphics.DrawString("YES: background + border", title, good, 35, 222);
-        graphics.DrawString("NO: icon only", title, bad, 410, 222);
-        graphics.DrawString("Keep the outline tight. The strip below it\nis captured automatically.", Font, muted, 35, 250);
-        graphics.DrawString("Artwork and element colour are not\nused to identify the ability.", Font, muted, 410, 250);
+        graphics.DrawString(
+            "•  Line the box up with the square's outer border.\n\n" +
+            "•  Auto-detect places all three boxes for you; adjust\n    only a box that looks off.\n\n" +
+            "•  A thin margin above and below the box is added\n    automatically, so you don't need to include it.\n\n" +
+            "•  Any subclass or element works.",
+            Font, muted, 260, 70);
 
-        graphics.DrawString("2  The flash UNDER the bottom border starts the timer", title, white, 22, 305);
+        graphics.DrawString("2  How the timer starts", title, white, 22, 305);
         DrawSlot(graphics, 40, 345, false, 76);
         DrawSlot(graphics, 245, 345, false, 76);
         using var flash = new Pen(Color.FromArgb(255, 246, 187, 67), 5);
         graphics.DrawLine(flash, 247, 424, 319, 424);
         graphics.DrawString("Normal border", Font, muted, 25, 439);
         graphics.DrawString("Brief thickening", Font, good, 228, 439);
-        graphics.DrawString("Start at this captured frame.\nThe moving line inside the square\nis NOT the start trigger.", Font, muted, 410, 357);
+        graphics.DrawString("Timing starts on the frame where the\nbottom border briefly thickens, which\nis when the game begins the recharge.", Font, muted, 410, 357);
         graphics.DrawString("3  Wheel / +/-: zoom   |   Right/middle-drag: pan\nDrag inside: move   |   Drag corners: resize   |   Use all three / Use selection: confirm", Font, white, 22, 481);
         graphics.Restore(state);
     }

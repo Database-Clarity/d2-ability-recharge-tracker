@@ -36,20 +36,30 @@ internal sealed class ChangelogView : UserControl
         void RenderNotes(bool includeHistory)
         {
             content.Clear();
+            var firstRelease = true;
             foreach (var release in releases)
             {
-                Append(content, release.Tag + "\n\n", 14, FontStyle.Bold);
+                // Blank lines in the Markdown source are ignored; spacing is emitted explicitly with short spacer
+                // lines so headings, bullets and releases keep consistent, compact gaps.
+                if (!firstRelease) Spacer(content, 12);
+                firstRelease = false;
+                Append(content, release.Tag + "\n", 14, FontStyle.Bold);
                 var body = string.IsNullOrWhiteSpace(release.Body) ? "No release notes were provided." : release.Body;
+                var firstLine = true;
                 foreach (var rawLine in body.ReplaceLineEndings("\n").Split('\n'))
                 {
                     var line = rawLine.Trim();
+                    if (line.Length == 0) continue;
                     if (!includeHistory && IsHistoryLine(line)) break;
                     var isHeading = line.StartsWith('#');
                     if (isHeading) line = line.TrimStart('#', ' ');
                     if (line.StartsWith("- ") || line.StartsWith("* ")) line = "•  " + line[2..];
-                    AppendMarkdown(content, line + (isHeading ? "\n\n" : "\n"), isHeading);
+                    if (isHeading || firstLine) Spacer(content, isHeading ? 6 : 3);
+                    else if (!line.StartsWith('•')) Spacer(content, 3);
+                    AppendMarkdown(content, line + "\n", isHeading);
+                    if (isHeading) Spacer(content, 2);
+                    firstLine = false;
                 }
-                Append(content, "\n", 9, FontStyle.Regular);
             }
             content.SelectionStart = 0;
             content.SelectionLength = 0;
@@ -156,6 +166,8 @@ internal sealed class ChangelogView : UserControl
                 9, heading || bold ? FontStyle.Bold : FontStyle.Regular, code, heading);
         }
     }
+
+    private static void Spacer(RichTextBox content, float size) => Append(content, "\n", size, FontStyle.Regular);
 
     private static void Append(RichTextBox content, string text, float size, FontStyle style, bool code = false, bool muted = false)
     {

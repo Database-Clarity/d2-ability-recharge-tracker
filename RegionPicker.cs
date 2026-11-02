@@ -144,7 +144,7 @@ internal sealed class RegionPicker : Form
         var footerHint = new Label
         {
             Text = initialSelections is null
-                ? "Include the full square border; the strip below it is sampled automatically."
+                ? "Outline the full square border; a thin margin above and below is added automatically."
                 : string.Empty,
             ForeColor = Color.FromArgb(205, 215, 225),
             AutoEllipsis = true

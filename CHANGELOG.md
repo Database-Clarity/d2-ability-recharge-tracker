@@ -20,3 +20,5 @@ Add a concise, single-line bullet for each notable user-facing change in the sam
 - The Display picker leaves Settings; when Destiny 2 isn't found, area selection asks which display to preview in a small dialog.
 - The overlay header is slimmer and shows repeat-test progress (for example "Test · Cycle 2/5 · measuring"), recharging rows get a thin progress bar, and ability labels align without padding.
 - History uses clearer session verbs (**Make active**, **Add to session**, **Session filter**), and **Add column…** asks for the column name in a small dialog.
+- The in-app changelog uses compact, consistent spacing between releases, headings and bullets.
+- The selection guide shows one example with practical tips, and explains that a thin margin above and below each area is added automatically.
