@@ -119,6 +119,8 @@ if (args.Length == 2 && args[0] == "--ui-smoke")
                         }
                         Assert(form.ClientSize.Height <= 500 * form.DeviceDpi / 96f,
                             "Each page should fit a compact desktop window.");
+                        Assert(form.ClientSize.Width <= 680 * form.DeviceDpi / 96f,
+                            "The main window must stay narrow.");
                         foreach (var control in Descendants(page).Where(control => control.Visible && control is Button or ComboBox or NumericUpDown or LinkLabel))
                         {
                             var bounds = form.RectangleToClient(control.RectangleToScreen(control.ClientRectangle));
@@ -189,27 +191,33 @@ if (args.Length == 2 && args[0] == "--ui-smoke")
                     smokeHistory.TryAddMeasurement(sampleMean);
                     smokeHistory.SaveNote(sampleMean.Id, "Grenade stat 5 · repeat test");
                     smokeHistory.SaveCustomValue(sampleMean.Id, "Grenade Stat", "5");
-                    using var historyForm = new MeasurementHistoryForm(smokeHistory);
-                    historyForm.Show(form);
-                    historyForm.PerformLayout();
-                    Assert(historyForm.FormBorderStyle == FormBorderStyle.None &&
-                        Descendants(historyForm).OfType<Button>().Any(button => button.AccessibleName == "Maximize or restore"),
-                        "History must share app chrome and retain its maximize action.");
-                    Assert(WindowHitTest(historyForm, new Point(1, 1)) == 13 &&
-                        WindowHitTest(historyForm, new Point(historyForm.Width - 2, historyForm.Height - 2)) == 17,
-                        "History must retain corner resize hit targets.");
-                    var maximize = Descendants(historyForm).OfType<Button>().Single(button => button.AccessibleName == "Maximize or restore");
-                    maximize.PerformClick();
-                    Assert(historyForm.WindowState == FormWindowState.Maximized, "History must maximize.");
-                    maximize.PerformClick();
-                    Assert(historyForm.WindowState == FormWindowState.Normal, "History must restore.");
-                    using (var image = new Bitmap(historyForm.Width, historyForm.Height))
+                    form.UseMeasurementHistory(smokeHistory);
+                    var historyToggle = Descendants(form).OfType<Button>().Single(button => button.Text == "History");
+                    foreach (Button link in navigation.Controls)
                     {
-                        historyForm.DrawToBitmap(image, new Rectangle(Point.Empty, image.Size));
+                        link.PerformClick();
+                        Assert(historyToggle.Visible && historyToggle.Parent == Descendants(form).OfType<Button>().Single(button => button.Text.Contains("overlay (")).Parent,
+                            "History and overlay actions must stay available on every page.");
+                    }
+                    navigation.Controls.OfType<Button>().Single(button => button.Text == "Tracking").PerformClick();
+                    var collapsedSize = form.Size;
+                    var openForms = Application.OpenForms.Count;
+                    historyToggle.PerformClick();
+                    form.PerformLayout();
+                    var historyForm = Descendants(form).OfType<MeasurementHistoryView>().Single();
+                    Assert(form.HistoryVisible && historyForm.Visible && historyToggle.Text == "Hide history" && Application.OpenForms.Count == openForms,
+                        "History must expand inside the main window.");
+                    Assert(form.Height > collapsedSize.Height && form.Width == collapsedSize.Width &&
+                        form.RectangleToClient(historyForm.RectangleToScreen(historyForm.ClientRectangle)).Top >=
+                        form.RectangleToClient(pages.RectangleToScreen(pages.ClientRectangle)).Bottom,
+                        "History must extend the window downward below the current page.");
+                    Assert(pages.Controls.Cast<Control>().Single(control => control.Visible).Visible,
+                        "The current page must remain visible above history.");
+                    using (var image = new Bitmap(form.Width, form.Height))
+                    {
+                        form.DrawToBitmap(image, new Rectangle(Point.Empty, image.Size));
                         image.Save(Path.Combine(args[1], "ui-History.png"));
                     }
-                    historyForm.Size = historyForm.MinimumSize;
-                    historyForm.PerformLayout();
                     var sessionActions = Descendants(historyForm).Single(control => control.Name == "SessionActions");
                     var actionTops = sessionActions.Controls.Cast<Control>().Select(control => control.Top).Distinct().Count();
                     Assert(actionTops == 1, "Session controls must remain together without an orphaned action.");
@@ -250,7 +258,7 @@ if (args.Length == 2 && args[0] == "--ui-smoke")
                     {
                         Assert(historyForm.ClientRectangle.Contains(historyForm.RectangleToClient(
                             control.RectangleToScreen(control.ClientRectangle))),
-                            "Session actions must fit at the minimum window width.");
+                            "Session actions must fit inside the embedded history.");
                     }
                     using (var image = new Bitmap(historyForm.Width, historyForm.Height))
                     {
@@ -269,8 +277,9 @@ if (args.Length == 2 && args[0] == "--ui-smoke")
                     Assert(smokeHistory.ActiveSessionId is null &&
                         !Descendants(historyForm).OfType<Button>().Single(button => button.Text == "Use session").Enabled,
                         "Ending the selected session must clear activity and prevent reopening an ended session.");
-                    Descendants(historyForm).OfType<Button>().Single(button => button.AccessibleName == "Close").PerformClick();
-                    Assert(!historyForm.Visible, "The integrated close button must close its window.");
+                    historyToggle.PerformClick();
+                    Assert(!historyForm.Visible && historyToggle.Text == "History" && form.Size == collapsedSize,
+                        "Hiding history must collapse the window back to the current page.");
                     using (var guide = new SelectionGuide())
                     {
                         guide.Show(form);

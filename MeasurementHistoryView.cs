@@ -1,9 +1,8 @@
 namespace D2AbilityTracker;
 
-internal sealed class MeasurementHistoryForm : AppWindow
+internal sealed class MeasurementHistoryView : UserControl
 {
-    protected override bool ResizeWindow => true;
-    private readonly MeasurementHistoryStore _history;
+    private MeasurementHistoryStore _history;
     private readonly FlatComboBox _abilityFilter = new();
     private readonly FlatComboBox _sessionFilter = new();
     private readonly TextBox _sessionName = new();
@@ -20,20 +19,18 @@ internal sealed class MeasurementHistoryForm : AppWindow
     private readonly Button _addColumn = new();
     private readonly Button _export = new();
 
-    public MeasurementHistoryForm(MeasurementHistoryStore history)
+    public MeasurementHistoryView(MeasurementHistoryStore history)
     {
         _history = history;
-        Text = "Measurement history";
-        StartPosition = FormStartPosition.CenterParent;
-        MinimizeBox = false;
-        MinimumSize = new Size(800, 550);
-        Size = new Size(980, 560);
+        Name = "MeasurementHistory";
+        AccessibleName = "Measurement history";
         BackColor = TrackerTheme.Background;
         ForeColor = TrackerTheme.Text;
         Font = new Font("Segoe UI", 9);
+        Padding = new Padding(0, 1, 0, 0);
 
         _abilityFilter.DropDownStyle = ComboBoxStyle.DropDownList;
-        _abilityFilter.Width = 125;
+        _abilityFilter.Width = 120;
         _abilityFilter.Items.Add(new AbilityFilter(null, "All abilities"));
         foreach (var ability in Enum.GetValues<AbilityKind>())
         {
@@ -41,9 +38,10 @@ internal sealed class MeasurementHistoryForm : AppWindow
         }
 
         _sessionFilter.DropDownStyle = ComboBoxStyle.DropDownList;
-        _sessionFilter.Width = 190;
+        _sessionFilter.Width = 200;
         _sessionName.PlaceholderText = "New session name";
-        _sessionName.Width = 145;
+        _sessionName.AccessibleName = "New session name";
+        _sessionName.Width = 150;
         _sessionName.BackColor = TrackerTheme.Surface;
         _startSession.Text = "Start session";
         _endSession.Text = "End session";
@@ -67,12 +65,14 @@ internal sealed class MeasurementHistoryForm : AppWindow
         sessionActions.Controls.AddRange([new InputFrame(_sessionName), _startSession]);
         var sessionView = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Margin = Padding.Empty };
         sessionView.Controls.AddRange([_sessionFilter, _setActiveSession]);
-        filters.Controls.AddRange([Field("Ability", _abilityFilter), Field("View saved session", sessionView),
-            Field("New session name", sessionActions)]);
+        filters.Controls.AddRange([Field("Ability", _abilityFilter), Field("View saved session", sessionView)]);
 
         _activeSession.AutoSize = true;
+        _activeSession.AutoEllipsis = true;
+        _activeSession.MaximumSize = new Size(240, 0);
         _activeSession.ForeColor = TrackerTheme.Text;
-        _activeSession.Margin = new Padding(4, 8, 8, 4);
+        _activeSession.Margin = new Padding(4, 9, 6, 4);
+        sessionActions.Margin = new Padding(12, 0, 0, 0);
         var activeSessionRow = new FlowLayoutPanel
         {
             AutoSize = true,
@@ -80,7 +80,7 @@ internal sealed class MeasurementHistoryForm : AppWindow
             WrapContents = true,
             Margin = new Padding(0, 2, 0, 6)
         };
-        activeSessionRow.Controls.AddRange([_activeSession, _endSession]);
+        activeSessionRow.Controls.AddRange([_activeSession, _endSession, sessionActions]);
         _measurements.Dock = DockStyle.Fill;
         _measurements.ReadOnly = false;
         _measurements.AllowUserToAddRows = false;
@@ -109,12 +109,12 @@ internal sealed class MeasurementHistoryForm : AppWindow
         _measurements.EnableHeadersVisualStyles = false;
         foreach (var bar in _measurements.Controls.OfType<ScrollBar>())
             _ = new ScrollBarSkin(bar);
-        AddTextColumn("Ability", "Ability", 90);
-        AddTextColumn("Result", "Result", 90);
-        AddTextColumn("Measured", "Measured ±", 190);
-        AddTextColumn("Regression", "Regression ±", 190);
-        AddTextColumn("Time", "Measured at", 110);
-        AddTextColumn("Note", "Note", 200, fill: true);
+        AddTextColumn("Ability", "Ability", 62);
+        AddTextColumn("Result", "Result", 70);
+        AddTextColumn("Measured", "Measured ±", 132);
+        AddTextColumn("Regression", "Regression ±", 132);
+        AddTextColumn("Time", "Measured at", 104);
+        AddTextColumn("Note", "Note", 120, fill: true);
         AddCustomColumns();
         _measurements.Columns["Measured"]!.ToolTipText = "Observed event-to-event duration ± measurement uncertainty, in seconds.";
         _measurements.Columns["Regression"]!.ToolTipText = "Full duration fitted from 10–90% charge ± regression uncertainty, in seconds.";
@@ -163,16 +163,26 @@ internal sealed class MeasurementHistoryForm : AppWindow
         {
             Dock = DockStyle.Fill,
             ColumnCount = 1,
-            RowCount = 4,
-            Padding = new Padding(10)
+            RowCount = 5,
+            Padding = new Padding(0, 4, 0, 0)
         };
+        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        root.Controls.Add(filters, 0, 0);
-        root.Controls.Add(activeSessionRow, 0, 1);
-        root.Controls.Add(_measurements, 0, 2);
+        var heading = new Label
+        {
+            Text = "Measurement history",
+            AutoSize = true,
+            ForeColor = TrackerTheme.Muted,
+            Margin = new Padding(3, 4, 3, 6)
+        };
+        TrackerTheme.SetTypography(heading, 9, FontStyle.Bold);
+        root.Controls.Add(heading, 0, 0);
+        root.Controls.Add(filters, 0, 1);
+        root.Controls.Add(activeSessionRow, 0, 2);
+        root.Controls.Add(_measurements, 0, 3);
         var footer = new TableLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, ColumnCount = 1 };
         footer.Controls.Add(noteRow, 0, 0);
         var columnActions = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Fill, WrapContents = true };
@@ -187,9 +197,14 @@ internal sealed class MeasurementHistoryForm : AppWindow
             Margin = new Padding(3, 9, 6, 0) }, new InputFrame(_columnName), _addColumn, _export]);
         footer.Controls.Add(columnActions, 0, 1);
         footer.Controls.Add(_status, 0, 2);
-        root.Controls.Add(footer, 0, 3);
+        root.Controls.Add(footer, 0, 4);
         Controls.Add(root);
         TrackerTheme.Apply(this);
+        Paint += (_, args) =>
+        {
+            using var pen = new Pen(TrackerTheme.Border);
+            args.Graphics.DrawLine(pen, 0, 0, Width, 0);
+        };
 
         _abilityFilter.SelectedIndexChanged += (_, _) => RefreshMeasurements();
         _sessionFilter.SelectedIndexChanged += (_, _) => RefreshMeasurements();
@@ -226,6 +241,24 @@ internal sealed class MeasurementHistoryForm : AppWindow
     private Guid? SelectedMeasurementId => _measurements.SelectedRows.Count == 1
         ? _measurements.SelectedRows[0].Tag as Guid?
         : null;
+
+    internal void UseStore(MeasurementHistoryStore history)
+    {
+        _history = history;
+        foreach (var column in _measurements.Columns.Cast<DataGridViewColumn>().Where(item => item.Tag is string).ToArray())
+            _measurements.Columns.Remove(column);
+        AddCustomColumns();
+        RefreshSessionChoices();
+        RefreshMeasurements();
+    }
+
+    /// <summary>Re-reads the store unless the user is mid-edit, keeping filters and selection.</summary>
+    internal void Reload()
+    {
+        if (_measurements.IsCurrentCellInEditMode || _note.Modified || _note.Focused) return;
+        RefreshSessionChoices();
+        RefreshMeasurements(SelectedMeasurementId);
+    }
 
     private void AddCustomColumns()
     {
@@ -460,7 +493,7 @@ internal sealed class MeasurementHistoryForm : AppWindow
         foreach (var measurement in records)
         {
             var regression = measurement.RegressionSeconds is { } seconds
-                ? DurationDisplay.Format(TimeSpan.FromSeconds(seconds))
+                ? $"{seconds:F2}"
                 : "—";
             var regressionUncertainty = measurement.RegressionUncertaintySeconds is { } regressionSpread
                 ? $" ± {regressionSpread:F3} s"
@@ -469,9 +502,9 @@ internal sealed class MeasurementHistoryForm : AppWindow
                 AbilityName(measurement.Ability),
                 measurement.Id == measurement.RepeatTestId ? $"Mean · {measurement.CycleCount}" :
                     measurement.RepeatTestId is not null ? "Cycle" : "Single",
-                $"{DurationDisplay.Format(TimeSpan.FromSeconds(measurement.DurationSeconds))} ± {measurement.UncertaintySeconds:F3} s",
+                $"{measurement.DurationSeconds:F2} ± {measurement.UncertaintySeconds:F3} s",
                 regression + regressionUncertainty,
-                measurement.MeasuredAt.ToLocalTime().ToString("g"),
+                measurement.MeasuredAt.ToLocalTime().ToString("MMM d HH:mm"),
                 measurement.Note ?? string.Empty);
             _measurements.Rows[index].Tag = measurement.Id;
             foreach (DataGridViewColumn column in _measurements.Columns)

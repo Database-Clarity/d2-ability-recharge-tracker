@@ -4,6 +4,8 @@ internal sealed partial class MainForm
 {
     private MeasurementHistoryStore? _measurementHistory;
     private Guid? _repeatHistorySessionId;
+    private MeasurementHistoryView? _historyView;
+    private readonly Button _historyButton = new();
 
     private void InitializeMeasurementHistory()
     {
@@ -14,11 +16,36 @@ internal sealed partial class MainForm
         }
     }
 
-    private void ShowMeasurementHistory()
+    private MeasurementHistoryView CreateHistoryView()
     {
-        var history = _measurementHistory ??= new MeasurementHistoryStore();
-        using var form = new MeasurementHistoryForm(history);
-        form.ShowDialog(this);
+        _historyView = new MeasurementHistoryView(_measurementHistory ??= new MeasurementHistoryStore())
+        {
+            Visible = false,
+            Width = GridWidth,
+            Height = HistoryHeight,
+            Margin = new Padding(0, 8, 0, 0)
+        };
+        _historyButton.Text = "History";
+        _historyButton.Click += (_, _) => SetHistoryVisible(!_historyView.Visible);
+        _toolTip.SetToolTip(_historyButton, "Show sessions, notes and custom columns below the current page.");
+        return _historyView;
+    }
+
+    internal bool HistoryVisible => _historyView?.Visible == true;
+
+    internal void SetHistoryVisible(bool visible)
+    {
+        if (_historyView is null) return;
+        if (visible) _historyView.Reload();
+        _historyView.Visible = visible;
+        _historyButton.Text = visible ? "Hide history" : "History";
+        _fitWindowToDisplay?.Invoke();
+    }
+
+    internal void UseMeasurementHistory(MeasurementHistoryStore history)
+    {
+        _measurementHistory = history;
+        _historyView?.UseStore(history);
     }
 
     private MeasurementHistoryEntry? RecordValidatedMeasurement(AbilityKind kind, AbilitySlotTracker tracker, DateTime timestamp)
@@ -56,6 +83,7 @@ internal sealed partial class MainForm
                 if (_measurementHistory.CanWrite)
                 {
                     _measurementHistory.TryAddMeasurement(measurement, sessionId);
+                    if (HistoryVisible) _historyView!.Reload();
                 }
             }
             catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException or InvalidOperationException)

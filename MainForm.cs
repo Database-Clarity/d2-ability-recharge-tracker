@@ -98,8 +98,8 @@ internal sealed partial class MainForm : AppWindow
         MaximizeBox = false;
         StartPosition = FormStartPosition.CenterScreen;
         Font = new Font("Segoe UI", 9);
-        BuildControls();
         InitializeMeasurementHistory();
+        BuildControls();
         InitializeOverlayInteractions();
         OverlayMoveModeChanged += _ => SyncOverlayMoveToggle();
         Icon = AppIcon.Load();
@@ -199,7 +199,8 @@ internal sealed partial class MainForm : AppWindow
     }
 
     private readonly CheckBox _overlayMoveToggle = new();
-    private const int GridWidth = 864;
+    private const int GridWidth = 640;
+    private const int HistoryHeight = 500;
 
     private static Label GridLabel(string text) => new()
     {
@@ -296,13 +297,13 @@ internal sealed partial class MainForm : AppWindow
         _toolTip.BackColor = TrackerTheme.Surface;
         _toolTip.ForeColor = TrackerTheme.Text;
 
-        var header = Grid(220, GridWidth - 220);
+        var header = Grid(214, 176, 120, GridWidth - 510);
         _updateButton.Text = "Check for updates";
         _updateButton.Click += (_, _) => CheckOrInstallUpdate();
         _changelogButton.Text = "Changelog";
         _changelogButton.Click += async (_, _) => await OpenChangelogAsync(startup: false);
 
-        var detection = Grid(118, 292);
+        var detection = Grid(112, 200);
         _monitorPicker.DropDownStyle = ComboBoxStyle.DropDownList;
         RefreshDisplays();
         _captureRatePicker.Minimum = 30;
@@ -328,7 +329,7 @@ internal sealed partial class MainForm : AppWindow
         Place(detection, _pauseBindingButton, 1, 2);
         Place(header, _toggleButton, 0, 0);
 
-        var abilities = Grid(96, 450, 70, 130, 118);
+        var abilities = Grid(96, 236, 72, 126, 110);
         string[] headings = ["Ability", "Status", "Area", "", ""];
         for (var column = 0; column < headings.Length; column++)
         {
@@ -402,7 +403,7 @@ internal sealed partial class MainForm : AppWindow
         var resetSelectionsButton = new Button { Text = "Reset areas" };
         resetSelectionsButton.Click += (_, _) => ResetSelections();
 
-        var test = Grid(150, 234, 150, 210);
+        var test = Grid(140, 200, 120, 180);
         _testAbilityPicker.DropDownStyle = ComboBoxStyle.DropDownList;
         var abilityChoices = AbilityKinds.Select(kind => new AbilityChoice(kind, KindName(kind) == "Class" ? "Class ability" : KindName(kind))).ToArray();
         _testAbilityPicker.Items.AddRange(abilityChoices);
@@ -492,7 +493,7 @@ internal sealed partial class MainForm : AppWindow
             control.Margin = new Padding(3, 3, 29, 3);
         }
 
-        var overlay = Grid(152, 208);
+        var overlay = Grid(128, 190);
         _anchorPicker.DropDownStyle = ComboBoxStyle.DropDownList;
         _anchorPicker.Items.AddRange(["Top left", "Top right", "Bottom left", "Bottom right"]);
         _anchorPicker.SelectedItem = _settings.OverlayAnchor;
@@ -528,7 +529,7 @@ internal sealed partial class MainForm : AppWindow
         Place(overlay, linePicker, 1, 1);
         Place(overlay, GridLabel("Show / hide shortcut"), 0, 2);
         Place(overlay, _overlayBindingButton, 1, 2);
-        Place(overlay, _overlayToggleButton, 0, 3);
+        Place(overlay, GridLabel("Position"), 0, 3);
         Place(overlay, _overlayMoveToggle, 1, 3);
         foreach (var grid in new[] { detection, overlay })
         {
@@ -538,15 +539,12 @@ internal sealed partial class MainForm : AppWindow
             }
         }
 
-        var actions = Grid(160, 110, GridWidth - 504, 104, 130);
+        var actions = Grid(160, GridWidth - 394, 104, 130);
         var autoDetectButton = new Button { Text = "Auto-detect areas…" };
         autoDetectButton.Click += (_, _) => AutoDetectRegions();
-        var historyButton = new Button { Text = "History…" };
-        historyButton.Click += (_, _) => ShowMeasurementHistory();
         Place(actions, autoDetectButton, 0, 0);
-        Place(actions, historyButton, 1, 0);
-        Place(actions, selectionGuideButton, 3, 0);
-        Place(actions, resetSelectionsButton, 4, 0);
+        Place(actions, selectionGuideButton, 2, 0);
+        Place(actions, resetSelectionsButton, 3, 0);
         var recording = Grid(160, GridWidth - 160);
         _recordHudButton.Text = "Record HUD";
         _recordHudButton.Click += (_, _) => ToggleHudRecording();
@@ -582,7 +580,10 @@ internal sealed partial class MainForm : AppWindow
             Margin = Padding.Empty
         };
         root.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        Place(header, _stateStatus, 1, 0);
+        Place(header, _overlayToggleButton, 1, 0);
+        var historyView = CreateHistoryView();
+        Place(header, _historyButton, 2, 0);
+        Place(header, _stateStatus, 0, 1, 4);
         header.Margin = new Padding(0, 0, 0, 6);
         var navigation = new FlowLayoutPanel
         {
@@ -631,7 +632,7 @@ internal sealed partial class MainForm : AppWindow
         var testPage = AddPage("Repeat test");
         testPage.Controls.Add(test);
         var settingsPage = AddPage("Settings");
-        var settingsColumns = Grid(460, GridWidth - 460);
+        var settingsColumns = Grid(318, GridWidth - 318);
         var captureSection = Section("Capture", detection);
         var overlaySection = Section("Overlay", overlay);
         settingsColumns.Controls.Add(captureSection, 0, 0);
@@ -646,6 +647,7 @@ internal sealed partial class MainForm : AppWindow
         root.Controls.Add(header);
         root.Controls.Add(navigation);
         root.Controls.Add(pages);
+        root.Controls.Add(historyView);
         AutoSize = false;
         var viewport = new Panel { Dock = DockStyle.Fill, AutoScroll = true };
         _mainViewport = viewport;
@@ -668,13 +670,23 @@ internal sealed partial class MainForm : AppWindow
                 pages.Height = pageContent.GetPreferredSize(Size.Empty).Height;
             }
             var workArea = Screen.FromControl(this).WorkingArea;
-            var desired = root.GetPreferredSize(Size.Empty);
             var chrome = Size - ClientSize;
             var available = new Size(Math.Max(320, workArea.Width - chrome.Width - 24),
                 Math.Max(240, workArea.Height - chrome.Height - 24));
+            if (historyView.Visible)
+            {
+                var scale = DeviceDpi / 96f;
+                historyView.Height = (int)(HistoryHeight * scale);
+                var overflow = root.GetPreferredSize(Size.Empty).Height + Padding.Vertical - available.Height;
+                if (overflow > 0)
+                    historyView.Height = Math.Max((int)(300 * scale), historyView.Height - overflow);
+            }
+            var desired = root.GetPreferredSize(Size.Empty);
             var height = Math.Min(desired.Height + Padding.Vertical, available.Height);
             var width = Math.Min(desired.Width + (height < desired.Height ? SystemInformation.VerticalScrollBarWidth : 0), available.Width);
             ClientSize = new Size(width + Padding.Horizontal, height);
+            if (Visible && WindowState == FormWindowState.Normal && Bottom > workArea.Bottom)
+                Top = Math.Max(workArea.Top, workArea.Bottom - Height);
         }
         Shown += (_, _) => FitWindowToDisplay();
         _hudRecordingStatus.VisibleChanged += (_, _) => FitWindowToDisplay();
