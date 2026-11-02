@@ -5,6 +5,75 @@ using System.Diagnostics;
 using System.IO.Compression;
 using D2AbilityTracker;
 
+if (args.Length == 2 && args[0] == "--ui-smoke")
+{
+    Exception? failure = null;
+    var thread = new Thread(() =>
+    {
+        try
+        {
+            Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
+            Application.EnableVisualStyles();
+            Application.SetUnhandledExceptionMode(UnhandledExceptionMode.ThrowException);
+            Console.WriteLine("Opening compact UI...");
+            using var form = new MainForm();
+            Console.WriteLine("UI constructed.");
+            form.Shown += (_, _) => form.BeginInvoke((Action)(() =>
+            {
+                try
+                {
+                    Console.WriteLine("Inspecting visible UI...");
+                    var navigation = Descendants(form).Single(control => control.Name == "PageNavigation");
+                    var pages = Descendants(form).Single(control => control.Name == "Pages");
+                    Assert(navigation.Controls.Count == 3, "The utility should have Tracking, Repeat test, and Settings pages.");
+                    Directory.CreateDirectory(args[1]);
+                    foreach (Button link in navigation.Controls)
+                    {
+                        link.PerformClick();
+                        form.PerformLayout();
+                        var page = pages.Controls.Cast<Control>().Single(control => control.Visible);
+                        Assert(form.ClientSize.Height <= 500 * form.DeviceDpi / 96f,
+                            "Each page should fit a compact desktop window.");
+                        foreach (var control in Descendants(page).Where(control => control.Visible && control is Button or ComboBox or NumericUpDown))
+                        {
+                            var bounds = form.RectangleToClient(control.RectangleToScreen(control.ClientRectangle));
+                            Assert(form.ClientRectangle.Contains(bounds), $"{control.Text} must remain inside the window.");
+                        }
+
+                        using var image = new Bitmap(form.Width, form.Height);
+                        form.DrawToBitmap(image, new Rectangle(Point.Empty, image.Size));
+                        image.Save(Path.Combine(args[1], $"ui-{link.Text.Replace(' ', '-')}.png"));
+                    }
+                }
+                catch (Exception exception)
+                {
+                    failure = exception;
+                }
+                finally
+                {
+                    form.Close();
+                }
+            }));
+            Application.Run(form);
+        }
+        catch (Exception exception)
+        {
+            failure = exception;
+        }
+    });
+    thread.IsBackground = true;
+    thread.SetApartmentState(ApartmentState.STA);
+    thread.Start();
+    Assert(thread.Join(TimeSpan.FromSeconds(30)), "UI smoke check must finish within 30 seconds.");
+    if (failure is not null)
+    {
+        throw new InvalidOperationException("UI smoke check failed.", failure);
+    }
+
+    Console.WriteLine("Compact UI smoke checks passed.");
+    return;
+}
+
 if (args.Length > 0 && args[0] == "--replay")
 {
     FootageReplay.Run(args);
@@ -798,6 +867,18 @@ static void AssertReadableButtons(System.Windows.Forms.Control control)
         }
 
         AssertReadableButtons(child);
+    }
+}
+
+static IEnumerable<Control> Descendants(Control parent)
+{
+    foreach (Control child in parent.Controls)
+    {
+        yield return child;
+        foreach (var descendant in Descendants(child))
+        {
+            yield return descendant;
+        }
     }
 }
 

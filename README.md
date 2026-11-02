@@ -12,6 +12,8 @@ A Windows overlay for timing grenade, melee, and class-ability recharge from the
 
 The overlay is included in desktop/display screen capture. Game-only capture records Destiny 2's own render surface and may not include this separate overlay window; use display capture to record both.
 
+The control window has three compact pages: **Tracking** for ability regions, results, solo tracking, and HUD recording; **Repeat test** for automated measurement cycles; and **Settings** for capture, overlay controls, shortcuts, and updates. Pause/resume and capture status remain visible on every page.
+
 The selector shows a frozen preview of the Destiny 2 window when it is detected, or the chosen display as a fallback. Auto-detection recognizes the three ability slots together by their square borders, similar sizes, regular spacing, and shared HUD tilt, then isolates each slot. It does not depend on the colored strips, element colors, or ability artwork. An incomplete three-slot pattern is rejected rather than used to guess missing regions. Previously auto-detected selections are refreshed when the picker finds a new pattern; manual selections are preserved. Zoom with the mouse wheel or +/- and pan with right- or middle-drag. Drag a selection to move it, or drag a corner to resize it; the selection is only saved after choosing **Use selection**, either beside the active selection or in the footer. Use **Reset areas** to clear all saved ability regions and select them again; shortcuts are preserved. The illustrated **Guide** compares whole-slot and icon-only selections and shows the bottom-border start flash. Regions are saved relative to their display and scaled when its resolution changes (for example, setup at 4K and play at 1080p).
 
 Use **Record HUD** to save a debug recording of the tracked ability areas (all selected slots, or only the solo slot) with a small surrounding margin. Frames come from the tracker's own capture loop, so recording never competes with detection: lossless PNG frames at 60 FPS are written into a ZIP by a background encoder, with `frames.csv` listing each frame's capture time plus the tracker's live state and progress per ability. There is no size or duration limit; recording stops when you click **Stop recording** or if less than 1 GB of disk space remains. Recordings are saved automatically to `Documents\D2AbilityTracker\HUD recordings` (**Open folder** opens it). Starting a recording resumes detection if it was paused, and the app overlay is hidden during capture so it will not obscure the game HUD.
@@ -41,6 +43,8 @@ Click the ability-use binding button and press the desired keyboard key, mouse b
 ## Development and automatic releases
 
 Install the .NET 9 SDK on Windows and run `dotnet run` from this folder to build from source. Run `dotnet run --project tests\D2AbilityTracker.Tests.csproj --configuration Release` for automated checks.
+
+Append `-- --ui-smoke "<output folder>"` to render all three control-window pages and check that their controls fit. This opens and closes the tracker using local settings and saves PNG screenshots.
 
 Append `-- --capture-benchmark` to that command for a two-second local DXGI and GDI capture-rate and capture-duty measurement on the primary display, including a pixel comparison between both backends. This uses a HUD-sized desktop region, not live-game performance validation.
 
