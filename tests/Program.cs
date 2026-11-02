@@ -61,6 +61,22 @@ if (args.Length == 2 && args[0] == "--ui-smoke")
                             Assert(fieldImage.GetPixel(picker.Width - 5, picker.Height / 2).GetBrightness() < 0.3,
                                 "The dropdown arrow area must use dark chrome, not the native white button.");
                         }
+                        foreach (var number in Descendants(page).OfType<NumericUpDown>())
+                        {
+                            Assert(number is FlatNumericUpDown && number.Parent is InputFrame,
+                                "Numeric fields must use the shared input frame and dark spinner.");
+                            var original = number.Value;
+                            if (number.Value < number.Maximum)
+                            {
+                                number.UpButton();
+                                Assert(number.Value == Math.Min(number.Maximum, original + number.Increment),
+                                    "The themed numeric field must preserve native increment behavior.");
+                                number.DownButton();
+                                number.Value = original;
+                            }
+                            Assert(number.Parent is InputFrame frame && frame.Height == 30 * form.DeviceDpi / 96f,
+                                "Numeric frames must match the common control height.");
+                        }
                         Assert(form.ClientSize.Height <= 500 * form.DeviceDpi / 96f,
                             "Each page should fit a compact desktop window.");
                         foreach (var control in Descendants(page).Where(control => control.Visible && control is Button or ComboBox or NumericUpDown or LinkLabel))
@@ -92,6 +108,8 @@ if (args.Length == 2 && args[0] == "--ui-smoke")
                     var sessionActions = Descendants(historyForm).Single(control => control.Name == "SessionActions");
                     var actionTops = sessionActions.Controls.Cast<Control>().Select(control => control.Top).Distinct().Count();
                     Assert(actionTops == 1, "Session controls must remain together without an orphaned action.");
+                    Assert(sessionActions.Controls.Cast<Control>().Select(control => control.Height).Distinct().Count() == 1,
+                        "Session name field and its action buttons must have the same height.");
                     var historyGrid = Descendants(historyForm).OfType<DataGridView>().Single();
                     Assert(historyGrid.Columns["Note"]!.MinimumWidth >= 120 &&
                         historyGrid.ScrollBars == ScrollBars.Both,
@@ -1078,7 +1096,7 @@ static void AssertReadableButtons(System.Windows.Forms.Control control)
     {
         if (child is System.Windows.Forms.Button button)
         {
-            Assert(button.ForeColor == Color.White && button.BackColor.GetBrightness() < 0.3f,
+            Assert(button.ForeColor.GetBrightness() > 0.8f && button.BackColor.GetBrightness() < 0.3f,
                 $"Selector button '{button.Text}' should have explicit light-on-dark text.");
         }
 

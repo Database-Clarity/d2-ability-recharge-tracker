@@ -4,6 +4,7 @@ namespace D2AbilityTracker;
 
 internal static class TrackerTheme
 {
+    internal const int ControlHeight = 30;
     internal static readonly Color Background = Color.FromArgb(30, 30, 30);
     internal static readonly Color Surface = Color.FromArgb(43, 43, 43);
     internal static readonly Color Border = Color.FromArgb(72, 72, 72);
@@ -22,8 +23,12 @@ internal static class TrackerTheme
             switch (control)
             {
                 case Button button:
+                    button.MinimumSize = new Size(button.MinimumSize.Width, ControlHeight);
+                    button.Height = ControlHeight;
                     button.FlatStyle = FlatStyle.Flat;
-                    button.FlatAppearance.BorderColor = Border;
+                    button.FlatAppearance.BorderColor = button.Enabled ? Border : Color.FromArgb(55, 55, 55);
+                    button.EnabledChanged += (_, _) => button.FlatAppearance.BorderColor =
+                        button.Enabled ? Border : Color.FromArgb(55, 55, 55);
                     button.FlatAppearance.MouseOverBackColor = Color.FromArgb(57, 57, 57);
                     button.FlatAppearance.MouseDownBackColor = Color.FromArgb(68, 68, 68);
                     button.BackColor = Surface;
@@ -31,6 +36,7 @@ internal static class TrackerTheme
                     button.Cursor = Cursors.Hand;
                     break;
                 case CheckBox toggle when toggle.Appearance == Appearance.Button:
+                    toggle.Height = ControlHeight;
                     toggle.FlatStyle = FlatStyle.Flat;
                     toggle.FlatAppearance.BorderColor = Border;
                     toggle.FlatAppearance.CheckedBackColor = Color.FromArgb(55, 75, 90);
@@ -55,7 +61,7 @@ internal static class TrackerTheme
                     break;
                 case NumericUpDown number:
                     number.BackColor = Surface;
-                    number.BorderStyle = BorderStyle.FixedSingle;
+                    number.BorderStyle = number.Parent is InputFrame ? BorderStyle.None : BorderStyle.FixedSingle;
                     break;
             }
             Apply(control);
@@ -71,7 +77,9 @@ internal static class TrackerTheme
     {
         button.BackColor = Surface;
         button.ForeColor = Text;
-        button.FlatAppearance.BorderColor = Accent;
+        button.FlatAppearance.BorderColor = button.Enabled ? Accent : Color.FromArgb(55, 55, 55);
+        button.EnabledChanged += (_, _) => button.FlatAppearance.BorderColor =
+            button.Enabled ? Accent : Color.FromArgb(55, 55, 55);
         button.FlatAppearance.MouseOverBackColor = Color.FromArgb(57, 57, 57);
         button.FlatAppearance.MouseDownBackColor = Color.FromArgb(68, 68, 68);
         SetTypography(button, 9, FontStyle.Bold);

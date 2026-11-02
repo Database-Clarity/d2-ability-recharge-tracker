@@ -36,12 +36,12 @@ internal sealed partial class MainForm : Form
     private readonly Button _overlayBindingButton = new();
     private readonly Button _updateButton = new();
     private readonly Button _changelogButton = new();
-    private readonly NumericUpDown _captureRatePicker = new();
+    private readonly FlatNumericUpDown _captureRatePicker = new();
     private readonly FlatComboBox _anchorPicker = new();
     private readonly FlatComboBox _monitorPicker = new();
     private readonly FlatComboBox _testAbilityPicker = new();
-    private readonly NumericUpDown _testCyclesPicker = new();
-    private readonly NumericUpDown _testDelayPicker = new();
+    private readonly FlatNumericUpDown _testCyclesPicker = new();
+    private readonly FlatNumericUpDown _testDelayPicker = new();
     private readonly Label _testStatus = new();
     private readonly Label _hudRecordingStatus = new();
     private readonly PathLinkLabel _lastRecordingLink = new();
@@ -211,13 +211,17 @@ internal sealed partial class MainForm : Form
 
     private static void Place(TableLayoutPanel grid, Control control, int column, int row, int span = 1, bool stretch = true)
     {
+        if (control is NumericUpDown)
+        {
+            control = new InputFrame(control);
+        }
         if (stretch)
         {
             control.Anchor = AnchorStyles.Left | AnchorStyles.Right;
         }
         if (control is Button or CheckBox { Appearance: Appearance.Button })
         {
-            control.Height = 28;
+            control.Height = TrackerTheme.ControlHeight;
         }
         control.Margin = new Padding(3, 3, 5, 3);
         grid.Controls.Add(control, column, row);
@@ -251,7 +255,7 @@ internal sealed partial class MainForm : Form
         stack.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         var heading = GridLabel(title);
         TrackerTheme.SetTypography(heading, 9, FontStyle.Bold);
-        heading.ForeColor = TrackerTheme.Text;
+        heading.ForeColor = TrackerTheme.Muted;
         heading.Margin = new Padding(3, 4, 3, 6);
         stack.Controls.Add(heading);
         stack.Controls.Add(content);
@@ -311,7 +315,14 @@ internal sealed partial class MainForm : Form
         string[] headings = ["Ability", "Status", "Area", "", ""];
         for (var column = 0; column < headings.Length; column++)
         {
-            Place(abilities, GridLabel(headings[column]), column, 0);
+            var heading = GridLabel(headings[column]);
+            if (column == 2)
+            {
+                heading.AutoSize = false;
+                heading.Height = heading.PreferredHeight;
+                heading.TextAlign = ContentAlignment.MiddleRight;
+            }
+            Place(abilities, heading, column, 0);
         }
         foreach (var kind in AbilityKinds)
         {
@@ -327,7 +338,7 @@ internal sealed partial class MainForm : Form
                 AutoEllipsis = true,
                 ForeColor = TrackerTheme.Muted,
                 TextAlign = ContentAlignment.MiddleLeft,
-                Height = 48
+                Height = 40
             };
             var soloToggle = new CheckBox
             {
@@ -340,7 +351,10 @@ internal sealed partial class MainForm : Form
             soloToggle.Click += (_, _) => ToggleSolo(kind);
             Place(abilities, name, 0, row, stretch: false);
             Place(abilities, statusLabel, 1, row);
-            Place(abilities, regionLabel, 2, row, stretch: false);
+            regionLabel.AutoSize = false;
+            regionLabel.Height = regionLabel.PreferredHeight;
+            regionLabel.TextAlign = ContentAlignment.MiddleRight;
+            Place(abilities, regionLabel, 2, row);
             Place(abilities, selectButton, 3, row);
             Place(abilities, soloToggle, 4, row);
             foreach (var control in new Control[] { name, regionLabel, selectButton, soloToggle })
@@ -349,6 +363,7 @@ internal sealed partial class MainForm : Form
                     : AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
                 control.Margin = control is Label ? new Padding(3, 9, 5, 3) : new Padding(3, 3, 5, 3);
             }
+            regionLabel.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
             _selectButtons.Add(kind, selectButton);
             _regionLabels.Add(kind, regionLabel);
             _statusLabels.Add(kind, statusLabel);
@@ -360,7 +375,7 @@ internal sealed partial class MainForm : Form
         var resetSelectionsButton = new Button { Text = "Reset areas" };
         resetSelectionsButton.Click += (_, _) => ResetSelections();
 
-        var test = Grid(142, 210, 170, 170);
+        var test = Grid(150, 234, 150, 210);
         _testAbilityPicker.DropDownStyle = ComboBoxStyle.DropDownList;
         var abilityChoices = AbilityKinds.Select(kind => new AbilityChoice(kind, KindName(kind) == "Class" ? "Class ability" : KindName(kind))).ToArray();
         _testAbilityPicker.Items.AddRange(abilityChoices);
@@ -418,6 +433,10 @@ internal sealed partial class MainForm : Form
         Place(test, _startTestButton, 2, 2);
         Place(test, _stopTestButton, 3, 2);
         Place(test, _testStatus, 0, 3, 4);
+        foreach (var control in new Control[] { _testAbilityPicker, _abilityUseBindingButton, _repeatTestBindingButton })
+        {
+            control.Margin = new Padding(3, 3, 29, 3);
+        }
 
         var overlay = Grid(152, 208);
         _anchorPicker.DropDownStyle = ComboBoxStyle.DropDownList;
@@ -488,7 +507,7 @@ internal sealed partial class MainForm : Form
         Place(recording, _recordHudButton, 0, 0);
         Place(recording, _hudRecordingStatus, 0, 1, 2);
         _lastRecordingLink.AutoSize = false;
-        _lastRecordingLink.Height = 26;
+        _lastRecordingLink.Height = TrackerTheme.ControlHeight;
         _lastRecordingLink.LinkColor = TrackerTheme.Accent;
         _lastRecordingLink.ActiveLinkColor = TrackerTheme.Text;
         _lastRecordingLink.VisitedLinkColor = TrackerTheme.Accent;
@@ -531,7 +550,7 @@ internal sealed partial class MainForm : Form
             Margin = new Padding(0, 6, 0, 0)
         };
         TableLayoutPanel? selectedPage = null;
-        var pageLinks = new List<(Button Button, TableLayoutPanel Page)>();
+        var pageLinks = new List<(NavigationButton Button, TableLayoutPanel Page)>();
         TableLayoutPanel AddPage(string title)
         {
             var content = Grid(GridWidth);
@@ -539,15 +558,14 @@ internal sealed partial class MainForm : Form
             content.Visible = selectedPage is null;
             selectedPage ??= content;
             pages.Controls.Add(content);
-            var link = new Button { Text = title, AutoSize = true, Height = 28, Margin = new Padding(0, 0, 8, 0) };
+            var link = new NavigationButton { Text = title, AutoSize = true, Height = TrackerTheme.ControlHeight, Margin = new Padding(0, 0, 8, 0) };
             link.Click += (_, _) =>
             {
                 selectedPage = content;
                 foreach (var item in pageLinks)
                 {
                     item.Page.Visible = item.Page == content;
-                    item.Button.FlatAppearance.BorderSize = item.Page == content ? 1 : 0;
-                    item.Button.ForeColor = item.Page == content ? TrackerTheme.Text : TrackerTheme.Muted;
+                    item.Button.SetSelected(item.Page == content);
                 }
                 FitWindowToDisplay();
             };
@@ -573,7 +591,7 @@ internal sealed partial class MainForm : Form
         var updateRow = Grid(172, 120, GridWidth - 292);
         Place(updateRow, _updateButton, 0, 0);
         Place(updateRow, _changelogButton, 1, 0);
-        settingsPage.Controls.Add(updateRow);
+        settingsPage.Controls.Add(Section("Application", updateRow));
         root.Controls.Add(header);
         root.Controls.Add(navigation);
         root.Controls.Add(pages);
@@ -587,8 +605,8 @@ internal sealed partial class MainForm : Form
         foreach (var item in pageLinks)
         {
             item.Button.BackColor = TrackerTheme.Background;
-            item.Button.FlatAppearance.BorderSize = item.Page == selectedPage ? 1 : 0;
-            item.Button.ForeColor = item.Page == selectedPage ? TrackerTheme.Text : TrackerTheme.Muted;
+            item.Button.FlatAppearance.BorderSize = 0;
+            item.Button.SetSelected(item.Page == selectedPage);
         }
         TrackerTheme.Primary(_startTestButton);
         void FitWindowToDisplay()

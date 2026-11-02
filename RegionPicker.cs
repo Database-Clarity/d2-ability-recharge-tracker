@@ -17,6 +17,7 @@ internal sealed class RegionPicker : Form
     private readonly Button _guideButton = new();
     private readonly Button _applyButton = new();
     private readonly Button _selectionApplyButton = new();
+    private readonly List<Button> _legendButtons = [];
     private readonly RectangleF _viewport;
     private PointF _sourceCenter;
     private PointF _startSource;
@@ -73,6 +74,7 @@ internal sealed class RegionPicker : Form
         BackColor = Color.FromArgb(14, 17, 24);
         DoubleBuffered = true;
         KeyPreview = true;
+        Font = new Font("Segoe UI", 9);
 
         _toolbar.BackColor = Color.FromArgb(14, 17, 24);
         _toolbar.Dock = DockStyle.Top;
@@ -80,7 +82,7 @@ internal sealed class RegionPicker : Form
         _toolbar.Padding = new Padding(18, 8, 18, 8);
         _instructions.Text = $"Select inside {_sourceDescription}. Drag to mark the ability slot; adjust it before applying.";
         _instructions.ForeColor = Color.White;
-        _instructions.Font = new Font("Segoe UI", 11, FontStyle.Bold);
+        _instructions.Font = new Font("Segoe UI", 9, FontStyle.Bold);
         _instructions.AutoEllipsis = true;
         _instructions.SetBounds(18, 8, Math.Max(200, monitorBounds.Width - 250), 24);
         var hint = new Label
@@ -93,7 +95,7 @@ internal sealed class RegionPicker : Form
         _zoomOutButton.Text = "−";
         _zoomOutButton.SetBounds(Math.Max(20, monitorBounds.Width - 210), 25, 34, 30);
         _zoomOutButton.Click += (_, _) => SetZoom(_zoom / 1.25f, ViewportCenter());
-        _zoomLabel.SetBounds(Math.Max(56, monitorBounds.Width - 172), 31, 55, 22);
+        _zoomLabel.SetBounds(Math.Max(56, monitorBounds.Width - 172), 25, 55, TrackerTheme.ControlHeight);
         _zoomLabel.ForeColor = Color.White;
         _zoomLabel.TextAlign = ContentAlignment.MiddleCenter;
         _zoomInButton.Text = "+";
@@ -124,8 +126,10 @@ internal sealed class RegionPicker : Form
                 legend.Click += (_, _) =>
                 {
                     _activeSelection = selectionIndex;
+                    UpdateLegend();
                     Invalidate();
                 };
+                _legendButtons.Add(legend);
                 _toolbar.Controls.Add(legend);
             }
         }
@@ -160,12 +164,15 @@ internal sealed class RegionPicker : Form
         Controls.Add(_selectionApplyButton);
         foreach (var button in new[] { _zoomOutButton, _zoomInButton, _guideButton, _applyButton, cancelButton, _selectionApplyButton })
         {
-            button.ForeColor = Color.White;
-            button.BackColor = Color.FromArgb(42, 48, 60);
+            button.ForeColor = TrackerTheme.Text;
+            button.BackColor = TrackerTheme.Surface;
             button.FlatStyle = FlatStyle.Flat;
-            button.FlatAppearance.BorderColor = Color.FromArgb(170, 185, 205);
+            button.FlatAppearance.BorderColor = TrackerTheme.Border;
             button.UseVisualStyleBackColor = false;
+            button.Height = TrackerTheme.ControlHeight;
         }
+        TrackerTheme.Primary(_applyButton);
+        UpdateLegend();
 
         _scale = FitScale();
         var initial = initialSelections ?? (initialSelection is { } single ? [single] : Array.Empty<Rectangle>());
@@ -239,6 +246,7 @@ internal sealed class RegionPicker : Form
             {
                 if (selection is { } area) outside.Exclude(SourceToScreen(area));
             }
+
             e.Graphics.FillRegion(shade, outside);
         }
         for (var index = 0; index < _selections.Length; index++)
@@ -259,6 +267,17 @@ internal sealed class RegionPicker : Form
         }
 
         e.Graphics.Clip = oldClip;
+    }
+
+    private void UpdateLegend()
+    {
+        for (var index = 0; index < _legendButtons.Count; index++)
+        {
+            var button = _legendButtons[index];
+            button.Height = TrackerTheme.ControlHeight;
+            button.FlatAppearance.BorderSize = index == _activeSelection ? 2 : 1;
+            button.BackColor = index == _activeSelection ? TrackerTheme.Surface : BackColor;
+        }
     }
 
     private void UpdateSelectionApplyButton()
@@ -337,6 +356,7 @@ internal sealed class RegionPicker : Form
                 if (_selections[index] is { } area && area.Contains(_startSource))
                 {
                     _activeSelection = index;
+                    UpdateLegend();
                     break;
                 }
             }

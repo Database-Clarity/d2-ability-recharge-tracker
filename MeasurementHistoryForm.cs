@@ -28,6 +28,7 @@ internal sealed class MeasurementHistoryForm : Form
         BackColor = TrackerTheme.Background;
         ForeColor = TrackerTheme.Text;
         Font = new Font("Segoe UI", 9);
+        HandleCreated += (_, _) => TrackerTheme.DarkTitleBar(Handle);
 
         _abilityFilter.DropDownStyle = ComboBoxStyle.DropDownList;
         _abilityFilter.Width = 125;
@@ -61,12 +62,12 @@ internal sealed class MeasurementHistoryForm : Form
             WrapContents = false,
             Margin = Padding.Empty
         };
-        sessionActions.Controls.AddRange([_sessionName, _startSession, _setActiveSession, _endSession]);
+        sessionActions.Controls.AddRange([new InputFrame(_sessionName), _startSession, _setActiveSession, _endSession]);
         filters.Controls.AddRange([Field("Ability", _abilityFilter), Field("Session view", _sessionFilter),
             Field("Session", sessionActions)]);
 
         _activeSession.AutoSize = true;
-        _activeSession.ForeColor = TrackerTheme.Muted;
+        _activeSession.ForeColor = TrackerTheme.Text;
         _activeSession.Margin = new Padding(4, 8, 0, 4);
         _measurements.Dock = DockStyle.Fill;
         _measurements.ReadOnly = true;
@@ -112,7 +113,7 @@ internal sealed class MeasurementHistoryForm : Form
         {
             button.AutoSize = true;
             button.AutoSizeMode = AutoSizeMode.GrowAndShrink;
-            button.MinimumSize = new Size(80, 28);
+            button.MinimumSize = new Size(80, TrackerTheme.ControlHeight);
             button.Padding = new Padding(6, 0, 6, 0);
         }
         var noteActions = new FlowLayoutPanel
@@ -134,7 +135,8 @@ internal sealed class MeasurementHistoryForm : Form
         };
         noteRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         noteRow.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        noteRow.Controls.Add(_note, 0, 0);
+        var noteFrame = new InputFrame(_note) { Dock = DockStyle.Fill, Height = 54, MinimumSize = new Size(80, 54) };
+        noteRow.Controls.Add(noteFrame, 0, 0);
         noteRow.Controls.Add(noteActions, 1, 0);
 
         _status.AutoSize = true;

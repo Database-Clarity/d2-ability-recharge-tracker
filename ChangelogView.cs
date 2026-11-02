@@ -14,7 +14,7 @@ internal sealed class ChangelogView : UserControl
 
         var heading = new Label
         {
-            Text = $"Changelog · {summary}",
+            Text = summary,
             AutoSize = true,
             ForeColor = TrackerTheme.Muted,
             Margin = new Padding(0, 0, 0, 8)
@@ -27,7 +27,7 @@ internal sealed class ChangelogView : UserControl
             WordWrap = true,
             ScrollBars = RichTextBoxScrollBars.Vertical,
             BorderStyle = BorderStyle.None,
-            BackColor = TrackerTheme.Surface,
+            BackColor = TrackerTheme.Background,
             ForeColor = TrackerTheme.Text,
             Font = new Font("Segoe UI", 9),
             Dock = DockStyle.Fill,
@@ -50,7 +50,7 @@ internal sealed class ChangelogView : UserControl
         content.SelectionStart = 0;
         content.SelectionLength = 0;
         content.ScrollToCaret();
-        var bodyPanel = new Panel { Dock = DockStyle.Fill, BackColor = TrackerTheme.Surface, Padding = new Padding(16) };
+        var bodyPanel = new Panel { Dock = DockStyle.Fill, Padding = new Padding(4, 8, 4, 8) };
         bodyPanel.Controls.Add(content);
         content.LinkClicked += (_, args) =>
         {
@@ -121,16 +121,16 @@ internal sealed class ChangelogView : UserControl
             var bold = part.StartsWith("**") && part.EndsWith("**") && part.Length > 4;
             var code = part.StartsWith('`') && part.EndsWith('`') && part.Length > 2;
             Append(content, bold ? part[2..^2] : code ? part[1..^1] : part,
-                heading ? 10 : 9, heading || bold ? FontStyle.Bold : FontStyle.Regular, code);
+                9, heading || bold ? FontStyle.Bold : FontStyle.Regular, code, heading);
         }
     }
 
-    private static void Append(RichTextBox content, string text, float size, FontStyle style, bool code = false)
+    private static void Append(RichTextBox content, string text, float size, FontStyle style, bool code = false, bool muted = false)
     {
         content.SelectionStart = content.TextLength;
         using var font = new Font(code ? "Consolas" : "Segoe UI", size, style);
         content.SelectionFont = font;
-        content.SelectionColor = TrackerTheme.Text;
+        content.SelectionColor = muted ? TrackerTheme.Muted : TrackerTheme.Text;
         content.AppendText(text);
     }
 }

@@ -14,6 +14,8 @@ The overlay is included in desktop/display screen capture. Game-only capture rec
 
 The control window has three compact pages: **Tracking** for ability regions, results, solo tracking, and HUD recording; **Repeat test** for automated measurement cycles; and **Settings** for capture, overlay controls, shortcuts, and updates. Pause/resume and capture status remain visible on every page.
 
+An underline marks the active page. Buttons, dropdowns, session-name fields, and numeric fields share a consistent height and dark styling; native numeric stepping and keyboard editing are preserved. Focused text fields use an accent border. The selection legend highlights the active ability independently of its color.
+
 Pausing preserves each ability's last state and completed result in the control window. An in-progress timer is shown as stopped, not as a completed measurement; resuming starts a fresh detection cycle.
 
 **History** on the Tracking page opens saved measurements, filterable by ability and session. Only completed, event-confirmed results with a captured uncertainty are automatically stored; discarded, warning-bearing, and model-inferred/refined endpoints are excluded. This confirms the observed HUD events, not whether your gameplay setup was correct. Start a named session, take measurements while changing your stats, then select each result and **Save note** (for example, `Grenade stat 5`). New results join the active session automatically; **Assign to active** can add an older result. Sessions and notes are stored in `%AppData%\D2AbilityTracker\measurement-history.json`. End the session when finished. Unreadable history is preserved rather than overwritten.
