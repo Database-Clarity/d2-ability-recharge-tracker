@@ -95,7 +95,7 @@ jobs:
           Settings and measurement history are stored next to the executable.
           Copy the whole folder to move the app and its data together.
           "@ | Set-Content -LiteralPath "$portablePath\PORTABLE.txt" -Encoding utf8
-          Compress-Archive -Path "$portablePath\*" -DestinationPath "$env:RUNNER_TEMP\release\D2AbilityTracker-v$env:RELEASE_VERSION-Portable-win-x64.zip" -CompressionLevel Optimal
+          Compress-Archive -Path "$portablePath\*" -DestinationPath "$env:RUNNER_TEMP\D2AbilityTracker-v$env:RELEASE_VERSION-Portable-win-x64.zip" -CompressionLevel Optimal
 
       - name: Build installer with on-demand runtime download
         run: |
@@ -105,7 +105,9 @@ jobs:
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: windows-x64
-          path: ${{ runner.temp }}\installer\D2AbilityTracker-v${{ steps.version.outputs.version }}-Setup.exe
+          path: |
+            ${{ runner.temp }}\installer\D2AbilityTracker-v${{ steps.version.outputs.version }}-Setup.exe
+            ${{ runner.temp }}\D2AbilityTracker-v${{ steps.version.outputs.version }}-Portable-win-x64.zip
           if-no-files-found: error
           retention-days: 14
 
