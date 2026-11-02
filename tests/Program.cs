@@ -23,6 +23,13 @@ if (args.Length == 2 && args[0] == "--ui-smoke")
                 try
                 {
                     Console.WriteLine("Inspecting visible UI...");
+                    Assert(form is AppWindow && form.FormBorderStyle == FormBorderStyle.None && form.Padding.Top >= 36,
+                        "The app must reserve its integrated caption instead of displaying a native frame.");
+                    Assert(Descendants(form).OfType<Button>().Any(button => button.AccessibleName == "Close") &&
+                        Descendants(form).OfType<Button>().Any(button => button.AccessibleName == "Minimize"),
+                        "Integrated caption actions must have accessible names.");
+                    Assert(WindowHitTest(form, new Point(180, 18)) == 2,
+                        "The integrated title bar must retain native window dragging.");
                     var navigation = Descendants(form).Single(control => control.Name == "PageNavigation");
                     var pages = Descendants(form).Single(control => control.Name == "Pages");
                     Assert(navigation.Controls.Count == 3, "The utility should have Tracking, Repeat test, and Settings pages.");
@@ -98,6 +105,17 @@ if (args.Length == 2 && args[0] == "--ui-smoke")
                     using var historyForm = new MeasurementHistoryForm(smokeHistory);
                     historyForm.Show(form);
                     historyForm.PerformLayout();
+                    Assert(historyForm.FormBorderStyle == FormBorderStyle.None &&
+                        Descendants(historyForm).OfType<Button>().Any(button => button.AccessibleName == "Maximize or restore"),
+                        "History must share app chrome and retain its maximize action.");
+                    Assert(WindowHitTest(historyForm, new Point(1, 1)) == 13 &&
+                        WindowHitTest(historyForm, new Point(historyForm.Width - 2, historyForm.Height - 2)) == 17,
+                        "History must retain corner resize hit targets.");
+                    var maximize = Descendants(historyForm).OfType<Button>().Single(button => button.AccessibleName == "Maximize or restore");
+                    maximize.PerformClick();
+                    Assert(historyForm.WindowState == FormWindowState.Maximized, "History must maximize.");
+                    maximize.PerformClick();
+                    Assert(historyForm.WindowState == FormWindowState.Normal, "History must restore.");
                     using (var image = new Bitmap(historyForm.Width, historyForm.Height))
                     {
                         historyForm.DrawToBitmap(image, new Rectangle(Point.Empty, image.Size));
@@ -111,6 +129,13 @@ if (args.Length == 2 && args[0] == "--ui-smoke")
                     Assert(sessionActions.Controls.Cast<Control>().Select(control => control.Height).Distinct().Count() == 1,
                         "Session name field and its action buttons must have the same height.");
                     var historyGrid = Descendants(historyForm).OfType<DataGridView>().Single();
+                    foreach (var bar in historyGrid.Controls.OfType<ScrollBar>().Where(bar => bar.Visible))
+                    {
+                        using var scrollbarImage = new Bitmap(bar.Width, bar.Height);
+                        bar.DrawToBitmap(scrollbarImage, bar.ClientRectangle);
+                        Assert(scrollbarImage.GetPixel(1, 1).GetBrightness() < 0.3,
+                            "History scrollbars must not expose native light arrow buttons.");
+                    }
                     Assert(historyGrid.Columns["Note"]!.MinimumWidth >= 120 &&
                         historyGrid.ScrollBars == ScrollBars.Both,
                         "A narrow history window must retain a readable note column with horizontal scrolling.");
@@ -125,7 +150,17 @@ if (args.Length == 2 && args[0] == "--ui-smoke")
                         historyForm.DrawToBitmap(image, new Rectangle(Point.Empty, image.Size));
                         image.Save(Path.Combine(args[1], "ui-History-minimum.png"));
                     }
-                    historyForm.Close();
+                    Descendants(historyForm).OfType<Button>().Single(button => button.AccessibleName == "Close").PerformClick();
+                    Assert(!historyForm.Visible, "The integrated close button must close its window.");
+                    using (var guide = new SelectionGuide())
+                    {
+                        guide.Show(form);
+                        Assert(guide.FormBorderStyle == FormBorderStyle.None, "The selection guide must share app chrome.");
+                        using var image = new Bitmap(guide.Width, guide.Height);
+                        guide.DrawToBitmap(image, guide.ClientRectangle);
+                        image.Save(Path.Combine(args[1], "ui-Guide.png"));
+                        guide.Close();
+                    }
                     form.ShowChangelog("Changes since v0.1.15",
                         [new ChangelogRelease(new Version(0, 1, 16), "v0.1.16",
                             "## Changes\n- **Compact** utility layout.\n- `F8` pauses tracking.\n[Full changelog](https://github.com/Database-Clarity/d2-ability-recharge-tracker/compare/v0.1.15...v0.1.16)",
@@ -1122,4 +1157,18 @@ static void Assert(bool condition, string message)
     {
         throw new InvalidOperationException(message);
     }
+
+}
+
+static int WindowHitTest(Form form, Point point)
+{
+    var screen = form.PointToScreen(point);
+    return (int)NativeWindowTest.SendMessage(form.Handle, 0x0084, IntPtr.Zero,
+        (IntPtr)((screen.X & 0xffff) | ((screen.Y & 0xffff) << 16)));
+}
+
+internal static class NativeWindowTest
+{
+    [DllImport("user32.dll")]
+    internal static extern IntPtr SendMessage(IntPtr handle, int message, IntPtr wParam, IntPtr lParam);
 }

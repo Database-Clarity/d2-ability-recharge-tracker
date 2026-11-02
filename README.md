@@ -14,7 +14,7 @@ The overlay is included in desktop/display screen capture. Game-only capture rec
 
 The control window has three compact pages: **Tracking** for ability regions, results, solo tracking, and HUD recording; **Repeat test** for automated measurement cycles; and **Settings** for capture, overlay controls, shortcuts, and updates. Pause/resume and capture status remain visible on every page.
 
-An underline marks the active page. Buttons, dropdowns, session-name fields, and numeric fields share a consistent height and dark styling; native numeric stepping and keyboard editing are preserved. Focused text fields use an accent border. The selection legend highlights the active ability independently of its color.
+An underline marks the active page. The main window and measurement history use integrated dark title bars and borders, with standard drag, minimize, close, and (for history) resize/maximize behavior. Buttons, dropdowns, session-name fields, and numeric fields share a consistent height and dark styling; numeric fields use +/− controls instead of legacy spinner arrows while preserving native stepping and keyboard editing. Focused text fields use an accent border. The selection legend highlights the active ability independently of its color.
 
 Pausing preserves each ability's last state and completed result in the control window. An in-progress timer is shown as stopped, not as a completed measurement; resuming starts a fresh detection cycle.
 

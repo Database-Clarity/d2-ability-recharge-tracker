@@ -7,7 +7,7 @@ using System.Windows.Forms;
 
 namespace D2AbilityTracker;
 
-internal sealed partial class MainForm : Form
+internal sealed partial class MainForm : AppWindow
 {
     private static readonly AbilityKind[] AbilityKinds = Enum.GetValues<AbilityKind>();
     private readonly string _settingsPath = Path.Combine(
@@ -90,7 +90,6 @@ internal sealed partial class MainForm : Form
         _targetCaptureRate = Math.Clamp(_settings.CaptureRate, 30, 240);
         AutoSize = true;
         AutoSizeMode = AutoSizeMode.GrowAndShrink;
-        FormBorderStyle = FormBorderStyle.FixedDialog;
         MaximizeBox = false;
         StartPosition = FormStartPosition.CenterScreen;
         Font = new Font("Segoe UI", 9);
@@ -275,7 +274,6 @@ internal sealed partial class MainForm : Form
         Font = new Font("Segoe UI", 9);
         AutoScaleDimensions = new SizeF(96, 96);
         AutoScaleMode = AutoScaleMode.Dpi;
-        HandleCreated += (_, _) => TrackerTheme.DarkTitleBar(Handle);
         _toolTip.BackColor = TrackerTheme.Surface;
         _toolTip.ForeColor = TrackerTheme.Text;
 
@@ -621,15 +619,15 @@ internal sealed partial class MainForm : Form
             var chrome = Size - ClientSize;
             var available = new Size(Math.Max(320, workArea.Width - chrome.Width - 24),
                 Math.Max(240, workArea.Height - chrome.Height - 24));
-            var height = Math.Min(desired.Height, available.Height);
+            var height = Math.Min(desired.Height + Padding.Vertical, available.Height);
             var width = Math.Min(desired.Width + (height < desired.Height ? SystemInformation.VerticalScrollBarWidth : 0), available.Width);
-            ClientSize = new Size(width, height);
+            ClientSize = new Size(width + Padding.Horizontal, height);
         }
         Shown += (_, _) => FitWindowToDisplay();
         _lastRecordingLink.VisibleChanged += (_, _) => FitWindowToDisplay();
         _hudRecordingStatus.VisibleChanged += (_, _) => FitWindowToDisplay();
         DpiChanged += (_, _) => BeginInvoke((Action)FitWindowToDisplay);
-        ClientSize = root.GetPreferredSize(Size.Empty);
+        ClientSize = root.GetPreferredSize(Size.Empty) + Padding.Size;
     }
     private async void ToggleHudRecording()
     {

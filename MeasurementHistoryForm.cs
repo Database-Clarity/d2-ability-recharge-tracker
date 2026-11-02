@@ -1,7 +1,8 @@
 namespace D2AbilityTracker;
 
-internal sealed class MeasurementHistoryForm : Form
+internal sealed class MeasurementHistoryForm : AppWindow
 {
+    protected override bool ResizeWindow => true;
     private readonly MeasurementHistoryStore _history;
     private readonly FlatComboBox _abilityFilter = new();
     private readonly FlatComboBox _sessionFilter = new();
@@ -21,14 +22,12 @@ internal sealed class MeasurementHistoryForm : Form
         _history = history;
         Text = "Measurement history";
         StartPosition = FormStartPosition.CenterParent;
-        FormBorderStyle = FormBorderStyle.Sizable;
         MinimizeBox = false;
         MinimumSize = new Size(800, 440);
         Size = new Size(980, 560);
         BackColor = TrackerTheme.Background;
         ForeColor = TrackerTheme.Text;
         Font = new Font("Segoe UI", 9);
-        HandleCreated += (_, _) => TrackerTheme.DarkTitleBar(Handle);
 
         _abilityFilter.DropDownStyle = ComboBoxStyle.DropDownList;
         _abilityFilter.Width = 125;
@@ -95,6 +94,8 @@ internal sealed class MeasurementHistoryForm : Form
         _measurements.CellBorderStyle = DataGridViewCellBorderStyle.SingleHorizontal;
         _measurements.RowTemplate.Height = 28;
         _measurements.EnableHeadersVisualStyles = false;
+        foreach (var bar in _measurements.Controls.OfType<ScrollBar>())
+            _ = new ScrollBarSkin(bar);
         AddTextColumn("Ability", "Ability", 86);
         AddTextColumn("Measured", "Measured", 145);
         AddTextColumn("Regression", "Regression", 205);
@@ -103,7 +104,7 @@ internal sealed class MeasurementHistoryForm : Form
         AddTextColumn("Note", "Note", 200, fill: true);
 
         _note.Multiline = true;
-        _note.ScrollBars = ScrollBars.Vertical;
+        _note.ScrollBars = ScrollBars.None;
         _note.Dock = DockStyle.Fill;
         _note.Height = 54;
         _note.BackColor = TrackerTheme.Surface;

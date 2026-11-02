@@ -50,16 +50,16 @@ internal sealed class FlatNumericUpDown : NumericUpDown
 
         private void Draw(Graphics graphics)
         {
-            graphics.Clear(TrackerTheme.Surface);
+            using var background = new SolidBrush(TrackerTheme.Surface);
+            graphics.FillRectangle(background, _control.ClientRectangle);
             var width = _control.ClientSize.Width;
             var height = _control.ClientSize.Height;
             var center = width / 2;
             var arm = Math.Max(2, width / 5);
-            using var arrow = new SolidBrush(_control.Enabled ? TrackerTheme.Text : TrackerTheme.Muted);
-            graphics.FillPolygon(arrow, [new Point(center, height / 4 - 2),
-                new Point(center - arm, height / 4 + 2), new Point(center + arm, height / 4 + 2)]);
-            graphics.FillPolygon(arrow, [new Point(center, height * 3 / 4 + 2),
-                new Point(center - arm, height * 3 / 4 - 2), new Point(center + arm, height * 3 / 4 - 2)]);
+            using var stroke = new Pen(_control.Enabled ? TrackerTheme.Text : TrackerTheme.Muted, Math.Max(1, _control.DeviceDpi / 96f));
+            graphics.DrawLine(stroke, center - arm, height / 4, center + arm, height / 4);
+            graphics.DrawLine(stroke, center, height / 4 - arm, center, height / 4 + arm);
+            graphics.DrawLine(stroke, center - arm, height * 3 / 4, center + arm, height * 3 / 4);
         }
 
         public void Dispose()

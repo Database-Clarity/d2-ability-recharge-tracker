@@ -3,19 +3,18 @@ using System.Drawing.Drawing2D;
 
 namespace D2AbilityTracker;
 
-internal sealed class SelectionGuide : Form
+internal sealed class SelectionGuide : AppWindow
 {
     public SelectionGuide()
     {
         Text = "Ability region selection guide";
-        ClientSize = new Size(740, 560);
+        ClientSize = new Size(740, 560 + CaptionHeight);
         StartPosition = FormStartPosition.CenterParent;
-        FormBorderStyle = FormBorderStyle.FixedDialog;
         MaximizeBox = false;
         MinimizeBox = false;
         ShowInTaskbar = false;
         TopMost = true;
-        BackColor = Color.FromArgb(18, 22, 30);
+        BackColor = TrackerTheme.Background;
         ForeColor = Color.White;
         Font = new Font("Segoe UI", 10);
         DoubleBuffered = true;
@@ -23,7 +22,7 @@ internal sealed class SelectionGuide : Form
         {
             Text = "Got it",
             DialogResult = DialogResult.OK,
-            Location = new Point(610, 514),
+            Location = new Point(610, 514 + CaptionHeight),
             Size = new Size(108, 32),
             ForeColor = Color.White,
             BackColor = Color.FromArgb(42, 48, 60),
@@ -39,6 +38,8 @@ internal sealed class SelectionGuide : Form
     {
         base.OnPaint(e);
         var graphics = e.Graphics;
+        var state = graphics.Save();
+        graphics.TranslateTransform(0, CaptionHeight);
         graphics.SmoothingMode = SmoothingMode.AntiAlias;
         using var white = new SolidBrush(Color.White);
         using var muted = new SolidBrush(Color.FromArgb(200, 211, 224));
@@ -65,6 +66,7 @@ internal sealed class SelectionGuide : Form
         graphics.DrawString("Brief thickening", Font, good, 228, 439);
         graphics.DrawString("Start at this captured frame.\nThe moving line inside the square\nis NOT the start trigger.", Font, muted, 410, 357);
         graphics.DrawString("3  Wheel / +/-: zoom   |   Right/middle-drag: pan\nDrag inside: move   |   Drag corners: resize   |   Use selection: save", Font, white, 22, 481);
+        graphics.Restore(state);
     }
 
     private static void DrawSlot(Graphics graphics, int x, int y, bool charged, int size = 140)
