@@ -48,6 +48,19 @@ if (args.Length == 2 && args[0] == "--ui-smoke")
                         Assert(updateButton.Visible && form.ClientRectangle.Contains(form.RectangleToClient(
                             updateButton.RectangleToScreen(updateButton.ClientRectangle))),
                             "The update action must remain visible and inside the window on every page.");
+                        var statusPill = Descendants(form).OfType<StatusPill>().Single();
+                        var lastLink = navigation.Controls.Cast<Control>().Last();
+                        var linksRight = lastLink.RectangleToScreen(lastLink.ClientRectangle).Right;
+                        var updateLeft = updateButton.RectangleToScreen(updateButton.ClientRectangle).Left;
+                        var pillBounds = statusPill.RectangleToScreen(statusPill.ClientRectangle);
+                        Assert(statusPill.Parent is { Name: "MainNavigation" } && statusPill.Visible &&
+                            !string.IsNullOrWhiteSpace(statusPill.Text) &&
+                            linksRight <= pillBounds.Left && pillBounds.Right <= updateLeft &&
+                            TextRenderer.MeasureText("Detecting · DXGI · 240/240 Hz", statusPill.Font).Width +
+                                statusPill.Padding.Horizontal <= updateLeft - linksRight,
+                            "The capture status pill must sit between page navigation and the update action without clipping on every page.");
+                        Assert(!Descendants(form).OfType<Label>().Any(label => label.Visible && label.Text.StartsWith("Detection enabled")),
+                            "The footer capture status must be replaced by the banner and pill.");
                         var page = pages.Controls.Cast<Control>().Single(control => control.Visible);
                         if (link.Text == "Tracking")
                         {
@@ -139,6 +152,8 @@ if (args.Length == 2 && args[0] == "--ui-smoke")
                         form.DrawToBitmap(image, new Rectangle(Point.Empty, image.Size));
                         image.Save(Path.Combine(args[1], $"ui-{link.Text.Replace(' ', '-')}.png"));
                     }
+
+                    RenderCaptureStatusStates(form, navigation, args[1]);
 
                     foreach (var button in Descendants(form).OfType<Button>().Where(button => !button.Enabled && !string.IsNullOrWhiteSpace(button.Text)))
                     {
@@ -730,10 +745,81 @@ Assert(!MainForm.CaptureIsRecent(1000, 0, 1000) &&
     "Capture activity must expire after two seconds and never infer activity before the first frame.");
 Assert(MainForm.UnavailableMeasurementStatus(estimatingTracker) == "No capture frames\nWaiting for screen capture",
     "Unavailable capture must not imply a live recharge or completed measurement.");
-Assert(MainForm.UnavailableMeasurementStatus(finalTracker).Contains("last 10.00") &&
+Assert(MainForm.UnavailableMeasurementStatus(finalTracker).Contains("Last 10.00") &&
     MainForm.UnavailableMeasurementStatus(finalTracker).Contains("regression") &&
     MainForm.UnavailableMeasurementStatus(finalTracker).Split('\n').Length == 2,
     "Unavailable capture must retain the last completed result and regression in two rows.");
+Assert(MainForm.UnavailableMeasurementStatus(finalTracker, "Waiting for game", string.Empty) is var waitingRow &&
+    waitingRow.StartsWith("Waiting for game\nLast 10.00", StringComparison.Ordinal) &&
+    MainForm.UnavailableMeasurementStatus(estimatingTracker, "Waiting for game", string.Empty) == "Waiting for game\n",
+    "Waiting rows must name the reason first and keep the last result on the second line.");
+AbilityKind[] allCaptured = [AbilityKind.Grenade, AbilityKind.Melee, AbilityKind.ClassAbility];
+var gameMissing = MainForm.RouteCaptureErrors(
+    allCaptured.ToDictionary(kind => kind, _ => MainForm.GameWindowUnavailableError), allCaptured);
+Assert(gameMissing.WaitingForGame && gameMissing.SharedError is null && gameMissing.RowErrors.Count == 0,
+    "A missing Destiny 2 window must be routed to the banner instead of repeating on every row.");
+Assert(MainForm.RouteCaptureErrors(new Dictionary<AbilityKind, string> { [AbilityKind.Melee] = MainForm.GameWindowUnavailableError },
+        [AbilityKind.Melee]).WaitingForGame,
+    "A missing game window is global even when only one ability is tracked.");
+var sharedFailure = MainForm.RouteCaptureErrors(allCaptured.ToDictionary(kind => kind, _ => "Access denied"), allCaptured);
+Assert(sharedFailure.SharedError == "Access denied" && sharedFailure.RowErrors.Count == 0 && !sharedFailure.WaitingForGame,
+    "One identical error on every captured slot must be shown once in the banner.");
+var distinctFailures = MainForm.RouteCaptureErrors(new Dictionary<AbilityKind, string>
+{
+    [AbilityKind.Grenade] = "Area is outside the display",
+    [AbilityKind.Melee] = "Another failure"
+}, allCaptured);
+Assert(distinctFailures.SharedError is null && distinctFailures.RowErrors.Count == 2 &&
+    distinctFailures.RowErrors[AbilityKind.Grenade] == "Area is outside the display",
+    "Distinct per-slot failures must stay on their own rows.");
+var partialFailure = MainForm.RouteCaptureErrors(new Dictionary<AbilityKind, string>
+{
+    [AbilityKind.Grenade] = "Access denied",
+    [AbilityKind.Melee] = "Access denied"
+}, allCaptured);
+Assert(partialFailure.SharedError is null && partialFailure.RowErrors.Count == 2,
+    "An error is only global when every captured slot shares it.");
+Assert(MainForm.RouteCaptureErrors(new Dictionary<AbilityKind, string> { [AbilityKind.ClassAbility] = "Area is outside the display" },
+        [AbilityKind.ClassAbility]).RowErrors.ContainsKey(AbilityKind.ClassAbility),
+    "A single tracked slot's own failure must remain a row error.");
+var mixedFailure = MainForm.RouteCaptureErrors(new Dictionary<AbilityKind, string>
+{
+    [AbilityKind.Grenade] = MainForm.GameWindowUnavailableError,
+    [AbilityKind.ClassAbility] = "Area is outside the display"
+}, allCaptured);
+Assert(mixedFailure.WaitingForGame && mixedFailure.RowErrors.Keys.SequenceEqual([AbilityKind.ClassAbility]),
+    "A missing game window must not hide another slot's distinct failure.");
+TrackingStatusSnapshot StatusSnapshot(CaptureErrorRouting routing, bool monitoring = true, bool stalled = false,
+    string? loopError = null, string? inputError = null, bool hasRegions = true, double rate = 118) =>
+    new(monitoring, InputBinding.DefaultPause, loopError, inputError, hasRegions, routing, stalled, "DXGI", rate, 120);
+var healthy = MainForm.RouteCaptureErrors(new Dictionary<AbilityKind, string>(), allCaptured);
+var waitingStatus = MainForm.DescribeTrackingStatus(StatusSnapshot(gameMissing, stalled: true));
+Assert(waitingStatus.Banner is { Tone: StatusTone.Warning } waitingBanner && waitingBanner.Text == MainForm.WaitingForGameBanner &&
+    waitingStatus.Pill == new StatusMessage("Waiting for game", StatusTone.Warning),
+    "Waiting for the game must be an amber banner and pill, not a red failure.");
+var sharedStatus = MainForm.DescribeTrackingStatus(StatusSnapshot(sharedFailure));
+Assert(sharedStatus.Banner is { Tone: StatusTone.Error } sharedBanner && sharedBanner.Text.Contains("Access denied") &&
+    sharedStatus.Pill.Tone == StatusTone.Error,
+    "A shared capture failure must be reported once in red.");
+Assert(MainForm.DescribeTrackingStatus(StatusSnapshot(healthy, loopError: "Device lost")) is
+{ Banner: { Tone: StatusTone.Error, Text: "Capture stopped: Device lost" } },
+    "A crashed capture loop must be reported as stopped.");
+Assert(MainForm.DescribeTrackingStatus(StatusSnapshot(healthy, stalled: true)) is
+{ Banner: { Tone: StatusTone.Warning, Text: "No capture frames · DXGI" }, Pill.Tone: StatusTone.Warning },
+    "Missing capture frames must name the backend in an amber banner.");
+var detectingStatus = MainForm.DescribeTrackingStatus(StatusSnapshot(healthy));
+Assert(detectingStatus.Banner is null && detectingStatus.Pill == new StatusMessage("Detecting · DXGI · 118/120 Hz", StatusTone.Good),
+    "Healthy detection must show only the green pill with backend and rate.");
+var pausedStatus = MainForm.DescribeTrackingStatus(StatusSnapshot(gameMissing, monitoring: false));
+Assert(pausedStatus.Banner is null && pausedStatus.Pill.Tone == StatusTone.Neutral &&
+    pausedStatus.Pill.Text == $"Paused · {InputBinding.DefaultPause} to resume",
+    "Paused must be neutral, name the actual resume shortcut, and hide stale capture errors.");
+Assert(MainForm.DescribeTrackingStatus(StatusSnapshot(healthy, inputError: "Hook failed")) is
+{ Banner: { Tone: StatusTone.Warning } inputBanner, Pill.Tone: StatusTone.Good } && inputBanner.Text.Contains("Hook failed"),
+    "Unavailable input hooks must be an amber one-line banner while detection continues.");
+Assert(MainForm.DescribeTrackingStatus(StatusSnapshot(healthy, hasRegions: false)) is
+{ Banner.Tone: StatusTone.Neutral, Pill.Tone: StatusTone.Neutral },
+    "An unconfigured tracker must not report a failure.");
 
 var repeatShortcut = new InputBinding(InputDevice.Keyboard, 0x79, InputModifiers.Alt);
 var settings = new TrackerSettings
@@ -1362,6 +1448,93 @@ static void AssertReadableButtons(System.Windows.Forms.Control control)
         }
 
         AssertReadableButtons(child);
+    }
+}
+
+// Simulates "Destiny 2 not found" and a slot-specific failure on Tracking without persisting settings.
+static void RenderCaptureStatusStates(MainForm form, Control navigation, string outputDirectory)
+{
+    const System.Reflection.BindingFlags flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+    T Field<T>(string name) => (T)typeof(MainForm).GetField(name, flags)!.GetValue(form)!;
+    var settings = Field<TrackerSettings>("_settings");
+    var captureErrors = Field<Dictionary<AbilityKind, string>>("_captureErrors");
+    var statusLabels = Field<Dictionary<AbilityKind, Label>>("_statusLabels");
+    var toolTip = Field<ToolTip>("_toolTip");
+    var sync = Field<object>("_captureSync");
+    var updateStatus = typeof(MainForm).GetMethod("UpdateStatus", flags)!;
+    var banner = Descendants(form).OfType<StatusBanner>().Single();
+    var pill = Descendants(form).OfType<StatusPill>().Single();
+    navigation.Controls.OfType<Button>().Single(button => button.Text == "Tracking").PerformClick();
+    var savedRegions = settings.Slots.ToDictionary(slot => slot.Kind, slot => slot.Region);
+    var savedSolo = settings.SoloAbility;
+    Dictionary<AbilityKind, string> savedErrors;
+    lock (sync)
+    {
+        savedErrors = new Dictionary<AbilityKind, string>(captureErrors);
+    }
+
+    void SetErrors(Dictionary<AbilityKind, string> errors)
+    {
+        lock (sync)
+        {
+            captureErrors.Clear();
+            foreach (var error in errors) captureErrors[error.Key] = error.Value;
+        }
+        updateStatus.Invoke(form, null);
+        form.PerformLayout();
+    }
+
+    void Save(string name)
+    {
+        using var image = new Bitmap(form.Width, form.Height);
+        form.DrawToBitmap(image, new Rectangle(Point.Empty, image.Size));
+        image.Save(Path.Combine(outputDirectory, name));
+    }
+
+    try
+    {
+        lock (sync)
+        {
+            settings.SoloAbility = null;
+            foreach (var slot in settings.Slots)
+                slot.Region ??= new Rectangle(100 + 90 * (int)slot.Kind, 900, 60, 64);
+        }
+
+        SetErrors(Enum.GetValues<AbilityKind>().ToDictionary(kind => kind, _ => MainForm.GameWindowUnavailableError));
+        Assert(banner.Visible && banner.Tone == StatusTone.Warning && banner.Text == MainForm.WaitingForGameBanner &&
+            pill.Tone == StatusTone.Warning && pill.Text == "Waiting for game",
+            "A missing Destiny 2 window must show one amber banner and pill.");
+        Assert(statusLabels.Values.All(label => label.Text.StartsWith("Waiting for game\n", StringComparison.Ordinal) &&
+                label.ForeColor == TrackerTheme.Muted && !label.Text.Contains("Destiny 2 window")),
+            "Rows must show a muted waiting state instead of repeating the global error.");
+        Assert(form.ClientRectangle.Contains(form.RectangleToClient(banner.RectangleToScreen(banner.ClientRectangle))) &&
+            TextRenderer.MeasureText(banner.Text, banner.Font).Width + banner.Padding.Horizontal <= banner.Width,
+            "The waiting banner must fit inside the window without truncation.");
+        Assert(Descendants(form).OfType<Button>().Single(button => button.Text.Contains("Pause detection")).ForeColor == TrackerTheme.Text,
+            "Capture health must not be encoded in the pause button color.");
+        Save("ui-Tracking-waiting.png");
+
+        const string slotError = "Ability area is outside the current display.";
+        SetErrors(new Dictionary<AbilityKind, string> { [AbilityKind.Melee] = slotError });
+        Assert(statusLabels[AbilityKind.Melee].ForeColor == TrackerTheme.Red &&
+            statusLabels[AbilityKind.Melee].Text.StartsWith("Capture failed\n", StringComparison.Ordinal) &&
+            toolTip.GetToolTip(statusLabels[AbilityKind.Melee]) == slotError,
+            "A slot-specific failure must be red on that row with the full text in its tooltip.");
+        Assert(statusLabels.Where(item => item.Key != AbilityKind.Melee).All(item => item.Value.ForeColor != TrackerTheme.Red) &&
+            !(banner.Visible && banner.Text.Contains(slotError)),
+            "A slot-specific failure must not be routed to the banner or other rows.");
+        Save("ui-Tracking-row-error.png");
+    }
+    finally
+    {
+        lock (sync)
+        {
+            settings.SoloAbility = savedSolo;
+            foreach (var slot in settings.Slots)
+                slot.Region = savedRegions[slot.Kind];
+        }
+
+        SetErrors(savedErrors);
     }
 }
 

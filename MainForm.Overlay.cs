@@ -97,17 +97,22 @@ internal sealed partial class MainForm
                 .Select(kind => BuildOverlayRow(kind, twoLines))
                 .ToArray();
 
+            var capturedKinds = CapturedKinds();
             var accent = !_monitoring
                 ? Color.Gray
-                : _trackers.Values.Any(tracker => tracker.State == AbilityState.Recharging)
-                    ? OverlayRechargingColor
-                    : OverlayReadyColor;
+                : capturedKinds.Any(_captureErrors.ContainsKey) || CaptureStalled(capturedKinds.Length > 0)
+                    ? OverlayWarningColor
+                    : _trackers.Values.Any(tracker => tracker.State == AbilityState.Recharging)
+                        ? OverlayRechargingColor
+                        : OverlayReadyColor;
             var savedMonitor = _settings.Slots.FirstOrDefault(slot => slot.Region is not null);
             var monitor = savedMonitor?.MonitorDeviceName is { } deviceName
                 ? Screen.AllScreens.FirstOrDefault(screen => screen.DeviceName.Equals(deviceName, StringComparison.OrdinalIgnoreCase))?.Bounds
                     ?? savedMonitor.MonitorBounds
                 : savedMonitor?.MonitorBounds;
-            _overlay.SetContent(_monitoring ? "ABILITY RECHARGE" : "TRACKING PAUSED", rows, twoLines, accent, monitor, _settings.OverlayAnchor);
+            var title = _monitoring ? "ABILITY RECHARGE"
+                : PauseBinding is { } pause ? $"PAUSED · {pause} TO RESUME".ToUpperInvariant() : "PAUSED";
+            _overlay.SetContent(title, rows, twoLines, accent, monitor, _settings.OverlayAnchor);
         }
     }
 
@@ -132,6 +137,18 @@ internal sealed partial class MainForm
         if (slot?.Region is null)
         {
             return Row("Select area", "Pick the HUD slot in the app", "Select area", OverlayWarningColor);
+        }
+
+        if (_captureErrors.TryGetValue(kind, out var captureError))
+        {
+            var reason = captureError == GameWindowUnavailableError ? "Waiting for game"
+                : _captureLoopError is not null ? "Capture stopped" : "Capture failed";
+            return Row(reason, last, null, OverlayWarningColor);
+        }
+
+        if (CaptureStalled(true))
+        {
+            return Row("No capture frames", last, null, OverlayWarningColor);
         }
 
         if (tracker?.State == AbilityState.Recharging)

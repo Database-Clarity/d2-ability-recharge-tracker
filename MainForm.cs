@@ -19,7 +19,8 @@ internal sealed partial class MainForm : AppWindow
     private readonly object _captureSync = new();
     private readonly GlobalInputListener _inputListener = new();
     private readonly Thread _captureThread;
-    private readonly Label _stateStatus = new();
+    private readonly StatusBanner _statusBanner = new();
+    private readonly StatusPill _statusPill = new();
     private readonly Button _toggleButton = new();
     private readonly Button _pauseBindingButton = new();
     private readonly Button _abilityUseBindingButton = new();
@@ -60,6 +61,8 @@ internal sealed partial class MainForm : AppWindow
     private double _captureRate;
     private long _lastCapturedFrame;
     private string? _captureLoopError;
+    private long _monitoringStarted;
+    private bool _statusBannerShown;
     private volatile string _captureBackend = "GDI";
     private string? _inputListenerError;
     private int _targetCaptureRate;
@@ -195,6 +198,7 @@ internal sealed partial class MainForm : AppWindow
 
     private readonly CheckBox _overlayMoveToggle = new();
     private const int GridWidth = 640;
+    private const int StatusPillWidth = 210;
     private const int HistoryHeight = 500;
     private const int HistoryMinimumHeight = 460;
 
@@ -561,11 +565,16 @@ internal sealed partial class MainForm : AppWindow
         _toolTip.SetToolTip(_captureFolderButton, Path.GetDirectoryName(AbilityHudRecorder.DefaultPath(DateTime.Now)));
         Place(recording, _captureFolderButton, 1, 0, stretch: false);
 
-        _stateStatus.AutoSize = false;
-        _stateStatus.Height = 24;
-        _stateStatus.AutoEllipsis = true;
-        _stateStatus.TextAlign = ContentAlignment.MiddleLeft;
-        _stateStatus.ForeColor = TrackerTheme.Muted;
+        _statusBanner.Name = "TrackingStatusBanner";
+        _statusBanner.Width = GridWidth - 8;
+        _statusBanner.Height = 32;
+        _statusBanner.Margin = new Padding(3, 3, 5, 5);
+        _statusBanner.Visible = false;
+        _statusPill.Name = "CaptureStatus";
+        _statusPill.AccessibleName = "Capture status";
+        _statusPill.MaximumSize = new Size(StatusPillWidth - 8, 0);
+        _statusPill.Anchor = AnchorStyles.Right;
+        _statusPill.Margin = new Padding(3, 3, 5, 3);
 
         var root = new TableLayoutPanel
         {
@@ -590,10 +599,11 @@ internal sealed partial class MainForm : AppWindow
             Margin = Padding.Empty,
             Padding = Padding.Empty
         };
-        var navigationRow = Grid(GridWidth - 180, 180);
+        var navigationRow = Grid(GridWidth - StatusPillWidth - 180, StatusPillWidth, 180);
         navigationRow.Name = "MainNavigation";
         navigationRow.Controls.Add(navigation, 0, 0);
-        Place(navigationRow, _updateButton, 1, 0);
+        navigationRow.Controls.Add(_statusPill, 1, 0);
+        Place(navigationRow, _updateButton, 2, 0);
         var pages = new Panel
         {
             Name = "Pages",
@@ -626,6 +636,7 @@ internal sealed partial class MainForm : AppWindow
             return content;
         }
         var trackingPage = AddPage("Tracking");
+        trackingPage.Controls.Add(_statusBanner);
         trackingPage.Controls.Add(actions);
         trackingPage.Controls.Add(abilities);
         trackingPage.Controls.Add(recording);
@@ -646,9 +657,6 @@ internal sealed partial class MainForm : AppWindow
         root.Controls.Add(header);
         root.Controls.Add(navigationRow);
         root.Controls.Add(pages);
-        _stateStatus.Width = GridWidth - 6;
-        _stateStatus.Margin = new Padding(3, 2, 3, 0);
-        root.Controls.Add(_stateStatus);
         root.Controls.Add(historyView);
         AutoSize = false;
         var viewport = new Panel { Dock = DockStyle.Fill, AutoScroll = true };
@@ -1343,45 +1351,67 @@ internal sealed partial class MainForm : AppWindow
     {
         lock (_captureSync)
         {
+            var capturedKinds = CapturedKinds();
+            var errors = RouteCaptureErrors(_captureErrors, capturedKinds);
+            var stalled = CaptureStalled(capturedKinds.Length > 0);
             foreach (var kind in AbilityKinds)
             {
                 var slot = GetSlot(kind);
                 var tracker = _trackers[kind];
+                var statusLabel = _statusLabels[kind];
                 _regionLabels[kind].Text = slot.Region is { } region
                     ? $"{region.Width} × {region.Height}"
                     : "Not set";
-                if (_captureErrors.TryGetValue(kind, out var captureError))
-                {
-                    _statusLabels[kind].Text = $"Capture failed\n{captureError.ReplaceLineEndings(" ")}";
-                    _statusLabels[kind].ForeColor = TrackerTheme.Red;
-                    continue;
-                }
-
                 _soloToggles[kind].Checked = _settings.SoloAbility == kind;
                 _soloToggles[kind].Text = _settings.SoloAbility == kind ? "Only this ✓" : "Track only";
+                var rowError = _monitoring ? errors.RowErrors.GetValueOrDefault(kind) : null;
+                if (_toolTip.GetToolTip(statusLabel) != (rowError ?? string.Empty))
+                {
+                    _toolTip.SetToolTip(statusLabel, rowError);
+                }
+
                 if (!IsTracked(kind))
                 {
-                    _statusLabels[kind].Text = $"Skipped (track only)\nTracking {KindName(_settings.SoloAbility!.Value)}";
-                    _statusLabels[kind].ForeColor = TrackerTheme.Muted;
+                    statusLabel.Text = $"Skipped (track only)\nTracking {KindName(_settings.SoloAbility!.Value)}";
+                    statusLabel.ForeColor = TrackerTheme.Muted;
                     continue;
                 }
 
                 if (!_monitoring)
                 {
-                    _statusLabels[kind].Text = "Paused · " + PausedMeasurementStatus(tracker);
-                    _statusLabels[kind].ForeColor = TrackerTheme.Muted;
+                    statusLabel.Text = "Paused · " + PausedMeasurementStatus(tracker);
+                    statusLabel.ForeColor = TrackerTheme.Muted;
                     continue;
                 }
 
-                if (slot.Region is not null && !HasRecentCapture())
+                if (rowError is not null)
                 {
-                    _statusLabels[kind].Text = UnavailableMeasurementStatus(tracker);
-                    _statusLabels[kind].ForeColor = TrackerTheme.Orange;
+                    // Only failures specific to this slot are shown in red on its row.
+                    statusLabel.Text = $"Capture failed\n{rowError.ReplaceLineEndings(" ")}";
+                    statusLabel.ForeColor = TrackerTheme.Red;
                     continue;
                 }
 
-                _statusLabels[kind].Text = MeasurementStatus(tracker, slot.Region is not null);
-                _statusLabels[kind].ForeColor = tracker.State switch
+                if (_captureErrors.TryGetValue(kind, out var sharedError))
+                {
+                    // Global failures are explained once by the banner; rows keep their last result.
+                    statusLabel.Text = UnavailableMeasurementStatus(tracker,
+                        sharedError == GameWindowUnavailableError ? "Waiting for game"
+                            : _captureLoopError is not null ? "Capture stopped" : "Not capturing",
+                        string.Empty);
+                    statusLabel.ForeColor = TrackerTheme.Muted;
+                    continue;
+                }
+
+                if (slot.Region is not null && stalled)
+                {
+                    statusLabel.Text = UnavailableMeasurementStatus(tracker);
+                    statusLabel.ForeColor = TrackerTheme.Muted;
+                    continue;
+                }
+
+                statusLabel.Text = MeasurementStatus(tracker, slot.Region is not null);
+                statusLabel.ForeColor = tracker.State switch
                 {
                     AbilityState.Consumed => TrackerTheme.Orange,
                     AbilityState.Recharging => TrackerTheme.Accent,
@@ -1390,35 +1420,34 @@ internal sealed partial class MainForm : AppWindow
                 };
                 if (tracker.TrackingWarning is { } warning)
                 {
-                    _statusLabels[kind].Text = $"{FormatDuration(tracker.CurrentDuration)}\n{warning.ReplaceLineEndings(" ")}";
-                    _statusLabels[kind].ForeColor = TrackerTheme.Orange;
+                    statusLabel.Text = $"{FormatDuration(tracker.CurrentDuration)}\n{warning.ReplaceLineEndings(" ")}";
+                    statusLabel.ForeColor = TrackerTheme.Orange;
                 }
                 else if (tracker.State == AbilityState.Recharging && tracker.DisplayProgress is { } progress)
                 {
-                    _statusLabels[kind].Text = $"Recharging · {FormatDuration(tracker.CurrentDuration)} · {progress:P0}\n";
+                    statusLabel.Text = $"Recharging · {FormatDuration(tracker.CurrentDuration)} · {progress:P0}\n";
                     if (tracker.EstimatedDuration is { } estimated && tracker.EstimateUncertainty is { } spread)
                     {
-                        _statusLabels[kind].Text += $"Estimated {estimated.TotalSeconds:F2} ± {spread.TotalSeconds:F2} s";
+                        statusLabel.Text += $"Estimated {estimated.TotalSeconds:F2} ± {spread.TotalSeconds:F2} s";
                     }
                 }
             }
 
             _toggleButton.Text = WithShortcut(_monitoring ? "Pause detection" : "Resume detection", PauseBinding);
-            _toggleButton.ForeColor = !_monitoring ? TrackerTheme.Muted : HasRecentCapture() ? TrackerTheme.Green : TrackerTheme.Orange;
             _startTestButton.Text = WithShortcut("Start test", _settings.RepeatTestBinding);
             _stopTestButton.Text = WithShortcut("Stop test", _settings.RepeatTestBinding);
             UpdateOverlayToggleText();
-            _stateStatus.Text = _captureLoopError is { } captureLoopError
-                ? $"Capture stopped: {captureLoopError}"
-                : _inputListenerError is { } inputListenerError
-                ? $"Input shortcuts unavailable: {inputListenerError}"
-                : _monitoring
-                ? !AbilityKinds.Any(kind => IsTracked(kind) && GetSlot(kind).Region is not null)
-                    ? "Select ability areas to begin"
-                    : !HasRecentCapture() ? "Detection enabled · waiting for capture frames"
-                    : _captureRate <= 0 ? $"Detecting · {_captureBackend} · starting"
-                    : $"Detecting · {_captureBackend} · {_captureRate:F0}/{_targetCaptureRate} Hz"
-                : PauseBinding is { } pause ? $"Paused · {pause} to resume" : "Paused";
+            ShowTrackingStatus(DescribeTrackingStatus(new TrackingStatusSnapshot(
+                _monitoring,
+                PauseBinding,
+                _captureLoopError,
+                _inputListenerError,
+                capturedKinds.Length > 0,
+                errors,
+                stalled,
+                _captureBackend,
+                _captureRate,
+                _targetCaptureRate)));
             _testStatus.Text = _repeatTest.Phase == RepeatTestPhase.Idle
                 ? "Ready · start the test, then manually use the ability once. Cycle results appear here."
                 : _repeatTest.Status(DateTime.UtcNow);
@@ -2030,6 +2059,7 @@ internal sealed partial class MainForm : AppWindow
 
             _monitoring = enabled;
             Interlocked.Exchange(ref _lastCapturedFrame, 0);
+            _monitoringStarted = Stopwatch.GetTimestamp();
             if (!enabled)
             {
                 _repeatTest.Stop();
@@ -2055,10 +2085,18 @@ internal sealed partial class MainForm : AppWindow
     internal static string PausedMeasurementStatus(AbilitySlotTracker tracker)
         => MeasurementStatus(tracker, true, paused: true);
 
-    internal static string UnavailableMeasurementStatus(AbilitySlotTracker tracker) =>
-        tracker.LastDuration is { } duration
-            ? $"No capture frames · last {FormatDuration(duration)}{MeasurementSuffix(tracker)}\n{RegressionSuffix(tracker)}"
-            : "No capture frames\nWaiting for screen capture";
+    internal static string UnavailableMeasurementStatus(AbilitySlotTracker tracker,
+        string reason = "No capture frames", string hint = "Waiting for screen capture")
+    {
+        if (tracker.LastDuration is not { } duration)
+        {
+            return $"{reason}\n{hint}";
+        }
+
+        var regression = RegressionSuffix(tracker);
+        return $"{reason}\nLast {FormatDuration(duration)}{MeasurementSuffix(tracker)}" +
+            (regression.Length == 0 ? string.Empty : $" · {regression}");
+    }
 
     internal static string WithShortcut(string text, InputBinding? binding) =>
         binding is null ? text : $"{text} ({binding})";
@@ -2227,7 +2265,7 @@ internal sealed partial class MainForm : AppWindow
         {
             if (_currentGameWindow is not { } gameWindow)
             {
-                throw new InvalidOperationException("Destiny 2 window is unavailable; waiting to recover the HUD.");
+                throw new InvalidOperationException(GameWindowUnavailableError);
             }
 
             return MapRegion(savedRegion, savedWindow, gameWindow.Bounds);

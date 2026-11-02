@@ -15,6 +15,14 @@ internal static class TrackerTheme
     internal static readonly Color Orange = Color.FromArgb(246, 187, 105);
     internal static readonly Color Red = Color.FromArgb(255, 139, 148);
 
+    internal static Color ToneColor(StatusTone tone) => tone switch
+    {
+        StatusTone.Good => Green,
+        StatusTone.Warning => Orange,
+        StatusTone.Error => Red,
+        _ => Muted
+    };
+
     internal static void Apply(Control parent)
     {
         foreach (Control control in parent.Controls)
