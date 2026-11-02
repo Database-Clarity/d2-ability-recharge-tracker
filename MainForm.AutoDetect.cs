@@ -3,8 +3,7 @@ namespace D2AbilityTracker;
 // On-demand automatic detection of ability slot regions.
 internal sealed partial class MainForm
 {
-    /// <summary>Detects this ability's slot in the Destiny 2 window and saves it as its region.</summary>
-    private void AutoDetectRegion(AbilityKind kind)
+    private void AutoDetectRegions()
     {
         if (_selectingRegion)
         {
@@ -30,31 +29,31 @@ internal sealed partial class MainForm
             {
                 using var snapshot = ScreenCapture.Capture(target.Bounds);
                 var regions = AbilitySlotRegionFinder.Find(snapshot, target.Bounds);
-                var index = Array.IndexOf(AbilityKinds, kind);
-                if (index < 0 || regions.Length != AbilityKinds.Length)
+                if (regions.Length != AbilityKinds.Length)
                 {
                     failure = "Couldn't confidently find all three ability slots. Make sure the HUD is visible and you're not in a menu, then try again.";
                 }
                 else
                 {
-                    var slot = GetSlot(kind);
-                    slot.Region = regions[index];
-                    slot.MonitorBounds = target.MonitorBounds;
-                    slot.MonitorDeviceName = target.DeviceName;
-                    slot.GameWindowBounds = target.Bounds;
-                    slot.RegionAutoDetected = true;
-                    _trackers[kind].ResetCycle();
-                    lock (_captureSync)
+                    using var picker = new RegionPicker(snapshot, target.Bounds, target.MonitorBounds,
+                        "the Destiny 2 window", initialSelections: regions);
+                    if (picker.ShowDialog() == DialogResult.OK)
                     {
-                        if (_monitoring)
+                        for (var index = 0; index < AbilityKinds.Length; index++)
                         {
-                            RefreshCaptureRegions();
+                            var kind = AbilityKinds[index];
+                            var slot = GetSlot(kind);
+                            slot.Region = picker.SelectedRegions[index];
+                            slot.MonitorBounds = target.MonitorBounds;
+                            slot.MonitorDeviceName = target.DeviceName;
+                            slot.GameWindowBounds = target.Bounds;
+                            slot.RegionAutoDetected = true;
+                            _trackers[kind].ResetCycle();
                         }
+                        SaveSettings();
+                        UpdateStatus();
+                        UpdateOverlay();
                     }
-
-                    SaveSettings();
-                    UpdateStatus();
-                    UpdateOverlay();
                 }
             }
         }
@@ -75,14 +74,11 @@ internal sealed partial class MainForm
             }
         }
 
-        if (failure is not null && MessageBox.Show(
+        if (failure is not null) MessageBox.Show(
             this,
-            $"{failure}\n\nWould you like to select the area manually instead?",
+            failure,
             Text,
-            MessageBoxButtons.YesNo,
-            MessageBoxIcon.Information) == DialogResult.Yes)
-        {
-            SelectRegion(kind);
-        }
+            MessageBoxButtons.OK,
+            MessageBoxIcon.Information);
     }
 }

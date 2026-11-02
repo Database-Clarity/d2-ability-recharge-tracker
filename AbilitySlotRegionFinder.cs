@@ -121,8 +121,16 @@ internal static class AbilitySlotRegionFinder
             return [];
         }
 
-        return RefineLayout(luminance, width, height, bestFirst.Value, bestSecond.Value, bestThird.Value)
-            .Select(candidate => ToSourceBounds(candidate, candidate.Slope, sourceBounds))
+        var layout = RefineLayout(luminance, width, height, bestFirst.Value, bestSecond.Value, bestThird.Value);
+        return layout
+            .Select((candidate, index) =>
+            {
+                var leftLimit = index == 0 ? 0
+                    : (layout[index - 1].Left + layout[index - 1].Width + candidate.Left) / 2;
+                var rightLimit = index == layout.Length - 1 ? width
+                    : (candidate.Left + candidate.Width + layout[index + 1].Left) / 2;
+                return ToSourceBounds(candidate, candidate.Slope, sourceBounds, leftLimit, rightLimit);
+            })
             .ToArray();
     }
 
@@ -347,14 +355,14 @@ internal static class AbilitySlotRegionFinder
             Math.Abs(first.Slope - second.Slope) <= 0.045f;
     }
 
-    private static Rectangle ToSourceBounds(Candidate candidate, float slope, Rectangle sourceBounds)
+    private static Rectangle ToSourceBounds(Candidate candidate, float slope, Rectangle sourceBounds, int leftLimit, int rightLimit)
     {
-        var padding = Math.Max(1, (int)(candidate.Width * 0.03));
+        var padding = Math.Max(2, (int)Math.Ceiling(candidate.Width * 0.05));
         var skew = (int)Math.Round(slope * (candidate.Width - 1));
         var minTop = Math.Max(0, candidate.Top + Math.Min(0, skew) - padding);
         var maxBottom = Math.Min(sourceBounds.Height, candidate.Top + Math.Max(0, skew) + candidate.Width + padding);
-        var left = Math.Max(0, candidate.Left - padding);
-        var right = Math.Min(sourceBounds.Width, candidate.Left + candidate.Width + padding);
+        var left = Math.Max(leftLimit, candidate.Left - padding);
+        var right = Math.Min(rightLimit, candidate.Left + candidate.Width + padding);
         return new Rectangle(
             sourceBounds.Left + left,
             sourceBounds.Top + minTop,

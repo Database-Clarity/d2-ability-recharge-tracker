@@ -39,7 +39,7 @@ internal static class TrackerTheme
                     toggle.UseVisualStyleBackColor = false;
                     toggle.Cursor = Cursors.Hand;
                     break;
-                case ComboBox combo:
+                case ComboBox combo when combo is not FlatComboBox:
                     combo.FlatStyle = FlatStyle.Flat;
                     combo.BackColor = Surface;
                     combo.DrawMode = DrawMode.OwnerDrawFixed;

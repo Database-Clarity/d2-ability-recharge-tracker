@@ -1,0 +1,134 @@
+namespace D2AbilityTracker;
+
+internal sealed class ChangelogView : UserControl
+{
+    public event EventHandler? CloseRequested;
+
+    public ChangelogView(string summary, IReadOnlyList<ChangelogRelease> releases)
+    {
+        Name = "ChangelogView";
+        BackColor = TrackerTheme.Background;
+        ForeColor = TrackerTheme.Text;
+        Font = new Font("Segoe UI", 9);
+        Dock = DockStyle.Fill;
+
+        var heading = new Label
+        {
+            Text = $"Changelog · {summary}",
+            AutoSize = true,
+            ForeColor = TrackerTheme.Muted,
+            Margin = new Padding(0, 0, 0, 8)
+        };
+        var content = new RichTextBox
+        {
+            ReadOnly = true,
+            DetectUrls = true,
+            WordWrap = true,
+            ScrollBars = RichTextBoxScrollBars.Vertical,
+            BorderStyle = BorderStyle.None,
+            BackColor = TrackerTheme.Surface,
+            ForeColor = TrackerTheme.Text,
+            Font = new Font("Segoe UI", 9),
+            Dock = DockStyle.Fill,
+            Name = "ReleaseNotes"
+        };
+        foreach (var release in releases)
+        {
+            Append(content, release.Tag + "\n\n", 14, FontStyle.Bold);
+            var body = string.IsNullOrWhiteSpace(release.Body) ? "No release notes were provided." : release.Body;
+            foreach (var rawLine in body.ReplaceLineEndings("\n").Split('\n'))
+            {
+                var line = rawLine.Trim();
+                var isHeading = line.StartsWith('#');
+                if (isHeading) line = line.TrimStart('#', ' ');
+                if (line.StartsWith("- ") || line.StartsWith("* ")) line = "•  " + line[2..];
+                AppendMarkdown(content, line + (isHeading ? "\n\n" : "\n"), isHeading);
+            }
+            Append(content, "\n", 9, FontStyle.Regular);
+        }
+        content.SelectionStart = 0;
+        content.SelectionLength = 0;
+        content.ScrollToCaret();
+        var bodyPanel = new Panel { Dock = DockStyle.Fill, BackColor = TrackerTheme.Surface, Padding = new Padding(16) };
+        bodyPanel.Controls.Add(content);
+        content.LinkClicked += (_, args) =>
+        {
+            if (!Uri.TryCreate(args.LinkText, UriKind.Absolute, out var uri) ||
+                uri.Scheme is not ("https" or "http")) return;
+            try
+            {
+                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(uri.AbsoluteUri) { UseShellExecute = true });
+            }
+            catch (System.ComponentModel.Win32Exception exception)
+            {
+                MessageBox.Show(this, $"Couldn't open the release link: {exception.Message}", "Changelog",
+                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
+        };
+        var closeButton = new Button
+        {
+            Text = "Back",
+            AutoSize = true,
+            MinimumSize = new Size(88, 28),
+            Anchor = AnchorStyles.Right
+        };
+        closeButton.Click += (_, _) => CloseRequested?.Invoke(this, EventArgs.Empty);
+
+        var footer = new FlowLayoutPanel
+        {
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            FlowDirection = FlowDirection.RightToLeft,
+            Dock = DockStyle.Fill,
+            Margin = new Padding(0, 8, 0, 0)
+        };
+        footer.Controls.Add(closeButton);
+
+        var layout = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            Padding = new Padding(12),
+            ColumnCount = 1,
+            RowCount = 3
+        };
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        layout.Controls.Add(heading, 0, 0);
+        layout.Controls.Add(bodyPanel, 0, 1);
+        layout.Controls.Add(footer, 0, 2);
+        Controls.Add(layout);
+
+        TrackerTheme.Apply(this);
+    }
+
+    protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
+    {
+        if (keyData != Keys.Escape) return base.ProcessCmdKey(ref msg, keyData);
+        CloseRequested?.Invoke(this, EventArgs.Empty);
+        return true;
+    }
+
+    private static void AppendMarkdown(RichTextBox content, string line, bool heading)
+    {
+        line = System.Text.RegularExpressions.Regex.Replace(line,
+            @"\[([^\]]+)\]\((https?://[^)\s]+)\)", "$1: $2");
+        var parts = System.Text.RegularExpressions.Regex.Split(line, @"(\*\*[^*]+\*\*|`[^`]+`)");
+        foreach (var part in parts)
+        {
+            var bold = part.StartsWith("**") && part.EndsWith("**") && part.Length > 4;
+            var code = part.StartsWith('`') && part.EndsWith('`') && part.Length > 2;
+            Append(content, bold ? part[2..^2] : code ? part[1..^1] : part,
+                heading ? 10 : 9, heading || bold ? FontStyle.Bold : FontStyle.Regular, code);
+        }
+    }
+
+    private static void Append(RichTextBox content, string text, float size, FontStyle style, bool code = false)
+    {
+        content.SelectionStart = content.TextLength;
+        using var font = new Font(code ? "Consolas" : "Segoe UI", size, style);
+        content.SelectionFont = font;
+        content.SelectionColor = TrackerTheme.Text;
+        content.AppendText(text);
+    }
+}

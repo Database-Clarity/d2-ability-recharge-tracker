@@ -3,8 +3,8 @@ namespace D2AbilityTracker;
 internal sealed class MeasurementHistoryForm : Form
 {
     private readonly MeasurementHistoryStore _history;
-    private readonly ComboBox _abilityFilter = new();
-    private readonly ComboBox _sessionFilter = new();
+    private readonly FlatComboBox _abilityFilter = new();
+    private readonly FlatComboBox _sessionFilter = new();
     private readonly TextBox _sessionName = new();
     private readonly Button _startSession = new();
     private readonly Button _endSession = new();

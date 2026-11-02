@@ -7,7 +7,6 @@ internal sealed class RegionPicker : Form
 {
     private readonly Bitmap _snapshot;
     private readonly Rectangle _sourceBounds;
-    private readonly Rectangle _monitorBounds;
     private readonly string _sourceDescription;
     private readonly Panel _toolbar = new();
     private readonly Panel _footer = new();
@@ -23,7 +22,14 @@ internal sealed class RegionPicker : Form
     private PointF _startSource;
     private PointF _lastSource;
     private PointF _resizeAnchor;
-    private RectangleF? _selection;
+    private readonly RectangleF?[] _selections;
+    private readonly Color[] _selectionColors = [TrackerTheme.Orange, TrackerTheme.Accent, TrackerTheme.Green];
+    private int _activeSelection;
+    private RectangleF? _selection
+    {
+        get => _selections[_activeSelection];
+        set => _selections[_activeSelection] = value;
+    }
     private bool _draggingSelection;
     private bool _movingSelection;
     private bool _resizingSelection;
@@ -32,22 +38,28 @@ internal sealed class RegionPicker : Form
     private float _scale;
 
     public Rectangle? SelectedRegion { get; private set; }
+    public Rectangle[] SelectedRegions { get; private set; } = [];
 
     public RegionPicker(
         Bitmap snapshot,
         Rectangle sourceBounds,
         Rectangle monitorBounds,
         string sourceDescription,
-        Rectangle? initialSelection = null)
+        Rectangle? initialSelection = null,
+        Rectangle[]? initialSelections = null)
     {
         if (snapshot.Width != sourceBounds.Width || snapshot.Height != sourceBounds.Height)
         {
             throw new ArgumentException("The preview dimensions must match its source bounds.", nameof(snapshot));
         }
 
+        if (initialSelections is not null && initialSelections.Length != 3)
+        {
+            throw new ArgumentException("All three ability regions are required.", nameof(initialSelections));
+        }
         _snapshot = (Bitmap)snapshot.Clone();
+        _selections = new RectangleF?[initialSelections?.Length ?? 1];
         _sourceBounds = sourceBounds;
-        _monitorBounds = monitorBounds;
         _sourceDescription = sourceDescription;
         _sourceCenter = new PointF(snapshot.Width / 2f, snapshot.Height / 2f);
         _viewport = new RectangleF(0, 86, monitorBounds.Width, Math.Max(1, monitorBounds.Height - 138));
@@ -92,6 +104,31 @@ internal sealed class RegionPicker : Form
         _guideButton.Click += (_, _) => ShowGuide();
         _zoomLabel.Text = $"{_zoom:P0}";
         _toolbar.Controls.AddRange([_instructions, hint, _zoomOutButton, _zoomLabel, _zoomInButton, _guideButton]);
+        if (initialSelections is not null)
+        {
+            _instructions.Text = "Confirm all three ability areas. Select a box or legend item to adjust it.";
+            hint.Visible = false;
+            string[] names = ["Grenade", "Melee", "Class ability"];
+            for (var index = 0; index < names.Length; index++)
+            {
+                var selectionIndex = index;
+                var legend = new Button
+                {
+                    Text = names[index],
+                    ForeColor = _selectionColors[index],
+                    BackColor = BackColor,
+                    FlatStyle = FlatStyle.Flat
+                };
+                legend.SetBounds(18 + index * 138, 40, 130, 28);
+                legend.FlatAppearance.BorderColor = _selectionColors[index];
+                legend.Click += (_, _) =>
+                {
+                    _activeSelection = selectionIndex;
+                    Invalidate();
+                };
+                _toolbar.Controls.Add(legend);
+            }
+        }
 
         _footer.BackColor = Color.FromArgb(14, 17, 24);
         _footer.Dock = DockStyle.Bottom;
@@ -99,12 +136,14 @@ internal sealed class RegionPicker : Form
         _footer.Padding = new Padding(18, 8, 18, 8);
         var footerHint = new Label
         {
-            Text = "Include the full square border; the strip below it is sampled automatically.",
+            Text = initialSelections is null
+                ? "Include the full square border; the strip below it is sampled automatically."
+                : "Include each full border and bottom line. Drag boxes/corners to adjust; scroll to zoom. Esc cancels.",
             ForeColor = Color.FromArgb(205, 215, 225),
             AutoEllipsis = true
         };
         footerHint.SetBounds(18, 15, Math.Max(180, monitorBounds.Width - 250), 22);
-        _applyButton.Text = "Use selection";
+        _applyButton.Text = initialSelections is null ? "Use selection" : "Use all three";
         _applyButton.Enabled = false;
         _applyButton.SetBounds(Math.Max(20, monitorBounds.Width - 216), 9, 112, 32);
         _applyButton.Click += (_, _) => ApplySelection();
@@ -129,18 +168,29 @@ internal sealed class RegionPicker : Form
         }
 
         _scale = FitScale();
-        if (initialSelection is { } existing)
+        var initial = initialSelections ?? (initialSelection is { } single ? [single] : Array.Empty<Rectangle>());
+        for (var index = 0; index < initial.Length; index++)
         {
+            var existing = initial[index];
             var clipped = Rectangle.Intersect(existing, sourceBounds);
             if (clipped.Width >= 18 && clipped.Height >= 18)
             {
-                _selection = new RectangleF(
+                _selections[index] = new RectangleF(
                     clipped.Left - sourceBounds.Left,
                     clipped.Top - sourceBounds.Top,
                     clipped.Width,
                     clipped.Height);
-                _applyButton.Enabled = true;
             }
+        }
+        _applyButton.Enabled = ValidSelections();
+        if (initialSelections is not null && _selections.All(selection => selection is not null))
+        {
+            var cluster = _selections.Select(selection => selection!.Value).Aggregate(RectangleF.Union);
+            _sourceCenter = new PointF(cluster.Left + cluster.Width / 2, cluster.Top + cluster.Height / 2);
+            _zoom = Math.Clamp(Math.Min(_viewport.Width / (cluster.Width * 1.8f),
+                _viewport.Height / (cluster.Height * 3)) / FitScale(), 1, 8);
+            _scale = FitScale() * _zoom;
+            _zoomLabel.Text = $"{_zoom:P0}";
         }
 
         MouseWheel += (_, e) => SetZoom(_zoom * (e.Delta > 0 ? 1.2f : 1f / 1.2f), e.Location);
@@ -181,19 +231,30 @@ internal sealed class RegionPicker : Form
         using var oldClip = e.Graphics.Clip;
         e.Graphics.SetClip(_viewport);
         e.Graphics.DrawImage(_snapshot, destination);
-        if (_selection is { } selected)
+        if (_selections.Any(selection => selection is not null))
         {
-            var selectionBounds = SourceToScreen(selected);
             using var shade = new SolidBrush(Color.FromArgb(145, 0, 0, 0));
             using var outside = new Region(_viewport);
-            outside.Exclude(selectionBounds);
-            e.Graphics.FillRegion(shade, outside);
-            using var outline = new Pen(Color.FromArgb(255, 246, 187, 67), 3);
-            using var handleBrush = new SolidBrush(Color.FromArgb(255, 246, 187, 67));
-            e.Graphics.DrawRectangle(outline, selectionBounds.X, selectionBounds.Y, selectionBounds.Width, selectionBounds.Height);
-            foreach (var corner in SelectionCorners(selectionBounds))
+            foreach (var selection in _selections)
             {
-                e.Graphics.FillEllipse(handleBrush, corner.X - 6, corner.Y - 6, 12, 12);
+                if (selection is { } area) outside.Exclude(SourceToScreen(area));
+            }
+            e.Graphics.FillRegion(shade, outside);
+        }
+        for (var index = 0; index < _selections.Length; index++)
+        {
+            if (_selections[index] is not { } selected) continue;
+            var selectionBounds = SourceToScreen(selected);
+            var color = _selectionColors[index];
+            using var outline = new Pen(color, index == _activeSelection ? 3 : 2);
+            using var handleBrush = new SolidBrush(color);
+            e.Graphics.DrawRectangle(outline, selectionBounds.X, selectionBounds.Y, selectionBounds.Width, selectionBounds.Height);
+            if (index == _activeSelection)
+            {
+                foreach (var corner in SelectionCorners(selectionBounds))
+                {
+                    e.Graphics.FillEllipse(handleBrush, corner.X - 6, corner.Y - 6, 12, 12);
+                }
             }
         }
 
@@ -202,7 +263,7 @@ internal sealed class RegionPicker : Form
 
     private void UpdateSelectionApplyButton()
     {
-        if (_selection is not { } selected || !IsValidSelection(selected) ||
+        if (_selections.Length > 1 || _selection is not { } selected || !IsValidSelection(selected) ||
             _draggingSelection || _movingSelection || _resizingSelection || _panning)
         {
             _selectionApplyButton.Visible = false;
@@ -268,6 +329,18 @@ internal sealed class RegionPicker : Form
 
         _startSource = ClampSource(ScreenToSource(e.Location));
         _lastSource = _startSource;
+        if (_selections.Length > 1 &&
+            (_selection is not { } active || HitSelectionCorner(active, e.Location) < 0))
+        {
+            for (var index = 0; index < _selections.Length; index++)
+            {
+                if (_selections[index] is { } area && area.Contains(_startSource))
+                {
+                    _activeSelection = index;
+                    break;
+                }
+            }
+        }
         if (_selection is { } selection)
         {
             var corner = HitSelectionCorner(selection, e.Location);
@@ -323,7 +396,7 @@ internal sealed class RegionPicker : Form
                 Math.Min(_startSource.Y, sourcePoint.Y),
                 Math.Max(_startSource.X, sourcePoint.X),
                 Math.Max(_startSource.Y, sourcePoint.Y));
-            _applyButton.Enabled = IsValidSelection(_selection.Value);
+            _applyButton.Enabled = ValidSelections();
             Invalidate();
         }
         else if (_movingSelection && _selection is { } moving)
@@ -340,7 +413,7 @@ internal sealed class RegionPicker : Form
                 Math.Min(_resizeAnchor.Y, sourcePoint.Y),
                 Math.Max(_resizeAnchor.X, sourcePoint.X),
                 Math.Max(_resizeAnchor.Y, sourcePoint.Y));
-            _applyButton.Enabled = IsValidSelection(_selection.Value);
+            _applyButton.Enabled = ValidSelections();
             Invalidate();
         }
     }
@@ -365,7 +438,7 @@ internal sealed class RegionPicker : Form
                 _selection = null;
             }
 
-            _applyButton.Enabled = _selection is { } validSelection && IsValidSelection(validSelection);
+            _applyButton.Enabled = ValidSelections();
             Invalidate();
         }
     }
@@ -382,21 +455,18 @@ internal sealed class RegionPicker : Form
 
     private void ApplySelection()
     {
-        if (_selection is not { } selected || !IsValidSelection(selected))
+        if (!ValidSelections())
         {
             return;
         }
 
-        var left = (int)Math.Floor(selected.Left);
-        var top = (int)Math.Floor(selected.Top);
-        var right = (int)Math.Ceiling(selected.Right);
-        var bottom = (int)Math.Ceiling(selected.Bottom);
-        var absolute = new Rectangle(
-            _sourceBounds.Left + left,
-            _sourceBounds.Top + top,
-            right - left,
-            bottom - top);
-        SelectedRegion = Rectangle.Intersect(absolute, _monitorBounds);
+        SelectedRegions = _selections.Select(selection =>
+        {
+            var pixels = ToPixelBounds(selection!.Value);
+            pixels.Offset(_sourceBounds.Location);
+            return Rectangle.Intersect(pixels, _sourceBounds);
+        }).ToArray();
+        SelectedRegion = SelectedRegions[0];
         DialogResult = DialogResult.OK;
         Close();
     }
@@ -506,6 +576,23 @@ internal sealed class RegionPicker : Form
     ];
 
     private bool IsValidSelection(RectangleF selection) => selection.Width >= 18 && selection.Height >= 18;
+
+    private static Rectangle ToPixelBounds(RectangleF selection) => Rectangle.FromLTRB(
+        (int)Math.Floor(selection.Left), (int)Math.Floor(selection.Top),
+        (int)Math.Ceiling(selection.Right), (int)Math.Ceiling(selection.Bottom));
+
+    private bool ValidSelections()
+    {
+        if (_selections.Any(selection => selection is not { } area || !IsValidSelection(area))) return false;
+        for (var index = 0; index < _selections.Length; index++)
+        {
+            for (var other = index + 1; other < _selections.Length; other++)
+            {
+                if (ToPixelBounds(_selections[index]!.Value).IntersectsWith(ToPixelBounds(_selections[other]!.Value))) return false;
+            }
+        }
+        return true;
+    }
 
     private static readonly IntPtr HwndTopmost = new(-1);
     private const uint SwpShowWindow = 0x0040;

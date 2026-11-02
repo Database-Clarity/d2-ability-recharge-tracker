@@ -37,19 +37,20 @@ internal sealed partial class MainForm : Form
     private readonly Button _updateButton = new();
     private readonly Button _changelogButton = new();
     private readonly NumericUpDown _captureRatePicker = new();
-    private readonly ComboBox _anchorPicker = new();
-    private readonly ComboBox _monitorPicker = new();
-    private readonly ComboBox _testAbilityPicker = new();
+    private readonly FlatComboBox _anchorPicker = new();
+    private readonly FlatComboBox _monitorPicker = new();
+    private readonly FlatComboBox _testAbilityPicker = new();
     private readonly NumericUpDown _testCyclesPicker = new();
     private readonly NumericUpDown _testDelayPicker = new();
     private readonly Label _testStatus = new();
     private readonly Label _hudRecordingStatus = new();
+    private readonly LinkLabel _lastRecordingLink = new();
+    private string? _lastRecordingPath;
     private readonly RepeatTestSession _repeatTest = new();
     private readonly Dictionary<AbilityKind, AbilitySlotTracker> _trackers = [];
     private readonly Dictionary<AbilityKind, Label> _regionLabels = [];
     private readonly Dictionary<AbilityKind, Label> _statusLabels = [];
     private readonly Dictionary<AbilityKind, Button> _selectButtons = [];
-    private readonly Dictionary<AbilityKind, Button> _soloBindingButtons = [];
     private readonly Dictionary<AbilityKind, CheckBox> _soloToggles = [];
     private readonly ToolTip _toolTip = new();
     private readonly Dictionary<AbilityKind, string> _captureErrors = [];
@@ -76,6 +77,9 @@ internal sealed partial class MainForm : Form
     private bool _changelogBusy;
     private bool _startupChangelogPending;
     private Version _lastChangelogVersion = UpdateChecker.CurrentVersion;
+    private Panel? _mainViewport;
+    private Action? _fitWindowToDisplay;
+    private ChangelogView? _changelogView;
 
     public MainForm()
     {
@@ -225,6 +229,7 @@ internal sealed partial class MainForm : Form
 
     private static Panel Section(string title, Control content)
     {
+        content.Anchor = AnchorStyles.Top | AnchorStyles.Left;
         var card = new Panel
         {
             AutoSize = true,
@@ -239,8 +244,11 @@ internal sealed partial class MainForm : Form
             AutoSizeMode = AutoSizeMode.GrowAndShrink,
             Dock = DockStyle.Fill,
             ColumnCount = 1,
+            RowCount = 2,
             Margin = Padding.Empty
         };
+        stack.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        stack.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         var heading = GridLabel(title);
         TrackerTheme.SetTypography(heading, 9, FontStyle.Bold);
         heading.ForeColor = TrackerTheme.Text;
@@ -267,7 +275,7 @@ internal sealed partial class MainForm : Form
         _toolTip.BackColor = TrackerTheme.Surface;
         _toolTip.ForeColor = TrackerTheme.Text;
 
-        var header = Grid(144, GridWidth - 144);
+        var header = Grid(220, GridWidth - 220);
         _updateButton.Text = "Check for updates";
         _updateButton.Click += (_, _) => CheckOrInstallUpdate();
         _changelogButton.Text = "Changelog";
@@ -299,8 +307,8 @@ internal sealed partial class MainForm : Form
         Place(detection, _pauseBindingButton, 1, 2);
         Place(header, _toggleButton, 0, 0);
 
-        var abilities = Grid(78, 292, 70, 104, 104, 66, 130);
-        string[] headings = ["Ability", "Status", "Area", "", "", "Solo", "Solo shortcut"];
+        var abilities = Grid(78, 480, 70, 130, 106);
+        string[] headings = ["Ability", "Status", "Area", "", ""];
         for (var column = 0; column < headings.Length; column++)
         {
             Place(abilities, GridLabel(headings[column]), column, 0);
@@ -313,16 +321,13 @@ internal sealed partial class MainForm : Form
             name.ForeColor = TrackerTheme.Text;
             var selectButton = new Button { Text = "Select area…" };
             selectButton.Click += (_, _) => SelectRegion(kind);
-            var autoButton = new Button { Text = "Auto-detect" };
-            autoButton.Click += (_, _) => AutoDetectRegion(kind);
-            _toolTip.SetToolTip(autoButton, "Find this ability slot in the Destiny 2 window.");
             var regionLabel = GridLabel(string.Empty);
-            var statusLabel = new Label
+            var statusLabel = new TwoLineStatusLabel
             {
                 AutoEllipsis = true,
                 ForeColor = TrackerTheme.Muted,
                 TextAlign = ContentAlignment.MiddleLeft,
-                Height = 48
+                Height = 42
             };
             var soloToggle = new CheckBox
             {
@@ -333,25 +338,15 @@ internal sealed partial class MainForm : Form
             };
             _toolTip.SetToolTip(soloToggle, "Track only this ability (captures one slot for best performance). Click again to track all.");
             soloToggle.Click += (_, _) => ToggleSolo(kind);
-            var soloBindingButton = new Button
-            {
-                Text = _settings.SoloBindings.TryGetValue(kind, out var soloBinding) ? soloBinding.ToString() : "Record…",
-                AutoEllipsis = true
-            };
-            _toolTip.SetToolTip(soloBindingButton, "Keyboard shortcut that toggles solo tracking of this ability. Press Esc while recording to clear it.");
-            soloBindingButton.Click += (_, _) => ToggleBindingCapture(SoloCaptureTarget(kind));
             Place(abilities, name, 0, row, stretch: false);
             Place(abilities, statusLabel, 1, row);
             Place(abilities, regionLabel, 2, row, stretch: false);
             Place(abilities, selectButton, 3, row);
-            Place(abilities, autoButton, 4, row);
-            Place(abilities, soloToggle, 5, row);
-            Place(abilities, soloBindingButton, 6, row);
+            Place(abilities, soloToggle, 4, row);
             _selectButtons.Add(kind, selectButton);
             _regionLabels.Add(kind, regionLabel);
             _statusLabels.Add(kind, statusLabel);
             _soloToggles.Add(kind, soloToggle);
-            _soloBindingButtons.Add(kind, soloBindingButton);
         }
         var selectionGuideButton = new Button { Text = "Guide" };
         _toolTip.SetToolTip(selectionGuideButton, "Show how to select an ability slot.");
@@ -359,7 +354,7 @@ internal sealed partial class MainForm : Form
         var resetSelectionsButton = new Button { Text = "Reset areas" };
         resetSelectionsButton.Click += (_, _) => ResetSelections();
 
-        var test = Grid(142, 138, 150, 114);
+        var test = Grid(142, 210, 170, 170);
         _testAbilityPicker.DropDownStyle = ComboBoxStyle.DropDownList;
         var abilityChoices = AbilityKinds.Select(kind => new AbilityChoice(kind, KindName(kind) == "Class" ? "Class ability" : KindName(kind))).ToArray();
         _testAbilityPicker.Items.AddRange(abilityChoices);
@@ -418,7 +413,7 @@ internal sealed partial class MainForm : Form
         Place(test, _stopTestButton, 3, 2);
         Place(test, _testStatus, 0, 3, 4);
 
-        var overlay = Grid(172, 172);
+        var overlay = Grid(152, 208);
         _anchorPicker.DropDownStyle = ComboBoxStyle.DropDownList;
         _anchorPicker.Items.AddRange(["Top left", "Top right", "Bottom left", "Bottom right"]);
         _anchorPicker.SelectedItem = _settings.OverlayAnchor;
@@ -438,7 +433,7 @@ internal sealed partial class MainForm : Form
         _overlayBindingButton.Click += (_, _) => ToggleBindingCapture(BindingCaptureTarget.ToggleOverlay);
         _toolTip.SetToolTip(_overlayBindingButton, "Global show / hide overlay shortcut. Press Esc while recording to clear it.");
         UpdateOverlayToggleText();
-        var linePicker = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList };
+        var linePicker = new FlatComboBox();
         linePicker.Items.AddRange(["1 line per ability", "2 lines per ability"]);
         linePicker.SelectedIndex = _settings.OverlayTwoLines ? 1 : 0;
         linePicker.SelectedIndexChanged += (_, _) => SetOverlayTwoLines(linePicker.SelectedIndex == 1);
@@ -449,35 +444,52 @@ internal sealed partial class MainForm : Form
         _overlayMoveToggle.Click += (_, _) => SetOverlayMoveMode(_overlayMoveToggle.Checked);
         _toolTip.SetToolTip(_overlayMoveToggle, "Unlock the overlay to drag it. Turn off to restore click-through.");
         Place(overlay, GridLabel("Anchor"), 0, 0);
-        Place(overlay, GridLabel("Lines per ability"), 1, 0);
-        Place(overlay, _anchorPicker, 0, 1);
+        Place(overlay, _anchorPicker, 1, 0);
+        Place(overlay, GridLabel("Lines per ability"), 0, 1);
         Place(overlay, linePicker, 1, 1);
         Place(overlay, GridLabel("Show / hide shortcut"), 0, 2);
         Place(overlay, _overlayBindingButton, 1, 2);
         Place(overlay, _overlayToggleButton, 0, 3);
         Place(overlay, _overlayMoveToggle, 1, 3);
+        foreach (var grid in new[] { detection, overlay })
+        {
+            for (var row = 0; row < 4; row++)
+            {
+                grid.RowStyles.Add(new RowStyle(SizeType.Absolute, 36));
+            }
+        }
 
-        var recording = Grid(120, 110, 100, GridWidth - 564, 104, 130);
+        var actions = Grid(160, 110, GridWidth - 504, 104, 130);
+        var autoDetectButton = new Button { Text = "Auto-detect areas…" };
+        autoDetectButton.Click += (_, _) => AutoDetectRegions();
         var historyButton = new Button { Text = "History…" };
         historyButton.Click += (_, _) => ShowMeasurementHistory();
+        Place(actions, autoDetectButton, 0, 0);
+        Place(actions, historyButton, 1, 0);
+        Place(actions, selectionGuideButton, 3, 0);
+        Place(actions, resetSelectionsButton, 4, 0);
+        var recording = Grid(160, GridWidth - 160);
         _recordHudButton.Text = "Record HUD";
         _recordHudButton.Click += (_, _) => ToggleHudRecording();
         _toolTip.SetToolTip(_recordHudButton, "Record the tracked ability slots at 60 FPS for troubleshooting.");
-        var openFolderButton = new Button { Text = "Open folder" };
-        openFolderButton.Click += (_, _) => OpenHudRecordingsFolder();
-        _toolTip.SetToolTip(openFolderButton, AbilityHudRecorder.DefaultFolder);
         _hudRecordingStatus.AutoSize = false;
         _hudRecordingStatus.Height = 30;
         _hudRecordingStatus.AutoEllipsis = true;
         _hudRecordingStatus.TextAlign = ContentAlignment.MiddleLeft;
         _hudRecordingStatus.Text = string.Empty;
         _hudRecordingStatus.ForeColor = TrackerTheme.Muted;
+        _hudRecordingStatus.Visible = false;
         Place(recording, _recordHudButton, 0, 0);
-        Place(recording, openFolderButton, 1, 0);
-        Place(recording, historyButton, 2, 0);
-        Place(recording, _hudRecordingStatus, 3, 0);
-        Place(recording, selectionGuideButton, 4, 0);
-        Place(recording, resetSelectionsButton, 5, 0);
+        Place(recording, _hudRecordingStatus, 0, 1, 2);
+        _lastRecordingLink.AutoSize = false;
+        _lastRecordingLink.Height = 26;
+        _lastRecordingLink.AutoEllipsis = true;
+        _lastRecordingLink.LinkColor = TrackerTheme.Accent;
+        _lastRecordingLink.ActiveLinkColor = TrackerTheme.Text;
+        _lastRecordingLink.VisitedLinkColor = TrackerTheme.Accent;
+        _lastRecordingLink.Visible = false;
+        _lastRecordingLink.LinkClicked += (_, _) => OpenLastHudRecording();
+        Place(recording, _lastRecordingLink, 1, 0);
 
         _stateStatus.AutoSize = false;
         _stateStatus.Height = 24;
@@ -539,6 +551,7 @@ internal sealed partial class MainForm : Form
             return content;
         }
         var trackingPage = AddPage("Tracking");
+        trackingPage.Controls.Add(actions);
         trackingPage.Controls.Add(abilities);
         trackingPage.Controls.Add(recording);
         var testPage = AddPage("Repeat test");
@@ -561,6 +574,8 @@ internal sealed partial class MainForm : Form
         root.Controls.Add(pages);
         AutoSize = false;
         var viewport = new Panel { Dock = DockStyle.Fill, AutoScroll = true };
+        _mainViewport = viewport;
+        _fitWindowToDisplay = FitWindowToDisplay;
         viewport.Controls.Add(root);
         Controls.Add(viewport);
         TrackerTheme.Apply(root);
@@ -573,6 +588,7 @@ internal sealed partial class MainForm : Form
         TrackerTheme.Primary(_startTestButton);
         void FitWindowToDisplay()
         {
+            if (_changelogView is not null) return;
             if (selectedPage is { } pageContent)
             {
                 pages.Height = pageContent.GetPreferredSize(Size.Empty).Height;
@@ -587,6 +603,8 @@ internal sealed partial class MainForm : Form
             ClientSize = new Size(width, height);
         }
         Shown += (_, _) => FitWindowToDisplay();
+        _lastRecordingLink.VisibleChanged += (_, _) => FitWindowToDisplay();
+        _hudRecordingStatus.VisibleChanged += (_, _) => FitWindowToDisplay();
         DpiChanged += (_, _) => BeginInvoke((Action)FitWindowToDisplay);
         ClientSize = root.GetPreferredSize(Size.Empty);
     }
@@ -644,6 +662,10 @@ internal sealed partial class MainForm : Form
         }
 
         _recordHudButton.Text = "Stop recording";
+        _hudRecordingStatus.Visible = true;
+        _hudRecordingStatus.Parent?.PerformLayout();
+        _hudRecordingStatus.Parent?.Parent?.PerformLayout();
+        _fitWindowToDisplay?.Invoke();
         _hudRecordingStatus.Text = $"Recording the HUD at {AbilityHudRecorder.FramesPerSecond} FPS…";
         _overlay.Hide();
         try
@@ -653,8 +675,8 @@ internal sealed partial class MainForm : Form
             {
                 var dropped = result.DroppedFrames > 0 ? $", {result.DroppedFrames} dropped" : string.Empty;
                 _hudRecordingStatus.Text =
-                    $"{result.StopReason ?? "Saved"}: {result.Frames} frames{dropped}, {result.Bytes / 1_000_000d:F1} MB → {Path.GetFileName(result.Path)}";
-                _toolTip.SetToolTip(_hudRecordingStatus, $"{result.Path}\nClick to open the recordings folder.");
+                    $"{result.StopReason ?? "Saved"}: {result.Frames} frames{dropped}, {result.Bytes / 1_000_000d:F1} MB";
+                SetLastRecordingPath(result.Path);
             }
         }
         catch (Exception exception)
@@ -687,16 +709,30 @@ internal sealed partial class MainForm : Form
         }
     }
 
-    private void OpenHudRecordingsFolder()
+    internal void SetLastRecordingPath(string path)
     {
+        _lastRecordingPath = path;
+        _lastRecordingLink.Text = path;
+        _lastRecordingLink.Visible = true;
+        _toolTip.SetToolTip(_lastRecordingLink, path);
+        _lastRecordingLink.Parent?.PerformLayout();
+        _lastRecordingLink.Parent?.Parent?.PerformLayout();
+        _fitWindowToDisplay?.Invoke();
+    }
+
+    private void OpenLastHudRecording()
+    {
+        if (_lastRecordingPath is not { } path)
+        {
+            return;
+        }
         try
         {
-            Directory.CreateDirectory(AbilityHudRecorder.DefaultFolder);
-            Process.Start(new ProcessStartInfo { FileName = AbilityHudRecorder.DefaultFolder, UseShellExecute = true });
+            Process.Start(new ProcessStartInfo("explorer.exe", $"/select,\"{path}\"") { UseShellExecute = true });
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or System.ComponentModel.Win32Exception)
         {
-            MessageBox.Show(this, $"Couldn't open {AbilityHudRecorder.DefaultFolder}: {exception.Message}", Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            MessageBox.Show(this, $"Couldn't show {path}: {exception.Message}", Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
         }
     }
 
@@ -1213,7 +1249,7 @@ internal sealed partial class MainForm : Form
                     : "Not set";
                 if (_captureErrors.TryGetValue(kind, out var captureError))
                 {
-                    _statusLabels[kind].Text = $"Capture failed: {captureError}";
+                    _statusLabels[kind].Text = $"Capture failed\n{captureError.ReplaceLineEndings(" ")}";
                     _statusLabels[kind].ForeColor = TrackerTheme.Red;
                     continue;
                 }
@@ -1221,7 +1257,7 @@ internal sealed partial class MainForm : Form
                 _soloToggles[kind].Checked = _settings.SoloAbility == kind;
                 if (!IsTracked(kind))
                 {
-                    _statusLabels[kind].Text = $"Not tracked · solo: {KindName(_settings.SoloAbility!.Value)}";
+                    _statusLabels[kind].Text = $"Not tracked\nSolo: {KindName(_settings.SoloAbility!.Value)}";
                     _statusLabels[kind].ForeColor = TrackerTheme.Muted;
                     continue;
                 }
@@ -1233,16 +1269,7 @@ internal sealed partial class MainForm : Form
                     continue;
                 }
 
-                _statusLabels[kind].Text = tracker.State switch
-                {
-                    AbilityState.Ready => $"Ready{DurationSuffix(tracker.LastDuration)}{RegressionSuffix(tracker)}",
-                    AbilityState.Consumed => "Used · waiting for the start flash",
-                    AbilityState.Recharging => $"Recharging · {FormatDuration(tracker.CurrentDuration)}",
-                    AbilityState.Complete => $"Recharge complete · {FormatDuration(tracker.LastDuration)}{MeasurementSuffix(tracker)}{RegressionSuffix(tracker)}",
-                    _ => slot.Region is null
-                        ? "Select this ability slot to track it"
-                        : slot.RegionAutoDetected ? "Auto-detected · click to refine" : "Watching for the start flash…"
-                };
+                _statusLabels[kind].Text = MeasurementStatus(tracker, slot.Region is not null);
                 _statusLabels[kind].ForeColor = tracker.State switch
                 {
                     AbilityState.Consumed => TrackerTheme.Orange,
@@ -1252,20 +1279,23 @@ internal sealed partial class MainForm : Form
                 };
                 if (tracker.TrackingWarning is { } warning)
                 {
-                    _statusLabels[kind].Text = $"{FormatDuration(tracker.CurrentDuration)} · {warning}";
+                    _statusLabels[kind].Text = $"{FormatDuration(tracker.CurrentDuration)}\n{warning.ReplaceLineEndings(" ")}";
                     _statusLabels[kind].ForeColor = TrackerTheme.Orange;
                 }
                 else if (tracker.State == AbilityState.Recharging && tracker.DisplayProgress is { } progress)
                 {
-                    _statusLabels[kind].Text += $" · {progress:P0}";
+                    _statusLabels[kind].Text = $"Recharging · {FormatDuration(tracker.CurrentDuration)} · {progress:P0}\n";
                     if (tracker.EstimatedDuration is { } estimated && tracker.EstimateUncertainty is { } spread)
                     {
-                        _statusLabels[kind].Text += $" · est. {estimated.TotalSeconds:F2} ± {spread.TotalSeconds:F2} s";
+                        _statusLabels[kind].Text += $"Estimated {estimated.TotalSeconds:F2} ± {spread.TotalSeconds:F2} s";
                     }
                 }
             }
 
-            _toggleButton.Text = _monitoring ? "Pause detection" : "Resume detection";
+            _toggleButton.Text = WithShortcut(_monitoring ? "Pause detection" : "Resume detection", PauseBinding);
+            _startTestButton.Text = WithShortcut("Start test", _settings.RepeatTestBinding);
+            _stopTestButton.Text = WithShortcut("Stop test", _settings.RepeatTestBinding);
+            UpdateOverlayToggleText();
             _stateStatus.Text = _captureLoopError is { } captureLoopError
                 ? $"Capture stopped: {captureLoopError}"
                 : _inputListenerError is { } inputListenerError
@@ -1339,7 +1369,7 @@ internal sealed partial class MainForm : Form
 
     private void UpdateOverlayToggleText()
     {
-        _overlayToggleButton.Text = _settings.OverlayVisible ? "Hide overlay" : "Show overlay";
+        _overlayToggleButton.Text = WithShortcut(_settings.OverlayVisible ? "Hide overlay" : "Show overlay", OverlayToggleBinding);
     }
 
     private async void CheckOrInstallUpdate()
@@ -1494,9 +1524,9 @@ internal sealed partial class MainForm : Form
                 var summary = hasUnseenVersions
                     ? $"Changes since v{_lastChangelogVersion.ToString(3)} · {releases.Count} release{(releases.Count == 1 ? string.Empty : "s")}"
                     : $"Recent releases · {releases.Count} release{(releases.Count == 1 ? string.Empty : "s")}";
-                using var dialog = new ChangelogForm("D2 Ability Recharge Tracker — Changelog", summary, releases);
-                dialog.ShowDialog(this);
+                ShowChangelog(summary, releases);
             }
+
             else if (!startup)
             {
                 MessageBox.Show(this, "No release notes are available for this version.", Text,
@@ -1536,6 +1566,27 @@ internal sealed partial class MainForm : Form
                 _changelogButton.Text = "Changelog";
             }
         }
+    }
+
+    internal void ShowChangelog(string summary, IReadOnlyList<ChangelogRelease> releases)
+    {
+        _changelogView?.Dispose();
+        var view = new ChangelogView(summary, releases);
+        _changelogView = view;
+        if (_mainViewport is not null) _mainViewport.Visible = false;
+        Controls.Add(view);
+        view.BringToFront();
+        var workArea = Screen.FromControl(this).WorkingArea;
+        ClientSize = new Size(ClientSize.Width, Math.Min((int)(480 * DeviceDpi / 96f), workArea.Height - 64));
+        view.CloseRequested += (_, _) =>
+        {
+            _changelogView = null;
+            Controls.Remove(view);
+            view.Dispose();
+            if (_mainViewport is not null) _mainViewport.Visible = true;
+            _fitWindowToDisplay?.Invoke();
+        };
+        view.Focus();
     }
 
     private void TogglePauseBindingCapture()
@@ -1622,10 +1673,6 @@ internal sealed partial class MainForm : Form
                         _settings.OverlayToggleBinding = binding;
                         _settings.OverlayShortcutCleared = false;
                     }
-                    else
-                    {
-                        _settings.SoloBindings[SoloAbility(target)] = binding;
-                    }
 
                     UpdateBindingButtonText(target);
                     SaveSettings();
@@ -1656,9 +1703,6 @@ internal sealed partial class MainForm : Form
                 _settings.OverlayToggleBinding = null;
                 _settings.OverlayShortcutCleared = true;
                 break;
-            default:
-                _settings.SoloBindings.Remove(SoloAbility(target));
-                break;
         }
     }
 
@@ -1668,14 +1712,12 @@ internal sealed partial class MainForm : Form
         BindingCaptureTarget.AbilityUse => _abilityUseBindingButton,
         BindingCaptureTarget.RepeatTest => _repeatTestBindingButton,
         BindingCaptureTarget.ToggleOverlay => _overlayBindingButton,
-        BindingCaptureTarget.SoloGrenade or BindingCaptureTarget.SoloMelee or BindingCaptureTarget.SoloClass =>
-            _soloBindingButtons[SoloAbility(target)],
         _ => throw new ArgumentOutOfRangeException(nameof(target))
     };
 
     private void UpdateBindingButtonText(BindingCaptureTarget target)
     {
-        GetBindingButton(target).Text = GetConfiguredBinding(target)?.ToString() ?? (target is BindingCaptureTarget.SoloGrenade or BindingCaptureTarget.SoloMelee or BindingCaptureTarget.SoloClass ? "Record…" : "Record input…");
+        GetBindingButton(target).Text = GetConfiguredBinding(target)?.ToString() ?? "Record input…";
     }
 
     private InputBinding? GetConfiguredBinding(BindingCaptureTarget target) => target switch
@@ -1684,23 +1726,7 @@ internal sealed partial class MainForm : Form
         BindingCaptureTarget.AbilityUse => _settings.AbilityUseBinding,
         BindingCaptureTarget.RepeatTest => _settings.RepeatTestBinding,
         BindingCaptureTarget.ToggleOverlay => OverlayToggleBinding,
-        _ => _settings.SoloBindings.TryGetValue(SoloAbility(target), out var binding) ? binding : null
-    };
-
-    private static BindingCaptureTarget SoloCaptureTarget(AbilityKind kind) => kind switch
-    {
-        AbilityKind.Grenade => BindingCaptureTarget.SoloGrenade,
-        AbilityKind.Melee => BindingCaptureTarget.SoloMelee,
-        AbilityKind.ClassAbility => BindingCaptureTarget.SoloClass,
-        _ => throw new ArgumentOutOfRangeException(nameof(kind))
-    };
-
-    private static AbilityKind SoloAbility(BindingCaptureTarget target) => target switch
-    {
-        BindingCaptureTarget.SoloGrenade => AbilityKind.Grenade,
-        BindingCaptureTarget.SoloMelee => AbilityKind.Melee,
-        BindingCaptureTarget.SoloClass => AbilityKind.ClassAbility,
-        _ => throw new ArgumentOutOfRangeException(nameof(target))
+        _ => null
     };
 
     private void StartRepeatabilityTest()
@@ -1815,9 +1841,6 @@ internal sealed partial class MainForm : Form
             case BindingCaptureTarget.ToggleOverlay:
                 SetOverlayVisible(!_settings.OverlayVisible);
                 break;
-            default:
-                ToggleSolo(SoloAbility(action.Value));
-                break;
         }
     }
 
@@ -1856,19 +1879,26 @@ internal sealed partial class MainForm : Form
     private bool IsTracked(AbilityKind kind) => _settings.SoloAbility is not { } solo || solo == kind;
 
     internal static string PausedMeasurementStatus(AbilitySlotTracker tracker)
+        => MeasurementStatus(tracker, true, paused: true);
+
+    internal static string WithShortcut(string text, InputBinding? binding) =>
+        binding is null ? text : $"{text} ({binding})";
+
+    internal static string MeasurementStatus(AbilitySlotTracker tracker, bool hasRegion, bool paused = false)
     {
         var state = tracker.State switch
         {
-            AbilityState.Recharging => $"Recharging · {FormatDuration(tracker.CurrentDuration)} (stopped)",
-            AbilityState.Consumed => "Used · waiting for start flash",
+            AbilityState.Recharging => $"Recharging · {FormatDuration(tracker.CurrentDuration)}{(paused ? " (stopped)" : string.Empty)}",
+            AbilityState.Consumed => "Used · waiting for start",
             AbilityState.Ready => "Ready",
             AbilityState.Complete => "Complete",
-            _ => "No active measurement"
+            _ => hasRegion ? "Watching for start" : "Area not set"
         };
-        var last = tracker.LastDuration is { } duration
-            ? $"\nLast {FormatDuration(duration)}{MeasurementSuffix(tracker)}{RegressionSuffix(tracker)}"
-            : string.Empty;
-        return $"{state}{last}";
+        if (tracker.LastDuration is { } duration)
+        {
+            state += $" · last {FormatDuration(duration)}{MeasurementSuffix(tracker)}";
+        }
+        return $"{state}\n{RegressionSuffix(tracker)}";
     }
 
     private void ToggleSolo(AbilityKind kind) => SetSolo(_settings.SoloAbility == kind ? null : kind);
@@ -2141,13 +2171,7 @@ internal sealed partial class MainForm : Form
         static InputBinding? KeyboardOnly(InputBinding? binding) => binding is { Device: InputDevice.Mouse } ? null : binding;
         _settings.RepeatTestBinding = KeyboardOnly(_settings.RepeatTestBinding);
         _settings.OverlayToggleBinding = KeyboardOnly(_settings.OverlayToggleBinding);
-        foreach (var (kind, binding) in _settings.SoloBindings.ToArray())
-        {
-            if (binding.Device == InputDevice.Mouse)
-            {
-                _settings.SoloBindings.Remove(kind);
-            }
-        }
+        _settings.SoloBindings.Clear();
 
         if (_settings.PauseBinding is { Device: InputDevice.Mouse })
         {
@@ -2216,12 +2240,9 @@ internal sealed partial class MainForm : Form
         _ => kind.ToString()
     };
 
-    private static string DurationSuffix(TimeSpan? duration) =>
-        duration is { } value ? $" · last {FormatDuration(value)}" : string.Empty;
-
     private static string RegressionSuffix(AbilitySlotTracker tracker) =>
         tracker.LastRegressionDuration is { } fitted && tracker.LastRegressionUncertainty is { } spread
-            ? $" · regression {fitted.TotalSeconds:F2} ± {spread.TotalSeconds:F2} s"
+            ? $"regression {fitted.TotalSeconds:F2} ± {spread.TotalSeconds:F2} s"
             : string.Empty;
 
     private static string MeasurementSuffix(AbilitySlotTracker tracker) =>
@@ -2251,9 +2272,6 @@ internal sealed partial class MainForm : Form
         Pause,
         AbilityUse,
         RepeatTest,
-        SoloGrenade,
-        SoloMelee,
-        SoloClass,
         ToggleOverlay
     }
 

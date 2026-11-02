@@ -26,15 +26,39 @@ if (args.Length == 2 && args[0] == "--ui-smoke")
                     var navigation = Descendants(form).Single(control => control.Name == "PageNavigation");
                     var pages = Descendants(form).Single(control => control.Name == "Pages");
                     Assert(navigation.Controls.Count == 3, "The utility should have Tracking, Repeat test, and Settings pages.");
+                    Assert(!Descendants(form).OfType<LinkLabel>().Any(link => link.Visible),
+                        "A new app launch must not show a previous recording path.");
                     Directory.CreateDirectory(args[1]);
                     foreach (Button link in navigation.Controls)
                     {
                         link.PerformClick();
                         form.PerformLayout();
                         var page = pages.Controls.Cast<Control>().Single(control => control.Visible);
+                        if (link.Text == "Tracking")
+                        {
+                            Assert(Descendants(page).OfType<Button>().Count(button => button.Text.StartsWith("Auto-detect")) == 1,
+                                "Tracking should expose one global auto-detect action.");
+                            Assert(!Descendants(page).OfType<Button>().Any(button => button.Text == "Record…" || button.Text == "Open folder"),
+                                "Tracking must not repeat shortcut-recording or open-folder buttons.");
+                            Assert(Descendants(page).OfType<TwoLineStatusLabel>().Count() == 3,
+                                "Every ability should use the fixed two-line status renderer.");
+                            Assert(Descendants(form).OfType<Button>().Any(button => button.Text.Contains("Pause detection (")),
+                                "The pause action should display its hotkey.");
+                            form.SetLastRecordingPath(@"C:\Recordings\latest-hud.zip");
+                            Assert(Descendants(page).OfType<LinkLabel>().Single().Visible,
+                                "The current launch's last recording should appear as a link.");
+                        }
+                        foreach (var picker in Descendants(page).OfType<ComboBox>())
+                        {
+                            Assert(picker is FlatComboBox, "All dropdowns must use the shared dark field.");
+                            using var fieldImage = new Bitmap(picker.Width, picker.Height);
+                            picker.DrawToBitmap(fieldImage, picker.ClientRectangle);
+                            Assert(fieldImage.GetPixel(picker.Width - 5, picker.Height / 2).GetBrightness() < 0.3,
+                                "The dropdown arrow area must use dark chrome, not the native white button.");
+                        }
                         Assert(form.ClientSize.Height <= 500 * form.DeviceDpi / 96f,
                             "Each page should fit a compact desktop window.");
-                        foreach (var control in Descendants(page).Where(control => control.Visible && control is Button or ComboBox or NumericUpDown))
+                        foreach (var control in Descendants(page).Where(control => control.Visible && control is Button or ComboBox or NumericUpDown or LinkLabel))
                         {
                             var bounds = form.RectangleToClient(control.RectangleToScreen(control.ClientRectangle));
                             Assert(form.ClientRectangle.Contains(bounds), $"{control.Text} must remain inside the window.");
@@ -66,16 +90,42 @@ if (args.Length == 2 && args[0] == "--ui-smoke")
                         image.Save(Path.Combine(args[1], "ui-History-minimum.png"));
                     }
                     historyForm.Close();
-                    using var changelogForm = new ChangelogForm("Changelog", "Changes since v0.1.15",
-                        [new ChangelogRelease(new Version(0, 1, 16), "v0.1.16", "Compact utility layout.",
+                    form.ShowChangelog("Changes since v0.1.15",
+                        [new ChangelogRelease(new Version(0, 1, 16), "v0.1.16",
+                            "## Changes\n- **Compact** utility layout.\n- `F8` pauses tracking.\n[Full changelog](https://github.com/Database-Clarity/d2-ability-recharge-tracker/compare/v0.1.15...v0.1.16)",
                             new Uri("https://github.com/Database-Clarity/d2-ability-recharge-tracker/releases/tag/v0.1.16"))]);
-                    changelogForm.Show(form);
-                    using (var image = new Bitmap(changelogForm.Width, changelogForm.Height))
+                    var changelog = Descendants(form).OfType<ChangelogView>().Single();
+                    Assert(changelog.FindForm() == form, "Changelog must be hosted inside the main app.");
+                    var notes = Descendants(changelog).OfType<RichTextBox>().Single();
+                    Assert(!notes.Text.Contains("**") && !notes.Text.Contains("##") && !notes.Text.Contains("]("),
+                        "Release headings, emphasis, and links must not display raw Markdown syntax.");
+                    notes.Select(0, 1);
+                    Assert(notes.SelectionFont is { Bold: true } releaseFont && releaseFont.Name == "Segoe UI",
+                        "Release headings must retain the app's typography and emphasis.");
+                    using (var image = new Bitmap(form.Width, form.Height))
                     {
-                        changelogForm.DrawToBitmap(image, new Rectangle(Point.Empty, image.Size));
+                        form.DrawToBitmap(image, new Rectangle(Point.Empty, image.Size));
                         image.Save(Path.Combine(args[1], "ui-Changelog.png"));
                     }
-                    changelogForm.Close();
+                    Descendants(changelog).OfType<Button>().Single(button => button.Text == "Back").PerformClick();
+                    Assert(!Descendants(form).OfType<ChangelogView>().Any(),
+                        "Back should restore the app without leaving an extra changelog window.");
+                    using var hud = new Bitmap(Path.Combine(AppContext.BaseDirectory, "fixtures", "hud-dim-picker.png"));
+                    var source = new Rectangle(0, 0, hud.Width, hud.Height);
+                    var regions = AbilitySlotRegionFinder.Find(hud, source);
+                    using var multiPicker = new RegionPicker(hud, source, new Rectangle(0, 0, 1080, 900),
+                        "test HUD", initialSelections: regions);
+                    multiPicker.Show(form);
+                    using (var image = new Bitmap(multiPicker.Width, multiPicker.Height))
+                    {
+                        multiPicker.DrawToBitmap(image, new Rectangle(Point.Empty, image.Size));
+                        image.Save(Path.Combine(args[1], "ui-Auto-detect.png"));
+                    }
+                    var confirm = Descendants(multiPicker).OfType<Button>().Single(button => button.Text == "Use all three");
+                    Assert(confirm.Enabled, "Three separate valid regions should be confirmable.");
+                    confirm.PerformClick();
+                    Assert(multiPicker.DialogResult == DialogResult.OK && multiPicker.SelectedRegions.SequenceEqual(regions),
+                        "A single confirmation must return all three regions together.");
                 }
                 catch (Exception exception)
                 {
@@ -355,6 +405,11 @@ Assert(MainForm.PausedMeasurementStatus(finalTracker).Contains("Complete") &&
     MainForm.PausedMeasurementStatus(finalTracker).Contains("10.00") &&
     MainForm.PausedMeasurementStatus(finalTracker).Contains("regression"),
     "Paused status must preserve the completed measurement and regression.");
+Assert(MainForm.MeasurementStatus(finalTracker, true).Split('\n').Length == 2 &&
+    MainForm.PausedMeasurementStatus(finalTracker).Split('\n').Length == 2,
+    "Completed and paused ability status must have exactly two rows.");
+Assert(MainForm.WithShortcut("Pause detection", InputBinding.DefaultPause).Contains(InputBinding.DefaultPause.ToString()),
+    "Action labels must include their configured shortcut.");
 var estimatingTracker = new AbilitySlotTracker(ability);
 estimatingTracker.Observe(charged, start);
 estimatingTracker.Observe(flash, start.AddSeconds(1));
@@ -422,6 +477,16 @@ using (var picker = new RegionPicker(preview, new Rectangle(0, 0, 40, 40), new R
     AssertReadableButtons(picker);
 }
 
+using (var preview = new Bitmap(200, 80))
+using (var overlapping = new RegionPicker(preview, new Rectangle(0, 0, 200, 80),
+    new Rectangle(0, 0, 1080, 900), "test preview", initialSelections:
+    [new Rectangle(10, 10, 40, 40), new Rectangle(30, 10, 40, 40), new Rectangle(90, 10, 40, 40)]))
+{
+    Assert(!Descendants(overlapping).OfType<Button>().Single(button => button.Text == "Use all three").Enabled,
+        "Overlapping regions must not be confirmable.");
+    Assert(overlapping.SelectedRegions.Length == 0, "Opening or cancelling a selector must not commit regions.");
+}
+
 using (var guide = new SelectionGuide())
 using (var illustration = new Bitmap(guide.ClientSize.Width, guide.ClientSize.Height))
 {
@@ -465,11 +530,19 @@ using (var graphics = Graphics.FromImage(hudPreview))
     };
     for (var index = 0; index < expected.Length; index++)
     {
+        expected[index].Inflate(4, 4);
         Assert(Math.Abs(suggestions[index].Left - expected[index].Left) <= 3 &&
             Math.Abs(suggestions[index].Top - expected[index].Top) <= 3 &&
             Math.Abs(suggestions[index].Width - expected[index].Width) <= 3 &&
             Math.Abs(suggestions[index].Height - expected[index].Height) <= 3,
-            $"Synthetic slot {index} should be refined to its visible border; got {suggestions[index]}.");
+            $"Synthetic slot {index} should include padding around its visible border; got {suggestions[index]}.");
+        var border = Rectangle.FromLTRB(610 + index * 67, 379 - index * 4,
+            672 + index * 67, 445 - index * 4);
+        Assert(suggestions[index].Left <= border.Left - 2 && suggestions[index].Top <= border.Top - 2 &&
+            suggestions[index].Right >= border.Right + 1 && suggestions[index].Bottom >= border.Bottom + 2,
+            "The padded selection must comfortably include the top, sides, and bottom line.");
+        if (index > 0) Assert(!suggestions[index].IntersectsWith(suggestions[index - 1]),
+            "Padded neighboring selections must not overlap.");
     }
 }
 
@@ -613,6 +686,7 @@ foreach (var fixtureName in autoDetectFixtures)
     for (var index = 0; index < expectedAbilityRegions.Length; index++)
     {
         var expectedRegion = expectedAbilityRegions[index];
+        expectedRegion.Inflate(2, 2);
         var foundRegion = detected[index];
         Assert(Math.Abs(foundRegion.Left - expectedRegion.Left) <= 3 &&
             Math.Abs(foundRegion.Top - expectedRegion.Top) <= 3 &&
@@ -638,6 +712,7 @@ using (var yellowFixture = new Bitmap(Path.Combine(AppContext.BaseDirectory, "fi
     {
         var found = detected[index];
         var region = expected[index];
+        region.Inflate(2, 2);
         Assert(Math.Abs(found.Left - region.Left) <= 3 &&
             Math.Abs(found.Top - region.Top) <= 3 &&
             Math.Abs(found.Width - region.Width) <= 3 &&
@@ -671,6 +746,7 @@ using (var pickerFixture = new Bitmap(Path.Combine(AppContext.BaseDirectory, "fi
         for (var index = 0; index < expected.Length; index++)
         {
             var region = expected[index];
+            region.Inflate(2, 2);
             region.Offset(source.X + offset.X, source.Y + offset.Y);
             var found = detected[index];
             Assert(Math.Abs(found.X - region.X) <= 3 && Math.Abs(found.Y - region.Y) <= 3 &&
@@ -701,8 +777,8 @@ using (var withoutStrips = new Bitmap(Path.Combine(AppContext.BaseDirectory, "fi
     var detected = AbilitySlotRegionFinder.Find(withoutStrips,
         new Rectangle(0, 0, withoutStrips.Width, withoutStrips.Height));
     Assert(detected.Length == 3, "The three-slot pattern must be detected without colored strips or element colors.");
-    Assert(Math.Abs(detected[0].X - 136) <= 3 && Math.Abs(detected[1].X - 219) <= 3 &&
-        Math.Abs(detected[2].X - 302) <= 3,
+    Assert(Math.Abs(detected[0].X - 134) <= 3 && Math.Abs(detected[1].X - 217) <= 3 &&
+        Math.Abs(detected[2].X - 300) <= 3,
         "Removing strip and element colors must not move detection onto the weapon panel.");
 }
 
@@ -762,8 +838,14 @@ foreach (var fixtureName in scaleFixturePaths)
             var expectedRegion = new Rectangle(
                 (int)Math.Round(baseRegion.X * scale), (int)Math.Round(baseRegion.Y * scale),
                 (int)Math.Round(baseRegion.Width * scale), (int)Math.Round(baseRegion.Height * scale));
+            var side = (baseRegion.Width - 2) * scale;
+            var addedMargin = Math.Max(2, (int)Math.Ceiling(side * 0.05)) - Math.Max(1, (int)(side * 0.03));
+            expectedRegion.Inflate(addedMargin, addedMargin);
             var foundRegion = detected[index];
             const int tolerance = 3;
+            Assert(new Rectangle(0, 0, scaled.Width, scaled.Height).Contains(foundRegion) &&
+                (index == 0 || !foundRegion.IntersectsWith(detected[index - 1])),
+                "Padded regions must stay within the source and must not overlap neighboring abilities.");
             var error = Math.Max(
                 Math.Max(Math.Abs(foundRegion.Left - expectedRegion.Left), Math.Abs(foundRegion.Top - expectedRegion.Top)),
                 Math.Max(Math.Abs(foundRegion.Width - expectedRegion.Width), Math.Abs(foundRegion.Height - expectedRegion.Height)));
