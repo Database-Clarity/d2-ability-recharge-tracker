@@ -19,22 +19,35 @@ internal sealed record MeasurementHistoryEntry(
     Guid? RepeatTestId = null,
     Dictionary<string, string>? CustomValues = null);
 
+/// <summary>A named group of measurements. Custom columns belong to the session that defines them.</summary>
 internal sealed record MeasurementHistorySession(
     Guid Id,
     string Name,
     DateTimeOffset StartedAt,
-    DateTimeOffset? EndedAt);
+    DateTimeOffset? EndedAt,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string[]? CustomColumns = null)
+{
+    [JsonIgnore]
+    public IReadOnlyList<string> Columns => CustomColumns ?? [];
+}
 
 internal sealed class MeasurementHistoryStore
 {
-    private const int CurrentVersion = 1;
+    // Version 1 kept one global custom-column list; version 2 stores columns per session.
+    private const int LegacyGlobalColumnsVersion = 1;
+    private const int CurrentVersion = 2;
+    private static readonly string[] ReservedColumns =
+    [
+        "Ability", "Result", "Measured", "Measured ±", "Regression", "Regression ±", "Measured at", "Note", "Session",
+        "Measured seconds", "Measurement uncertainty seconds", "Regression seconds",
+        "Regression uncertainty seconds", "Cycles", "Regression cycles", "Repeat test ID"
+    ];
     private static readonly JsonSerializerOptions JsonOptions = CreateJsonOptions();
     private readonly object _sync = new();
     private readonly string _path;
     private List<MeasurementHistoryEntry> _measurements = [];
     private List<MeasurementHistorySession> _sessions = [];
     private Guid? _activeSessionId;
-    private List<string> _customColumns = [];
 
     public MeasurementHistoryStore(string? path = null)
     {
@@ -49,10 +62,10 @@ internal sealed class MeasurementHistoryStore
             var document = JsonSerializer.Deserialize<MeasurementHistoryDocument>(stream, JsonOptions)
                 ?? throw new InvalidDataException("The history file is empty.");
             Validate(document);
+            Migrate(document);
             _measurements = document.Measurements;
             _sessions = document.Sessions;
             _activeSessionId = document.ActiveSessionId;
-            _customColumns = document.CustomColumns;
         }
         catch (FileNotFoundException)
         {
@@ -67,25 +80,25 @@ internal sealed class MeasurementHistoryStore
     }
 
     public string? LoadError { get; }
-    public IReadOnlyList<string> CustomColumns
+    /// <summary>The custom columns defined for one session (empty for unknown sessions).</summary>
+    public IReadOnlyList<string> GetCustomColumns(Guid sessionId)
     {
-        get { lock (_sync) return _customColumns.ToArray(); }
+        lock (_sync) return _sessions.FirstOrDefault(session => session.Id == sessionId)?.Columns.ToArray() ?? [];
     }
 
-    public void AddCustomColumn(string name)
+    public void AddCustomColumn(Guid sessionId, string name)
     {
         name = name.Trim();
         lock (_sync)
         {
             EnsureWritable();
-            if (string.IsNullOrWhiteSpace(name) || name.Length > 80 ||
-                _customColumns.Contains(name, StringComparer.OrdinalIgnoreCase) ||
-                new[] { "Ability", "Result", "Measured", "Measured ±", "Regression", "Regression ±", "Measured at", "Note", "Session",
-                    "Measured seconds", "Measurement uncertainty seconds", "Regression seconds",
-                    "Regression uncertainty seconds", "Cycles", "Regression cycles", "Repeat test ID" }
-                    .Contains(name, StringComparer.OrdinalIgnoreCase))
-                throw new ArgumentException("Choose a unique column name (1–80 characters), different from the built-in columns.", nameof(name));
-            Commit(_sessions, _measurements, _activeSessionId, [.. _customColumns, name]);
+            var index = FindSession(sessionId);
+            var session = _sessions[index];
+            if (!IsValidColumnName(name) || session.Columns.Contains(name, StringComparer.OrdinalIgnoreCase))
+                throw new ArgumentException("Choose a column name (1–80 characters) that is unique in this session and different from the built-in columns.", nameof(name));
+            var sessions = _sessions.ToList();
+            sessions[index] = session with { CustomColumns = [.. session.Columns, name] };
+            Commit(sessions, _measurements, _activeSessionId);
         }
     }
 
@@ -94,9 +107,11 @@ internal sealed class MeasurementHistoryStore
         lock (_sync)
         {
             EnsureWritable();
-            if (!_customColumns.Contains(column)) throw new ArgumentException("The custom column does not exist.", nameof(column));
             var index = _measurements.FindIndex(item => item.Id == measurementId);
             if (index < 0) throw new ArgumentException("The measurement no longer exists.", nameof(measurementId));
+            var session = _sessions.FirstOrDefault(item => item.Id == _measurements[index].SessionId);
+            if (session is null || !session.Columns.Contains(column))
+                throw new ArgumentException("The custom column does not exist in this measurement's session.", nameof(column));
             var measurements = _measurements.ToList();
             var values = measurements[index].CustomValues is { } existing
                 ? new Dictionary<string, string>(existing) : [];
@@ -170,7 +185,8 @@ internal sealed class MeasurementHistoryStore
 
             var entry = measurement with
             {
-                SessionId = sessionId,
+                // A session deleted while a repeat test was running leaves its later results unsorted.
+                SessionId = sessionId is { } id && _sessions.Any(session => session.Id == id) ? id : null,
                 CustomValues = measurement.CustomValues is { } values ? new Dictionary<string, string>(values) : null
             };
             Commit(_sessions, [.. _measurements, entry], _activeSessionId);
@@ -229,19 +245,52 @@ internal sealed class MeasurementHistoryStore
         }
     }
 
-    public void SetActiveSession(Guid sessionId)
+    /// <summary>Makes a session active, ending the current one and reopening the target if it had ended.</summary>
+    public void SetActiveSession(Guid sessionId, DateTimeOffset now)
     {
         lock (_sync)
         {
             EnsureWritable();
-            var session = _sessions.FirstOrDefault(candidate => candidate.Id == sessionId)
-                ?? throw new ArgumentException("The selected session does not exist.", nameof(sessionId));
-            if (session.EndedAt is not null)
-            {
-                throw new InvalidOperationException("An ended session cannot be made active.");
-            }
+            var index = FindSession(sessionId);
+            if (_activeSessionId == sessionId) return;
+            var sessions = _sessions.ToList();
+            if (_activeSessionId is { } activeId && sessions.FindIndex(session => session.Id == activeId) is var activeIndex and >= 0)
+                sessions[activeIndex] = sessions[activeIndex] with { EndedAt = Max(now, sessions[activeIndex].StartedAt) };
+            sessions[index] = sessions[index] with { EndedAt = null };
+            Commit(sessions, _measurements, sessionId);
+        }
+    }
 
-            Commit(_sessions, _measurements, sessionId);
+    public void RenameSession(Guid sessionId, string name)
+    {
+        name = name.Trim();
+        if (string.IsNullOrWhiteSpace(name) || name.Length > 80)
+            throw new ArgumentException("Enter a session name (1–80 characters).", nameof(name));
+        lock (_sync)
+        {
+            EnsureWritable();
+            var index = FindSession(sessionId);
+            var sessions = _sessions.ToList();
+            sessions[index] = sessions[index] with { Name = name };
+            Commit(sessions, _measurements, _activeSessionId);
+        }
+    }
+
+    /// <summary>
+    /// Deletes a session and its column definitions. Its measurements become unsorted and keep their stored
+    /// custom values, which reappear if they are added to a session with a column of the same name.
+    /// </summary>
+    public void DeleteSession(Guid sessionId)
+    {
+        lock (_sync)
+        {
+            EnsureWritable();
+            var index = FindSession(sessionId);
+            var sessions = _sessions.ToList();
+            sessions.RemoveAt(index);
+            var measurements = _measurements
+                .Select(item => item.SessionId == sessionId ? item with { SessionId = null } : item).ToList();
+            Commit(sessions, measurements, _activeSessionId == sessionId ? null : _activeSessionId);
         }
     }
 
@@ -262,16 +311,17 @@ internal sealed class MeasurementHistoryStore
         }
     }
 
-    public void AssignToActiveSession(Guid measurementId)
+    /// <summary>
+    /// Moves a measurement to a session, or leaves it unsorted when <paramref name="sessionId"/> is null.
+    /// Custom values are kept: those matching a column of the destination session show there, the rest stay
+    /// stored (hidden) and reappear if the measurement joins a session with a column of that name.
+    /// </summary>
+    public void AssignToSession(Guid measurementId, Guid? sessionId)
     {
         lock (_sync)
         {
             EnsureWritable();
-            if (_activeSessionId is not { } activeSessionId)
-            {
-                throw new InvalidOperationException("Start or select an active session before assigning a measurement.");
-            }
-
+            if (sessionId is { } id) FindSession(id);
             var index = _measurements.FindIndex(measurement => measurement.Id == measurementId);
             if (index < 0)
             {
@@ -279,7 +329,7 @@ internal sealed class MeasurementHistoryStore
             }
 
             var measurements = _measurements.ToList();
-            measurements[index] = measurements[index] with { SessionId = activeSessionId };
+            measurements[index] = measurements[index] with { SessionId = sessionId };
             Commit(_sessions, measurements, _activeSessionId);
         }
     }
@@ -339,26 +389,54 @@ internal sealed class MeasurementHistoryStore
         }
     }
 
+    private int FindSession(Guid sessionId)
+    {
+        var index = _sessions.FindIndex(session => session.Id == sessionId);
+        return index >= 0 ? index : throw new ArgumentException("The selected session no longer exists.", nameof(sessionId));
+    }
+
+    private static DateTimeOffset Max(DateTimeOffset left, DateTimeOffset right) => left > right ? left : right;
+
+    private static bool IsValidColumnName(string name) =>
+        !string.IsNullOrWhiteSpace(name) && name.Length <= 80 && name == name.Trim() &&
+        !ReservedColumns.Contains(name, StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Upgrades a version 1 document in memory (the file is rewritten on the next change): each global column
+    /// is copied onto every session with at least one measurement holding a value for it. Values on unsorted
+    /// measurements stay stored on the measurement.
+    /// </summary>
+    private static void Migrate(MeasurementHistoryDocument document)
+    {
+        if (document.Version != LegacyGlobalColumnsVersion) return;
+        var global = document.CustomColumns ?? [];
+        document.Sessions = document.Sessions.Select(session =>
+        {
+            var used = global.Where(column => document.Measurements.Any(item =>
+                item.SessionId == session.Id && item.CustomValues?.ContainsKey(column) == true)).ToArray();
+            return session with { CustomColumns = used.Length > 0 ? used : null };
+        }).ToList();
+        document.CustomColumns = null;
+        document.Version = CurrentVersion;
+    }
+
     private void Commit(
         List<MeasurementHistorySession> sessions,
         List<MeasurementHistoryEntry> measurements,
-        Guid? activeSessionId,
-        List<string>? customColumns = null)
+        Guid? activeSessionId)
     {
         var document = new MeasurementHistoryDocument
         {
             Version = CurrentVersion,
             Sessions = sessions,
             Measurements = measurements,
-            ActiveSessionId = activeSessionId,
-            CustomColumns = customColumns ?? _customColumns
+            ActiveSessionId = activeSessionId
         };
         Validate(document);
         WriteAtomically(document);
         _sessions = sessions;
         _measurements = measurements;
         _activeSessionId = activeSessionId;
-        _customColumns = document.CustomColumns;
     }
 
     private void WriteAtomically(MeasurementHistoryDocument document)
@@ -383,9 +461,11 @@ internal sealed class MeasurementHistoryStore
 
     private static void Validate(MeasurementHistoryDocument document)
     {
-        if (document.Version != CurrentVersion || document.Sessions is null || document.Measurements is null ||
-            document.CustomColumns is null || document.CustomColumns.Any(name => string.IsNullOrWhiteSpace(name) || name.Length > 80) ||
-            document.CustomColumns.Distinct(StringComparer.OrdinalIgnoreCase).Count() != document.CustomColumns.Count)
+        var legacy = document.Version == LegacyGlobalColumnsVersion;
+        if (document.Version is not (LegacyGlobalColumnsVersion or CurrentVersion) ||
+            document.Sessions is null || document.Measurements is null ||
+            (legacy ? document.CustomColumns is null || !AreValidColumns(document.CustomColumns)
+                : document.CustomColumns is not null))
         {
             throw new InvalidDataException("The history file has an unsupported version or missing data.");
         }
@@ -395,7 +475,8 @@ internal sealed class MeasurementHistoryStore
         {
             if (session is null || session.Id == Guid.Empty || !sessionIds.Add(session.Id) ||
                 string.IsNullOrWhiteSpace(session.Name) ||
-                session.EndedAt is { } endedAt && endedAt < session.StartedAt)
+                session.EndedAt is { } endedAt && endedAt < session.StartedAt ||
+                session.CustomColumns is { } columns && (legacy || !AreValidColumns(columns)))
             {
                 throw new InvalidDataException("The history file contains an invalid session.");
             }
@@ -411,8 +492,10 @@ internal sealed class MeasurementHistoryStore
         foreach (var measurement in document.Measurements)
         {
             ValidateMeasurement(measurement);
+            // Values may outlive their column (after a move or a deleted session) and stay stored, hidden.
             if (measurement.CustomValues is { } values && values.Any(pair =>
-                !document.CustomColumns.Contains(pair.Key) || pair.Value is null))
+                (legacy ? !document.CustomColumns!.Contains(pair.Key) : string.IsNullOrWhiteSpace(pair.Key) || pair.Key.Length > 80) ||
+                pair.Value is null))
                 throw new InvalidDataException("A measurement refers to an invalid custom column.");
             if (!measurementIds.Add(measurement.Id) ||
                 measurement.SessionId is { } sessionId && !sessionIds.Contains(sessionId))
@@ -421,6 +504,10 @@ internal sealed class MeasurementHistoryStore
             }
         }
     }
+
+    private static bool AreValidColumns(IReadOnlyCollection<string> columns) =>
+        columns.All(name => name is not null && IsValidColumnName(name)) &&
+        columns.Distinct(StringComparer.OrdinalIgnoreCase).Count() == columns.Count;
 
     private static void ValidateMeasurement(MeasurementHistoryEntry measurement)
     {
@@ -467,6 +554,8 @@ internal sealed class MeasurementHistoryStore
         public List<MeasurementHistorySession> Sessions { get; set; } = [];
         public List<MeasurementHistoryEntry> Measurements { get; set; } = [];
         public Guid? ActiveSessionId { get; set; }
-        public List<string> CustomColumns { get; set; } = [];
+        /// <summary>Version 1 only: columns shared by all sessions. Absent from current documents.</summary>
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public List<string>? CustomColumns { get; set; }
     }
 }

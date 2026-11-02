@@ -59,7 +59,7 @@ internal static class MeasurementHistoryTests
             Assert(!history.TryAddMeasurement(measurement!), "Recording the same completion twice should be idempotent.");
             history.SaveNote(measurement!.Id, "Grenade stat 5");
             var secondSession = history.CreateSession("Grenade stat 10", new DateTimeOffset(measuredAt.AddMinutes(1)));
-            history.AssignToActiveSession(measurement.Id);
+            history.AssignToSession(measurement.Id, secondSession.Id);
             Assert(MeasurementHistoryStore.TryCreateValidatedMeasurement(
                 AbilityKind.Grenade,
                 AbilityState.Complete,
@@ -124,16 +124,16 @@ internal static class MeasurementHistoryTests
             var oneSummary = RepeatMeasurementSummary.Create(oneRun, [oneCycle], summary.MeasuredAt.UtcDateTime);
             Assert(restored.TryAddMeasurement(oneCycle) && restored.TryAddMeasurement(oneSummary),
                 "A one-cycle repeat mean and its individual cycle must both be retained even with identical values and timestamps.");
-            restored.AddCustomColumn("Grenade Stat");
-            restored.AddCustomColumn("Loadout, notes");
+            restored.AddCustomColumn(firstSession.Id, "Grenade Stat");
+            restored.AddCustomColumn(firstSession.Id, "Loadout, notes");
             restored.SaveCustomValue(summary.Id, "Grenade Stat", "5");
             restored.SaveCustomValue(summary.Id, "Loadout, notes", "=1+1\n\"test\"");
             var customRestored = new MeasurementHistoryStore(path);
-            Assert(customRestored.CustomColumns.SequenceEqual(new[] { "Grenade Stat", "Loadout, notes" }) &&
+            Assert(customRestored.GetCustomColumns(firstSession.Id).SequenceEqual(new[] { "Grenade Stat", "Loadout, notes" }) &&
                 customRestored.Measurements.Single(item => item.Id == run).CustomValues!["Grenade Stat"] == "5",
                 "Named columns and per-result values must persist independently of notes.");
             var duplicateRejected = false;
-            try { customRestored.AddCustomColumn("grenade stat"); }
+            try { customRestored.AddCustomColumn(firstSession.Id, "grenade stat"); }
             catch (ArgumentException) { duplicateRejected = true; }
             Assert(duplicateRejected, "Custom column names must be unique without case ambiguity.");
             var snapshot = customRestored.Measurements.Single(item => item.Id == run);
@@ -141,7 +141,7 @@ internal static class MeasurementHistoryTests
             Assert(customRestored.Measurements.Single(item => item.Id == run).CustomValues!["Grenade Stat"] == "5",
                 "Editing a snapshot must not mutate persisted history.");
             var csv = MeasurementCsv.Create(customRestored.Measurements.Where(item => item.Id == run),
-                customRestored.Sessions, customRestored.CustomColumns);
+                customRestored.Sessions, customRestored.GetCustomColumns(firstSession.Id));
             Assert(csv.Contains("\"Grenade Stat\",\"Loadout, notes\"") && csv.Contains("\"5\",\"'=1+1\n\"\"test\"\"\"") &&
                 csv.Contains("\"Mean\"") && csv.Contains("\"2\",\"1\"") && csv.Contains("\"Repeated at grenade stat 5\""),
                 "CSV must include custom columns, repeat counts, notes and safely quoted formula-like values.");
@@ -158,6 +158,8 @@ internal static class MeasurementHistoryTests
             }
             finally { System.Globalization.CultureInfo.CurrentCulture = culture; }
 
+            SessionColumnTests(customRestored, firstSession.Id, secondSession.Id, run, path);
+            restored = new MeasurementHistoryStore(path);
             Assert(restored.EndActiveSession(new DateTimeOffset(measuredAt.AddMinutes(2))),
                 "Ending an active session should succeed.");
             var ended = new MeasurementHistoryStore(path);
@@ -207,6 +209,128 @@ internal static class MeasurementHistoryTests
             Directory.Delete(directory);
         }
     }
+
+    /// <summary>Per-session columns, moving between sessions, renaming, deleting a session and reopening.</summary>
+    private static void SessionColumnTests(MeasurementHistoryStore history, Guid columnsSession, Guid otherSession, Guid meanId, string path)
+    {
+        Assert(history.GetCustomColumns(otherSession).Count == 0,
+            "A column added to one session must not appear in another session.");
+        history.AddCustomColumn(otherSession, "Grenade Stat");
+        Assert(history.GetCustomColumns(otherSession).SequenceEqual(["Grenade Stat"]),
+            "The same column name may exist independently in different sessions.");
+        var foreignRejected = false;
+        var otherMeasurement = history.Measurements.First(item => item.SessionId == otherSession).Id;
+        try { history.SaveCustomValue(otherMeasurement, "Loadout, notes", "x"); }
+        catch (ArgumentException) { foreignRejected = true; }
+        Assert(foreignRejected, "A value can only be saved in a column of the measurement's own session.");
+
+        // Moving keeps every stored value; only columns that exist in the destination show there.
+        history.AssignToSession(meanId, otherSession);
+        var moved = new MeasurementHistoryStore(path).Measurements.Single(item => item.Id == meanId);
+        Assert(moved.SessionId == otherSession && moved.CustomValues!["Grenade Stat"] == "5" &&
+            moved.CustomValues.ContainsKey("Loadout, notes"),
+            "Moving a measurement must keep its values; matching columns show them in the new session.");
+        history.AssignToSession(meanId, null);
+        Assert(history.Measurements.Single(item => item.Id == meanId).SessionId is null,
+            "A measurement can be moved back to Unsorted.");
+        history.AssignToSession(meanId, columnsSession);
+        Assert(history.Measurements.Single(item => item.Id == meanId).CustomValues!["Loadout, notes"] == "=1+1\n\"test\"",
+            "Returning to the original session must show its hidden values again.");
+        var missingRejected = false;
+        try { history.AssignToSession(meanId, Guid.NewGuid()); }
+        catch (ArgumentException) { missingRejected = true; }
+        Assert(missingRejected, "Moving to a missing session must be rejected.");
+
+        history.RenameSession(otherSession, "  Renamed  ");
+        Assert(new MeasurementHistoryStore(path).Sessions.Single(session => session.Id == otherSession).Name == "Renamed",
+            "Renaming must trim and persist.");
+
+        var scratch = history.CreateSession("Scratch", DateTimeOffset.UtcNow);
+        history.AddCustomColumn(scratch.Id, "Temp");
+        history.AssignToSession(otherMeasurement, scratch.Id);
+        history.SaveCustomValue(otherMeasurement, "Temp", "kept");
+        var countBefore = history.Measurements.Count;
+        history.DeleteSession(scratch.Id);
+        var afterDelete = new MeasurementHistoryStore(path);
+        Assert(afterDelete.Sessions.All(session => session.Id != scratch.Id) && afterDelete.ActiveSessionId is null &&
+            afterDelete.Measurements.Count == countBefore &&
+            afterDelete.Measurements.Single(item => item.Id == otherMeasurement) is { SessionId: null } orphan &&
+            orphan.CustomValues!["Temp"] == "kept" && afterDelete.GetCustomColumns(scratch.Id).Count == 0,
+            "Deleting a session must keep its measurements (unsorted, values preserved) and clear it as active.");
+        afterDelete.SetActiveSession(otherSession, DateTimeOffset.UtcNow);
+        Assert(afterDelete.ActiveSessionId == otherSession &&
+            afterDelete.Sessions.Single(session => session.Id == otherSession).EndedAt is null,
+            "Make active must reopen an ended session.");
+        afterDelete.AssignToSession(otherMeasurement, otherSession);
+        var single = afterDelete.Measurements.Single(item => item.Id == otherMeasurement);
+        Assert(afterDelete.TryAddMeasurement(single with { Id = Guid.NewGuid(), DurationSeconds = 3, CustomValues = null }, Guid.NewGuid()) &&
+            afterDelete.Measurements.Single(item => item.DurationSeconds == 3).SessionId is null,
+            "A result for a session that no longer exists must be stored as unsorted.");
+        var saved = File.ReadAllText(path);
+        Assert(saved.Contains("\"Version\": 2") && !saved.Contains("\"CustomColumns\": null"),
+            "Saved history must use the per-session document version.");
+        MigrationTests(Path.Combine(Path.GetDirectoryName(path)!, "legacy.json"));
+    }
+
+    /// <summary>A version 1 file (global columns) loads with each column copied onto the sessions that use it.</summary>
+    private static void MigrationTests(string path)
+    {
+        var used = Guid.NewGuid();
+        var unused = Guid.NewGuid();
+        var withValue = Guid.NewGuid();
+        var unsorted = Guid.NewGuid();
+        var plain = Guid.NewGuid();
+        File.WriteAllText(path, $$"""
+            {
+              "Version": 1,
+              "Sessions": [
+                { "Id": "{{used}}", "Name": "Used", "StartedAt": "2026-10-01T10:00:00+00:00", "EndedAt": "2026-10-01T11:00:00+00:00" },
+                { "Id": "{{unused}}", "Name": "Unused", "StartedAt": "2026-10-02T10:00:00+00:00", "EndedAt": null }
+              ],
+              "Measurements": [
+                { "Id": "{{withValue}}", "Ability": "Grenade", "DurationSeconds": 5, "UncertaintySeconds": 0.05, "Source": "Event",
+                  "MeasuredAt": "2026-10-01T10:30:00+00:00", "SessionId": "{{used}}", "CustomValues": { "Stat": "70" } },
+                { "Id": "{{unsorted}}", "Ability": "Melee", "DurationSeconds": 6, "UncertaintySeconds": 0.05, "Source": "Event",
+                  "MeasuredAt": "2026-10-01T10:40:00+00:00", "SessionId": null, "CustomValues": { "Stat": "40", "Exotic": "Yes" } },
+                { "Id": "{{plain}}", "Ability": "Melee", "DurationSeconds": 7, "UncertaintySeconds": 0.05, "Source": "Event",
+                  "MeasuredAt": "2026-10-02T10:40:00+00:00", "SessionId": "{{unused}}" }
+              ],
+              "ActiveSessionId": "{{unused}}",
+              "CustomColumns": [ "Stat", "Exotic" ]
+            }
+            """);
+        var legacy = new MeasurementHistoryStore(path);
+        Assert(legacy.CanWrite && legacy.GetCustomColumns(used).SequenceEqual(["Stat"]) &&
+            legacy.GetCustomColumns(unused).Count == 0 &&
+            legacy.Measurements.Single(item => item.Id == unsorted).CustomValues!["Exotic"] == "Yes" &&
+            legacy.ActiveSessionId == unused,
+            "Migration must copy each global column only onto sessions with values and keep unsorted values.");
+        legacy.AssignToSession(unsorted, used);
+        var upgraded = new MeasurementHistoryStore(path);
+        var upgradedText = File.ReadAllText(path);
+        Assert(upgraded.GetCustomColumns(used).SequenceEqual(["Stat"]) &&
+            upgraded.Measurements.Single(item => item.Id == unsorted).CustomValues!["Stat"] == "40" &&
+            upgradedText.Contains("\"Version\": 2") && upgradedText.IndexOf("\"CustomColumns\"", StringComparison.Ordinal) ==
+                upgradedText.LastIndexOf("\"CustomColumns\"", StringComparison.Ordinal),
+            "A migrated file must save as version 2 with columns only on the session that uses them.");
+
+        foreach (var invalid in new[]
+        {
+            """{"Version":2,"Sessions":[],"Measurements":[],"CustomColumns":["Stat"]}""",
+            $$"""{"Version":2,"Sessions":[{"Id":"{{used}}","Name":"A","StartedAt":"2026-10-01T10:00:00+00:00","CustomColumns":["Stat","stat"]}],"Measurements":[]}""",
+            $$"""{"Version":1,"Sessions":[{"Id":"{{used}}","Name":"A","StartedAt":"2026-10-01T10:00:00+00:00","CustomColumns":["Stat"]}],"Measurements":[],"CustomColumns":[]}""",
+            """{"Version":3,"Sessions":[],"Measurements":[]}"""
+        })
+        {
+            File.WriteAllText(path, invalid);
+            var rejected = new MeasurementHistoryStore(path);
+            Assert(!rejected.CanWrite && File.ReadAllText(path) == invalid,
+                "Global columns in version 2, duplicate session columns, session columns in version 1 and unknown versions must be rejected without overwriting.");
+        }
+
+        File.Delete(path);
+    }
+
 
     private static bool CanCreate(
         AbilityState state,

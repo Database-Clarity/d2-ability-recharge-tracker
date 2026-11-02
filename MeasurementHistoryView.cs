@@ -1,26 +1,39 @@
 namespace D2AbilityTracker;
 
+/// <summary>
+/// History tab with two views: <b>Sessions</b> (one session at a time, with its own custom columns and session
+/// actions) and <b>All measurements</b> (every result, filterable by ability, with its session as a column).
+/// </summary>
 internal sealed class MeasurementHistoryView : UserControl
 {
+    internal const int SessionsView = 0;
+    internal const int AllView = 1;
+
     private MeasurementHistoryStore _history;
+    private readonly SegmentedControl _mode = new("Sessions", "All measurements") { Name = "HistoryMode" };
+    private readonly Label _activeSession = new() { Name = "ActiveSession" };
+    private readonly FlowLayoutPanel _sessionsToolbar = new() { Name = "SessionsToolbar" };
+    private readonly FlowLayoutPanel _allToolbar = new() { Name = "AllToolbar" };
+    private readonly FlatComboBox _sessionPicker = new();
+    private readonly Button _newSession = new() { Text = "New session…" };
+    private readonly Button _toggleActive = new() { Name = "ToggleActive", Text = "Make active" };
+    private readonly Button _sessionMore = new() { Name = "SessionMore", Text = "⋯", AccessibleName = "More session actions" };
+    private readonly ContextMenuStrip _sessionMenu = TrackerTheme.Menu("SessionMenu");
     private readonly FlatComboBox _abilityFilter = new();
-    private readonly FlatComboBox _sessionFilter = new();
-    private readonly TextBox _sessionName = new();
-    private readonly Button _startSession = new();
-    private readonly Button _endSession = new();
-    private readonly Button _setActiveSession = new();
-    private readonly Button _saveNote = new();
-    private readonly Button _assignSession = new();
     private readonly DataGridView _measurements = new();
     private readonly TextBox _note = new();
-    private readonly Label _activeSession = new();
+    private readonly Button _saveNote = new() { Text = "Save note" };
+    private readonly Button _assignSession = new() { Text = "Add to session ▾" };
+    private readonly ContextMenuStrip _assignMenu = TrackerTheme.Menu("AssignMenu");
+    private readonly Button _addColumn = new() { Text = "Add column…" };
+    private readonly Button _export = new() { Text = "Export CSV…" };
     private readonly Label _status = new();
-    private readonly Button _addColumn = new();
-    private readonly Button _export = new();
+    private IReadOnlyList<string> _visibleColumns = [];
 
     public MeasurementHistoryView(MeasurementHistoryStore history)
     {
         _history = history;
+        ShowPrompt = dialog => dialog.ShowDialog((IWin32Window?)FindForm() ?? this);
         Name = "MeasurementHistory";
         AccessibleName = "Measurement history";
         BackColor = TrackerTheme.Background;
@@ -28,58 +41,219 @@ internal sealed class MeasurementHistoryView : UserControl
         Font = new Font("Segoe UI", 9);
         Padding = new Padding(0, 1, 0, 0);
 
-        _abilityFilter.DropDownStyle = ComboBoxStyle.DropDownList;
-        _abilityFilter.Width = 120;
-        _abilityFilter.Items.Add(new AbilityFilter(null, "All abilities"));
-        foreach (var ability in Enum.GetValues<AbilityKind>())
-        {
-            _abilityFilter.Items.Add(new AbilityFilter(ability, AbilityName(ability)));
-        }
-
-        _sessionFilter.DropDownStyle = ComboBoxStyle.DropDownList;
-        _sessionFilter.Width = 200;
-        _sessionName.PlaceholderText = "New session name";
-        _sessionName.AccessibleName = "New session name";
-        _sessionName.Width = 150;
-        _sessionName.BackColor = TrackerTheme.Surface;
-        _startSession.Text = "Start session";
-        _endSession.Text = "End session";
-        _setActiveSession.Text = "Make active";
-
-        var filters = new FlowLayoutPanel
-        {
-            Dock = DockStyle.Fill,
-            AutoSize = true,
-            WrapContents = true,
-            Padding = new Padding(0, 0, 0, 4)
-        };
-        var sessionActions = new FlowLayoutPanel
-        {
-            Name = "SessionActions",
-            AutoSize = true,
-            AutoSizeMode = AutoSizeMode.GrowAndShrink,
-            WrapContents = false,
-            Margin = Padding.Empty
-        };
-        sessionActions.Controls.AddRange([new InputFrame(_sessionName), _startSession]);
-        var sessionView = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Margin = Padding.Empty };
-        sessionView.Controls.AddRange([_sessionFilter, _setActiveSession]);
-        filters.Controls.AddRange([Field("Ability", _abilityFilter), Field("Session filter", sessionView)]);
-
+        // Header: view switch on the left, compact active-session indicator on the right.
+        _mode.Margin = new Padding(3, 4, 3, 4);
         _activeSession.AutoSize = true;
         _activeSession.AutoEllipsis = true;
-        _activeSession.MaximumSize = new Size(240, 0);
-        _activeSession.ForeColor = TrackerTheme.Text;
-        _activeSession.Margin = new Padding(4, 9, 6, 4);
-        sessionActions.Margin = new Padding(12, 0, 0, 0);
-        var activeSessionRow = new FlowLayoutPanel
+        _activeSession.MaximumSize = new Size(300, 0);
+        _activeSession.Anchor = AnchorStyles.Right;
+        _activeSession.Margin = new Padding(8, 0, 3, 0);
+        var header = new TableLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, ColumnCount = 2, RowCount = 1, Margin = Padding.Empty };
+        header.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        header.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        header.Controls.Add(_mode, 0, 0);
+        header.Controls.Add(_activeSession, 1, 0);
+
+        // Sessions toolbar: pick a session, start a new one, and act on the selected one.
+        _sessionPicker.DropDownStyle = ComboBoxStyle.DropDownList;
+        _sessionPicker.Width = 290;
+        _sessionPicker.AccessibleName = "Session";
+        _sessionPicker.Margin = new Padding(3, 0, 6, 0);
+        _sessionMore.MinimumSize = new Size(TrackerTheme.ControlHeight + 6, TrackerTheme.ControlHeight);
+        _sessionMore.Margin = new Padding(6, 0, 0, 0);
+        _newSession.Margin = new Padding(0, 0, 6, 0);
+        _toggleActive.Margin = Padding.Empty;
+        foreach (var bar in new[] { _sessionsToolbar, _allToolbar })
+        {
+            bar.AutoSize = true;
+            bar.Dock = DockStyle.Fill;
+            bar.WrapContents = false;
+            bar.Margin = new Padding(0, 4, 0, 6);
+        }
+        _sessionsToolbar.Controls.AddRange([InlineLabel("Session"), _sessionPicker, _newSession, _toggleActive, _sessionMore]);
+        _sessionMenu.Items.Add("Rename…", null, (_, _) => RenameSession());
+        _sessionMenu.Items.Add("Delete…", null, (_, _) => DeleteSession());
+        _sessionMore.ContextMenuStrip = _sessionMenu;
+
+        _abilityFilter.DropDownStyle = ComboBoxStyle.DropDownList;
+        _abilityFilter.Width = 130;
+        _abilityFilter.AccessibleName = "Ability";
+        _abilityFilter.Margin = new Padding(3, 0, 0, 0);
+        _abilityFilter.Items.Add(new AbilityFilter(null, "All abilities"));
+        foreach (var ability in Enum.GetValues<AbilityKind>())
+            _abilityFilter.Items.Add(new AbilityFilter(ability, AbilityName(ability)));
+        _allToolbar.Controls.AddRange([InlineLabel("Ability"), _abilityFilter]);
+        _assignSession.ContextMenuStrip = _assignMenu;
+
+        ConfigureGrid();
+
+        _note.Multiline = true;
+        _note.ScrollBars = ScrollBars.None;
+        _note.Dock = DockStyle.Fill;
+        _note.Height = 44;
+        _note.MaxLength = 240;
+        _note.AccessibleName = "Measurement note";
+        _note.PlaceholderText = "Note for the selected measurement";
+        _note.BackColor = TrackerTheme.Surface;
+        foreach (var button in new[] { _newSession, _toggleActive, _sessionMore, _saveNote, _assignSession, _addColumn, _export })
+        {
+            button.AutoSize = true;
+            button.AutoSizeMode = AutoSizeMode.GrowAndShrink;
+            button.MinimumSize = new Size(Math.Max(button.MinimumSize.Width, 80), TrackerTheme.ControlHeight);
+            button.Padding = new Padding(6, 0, 6, 0);
+        }
+        _sessionMore.MinimumSize = new Size(TrackerTheme.ControlHeight + 6, TrackerTheme.ControlHeight);
+        _sessionMore.Padding = Padding.Empty;
+        var noteActions = new FlowLayoutPanel
         {
             AutoSize = true,
             Dock = DockStyle.Fill,
-            WrapContents = true,
-            Margin = new Padding(0, 2, 0, 6)
+            WrapContents = false,
+            Padding = new Padding(6, 3, 0, 0)
         };
-        activeSessionRow.Controls.AddRange([_activeSession, _endSession, sessionActions]);
+        noteActions.Controls.AddRange([_saveNote, _assignSession]);
+        var noteRow = new TableLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, ColumnCount = 2, RowCount = 1, Padding = new Padding(0, 4, 0, 0) };
+        noteRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        noteRow.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        noteRow.Controls.Add(new InputFrame(_note) { Dock = DockStyle.Fill, Height = 44, MinimumSize = new Size(80, 44) }, 0, 0);
+        noteRow.Controls.Add(noteActions, 1, 0);
+
+        var viewActions = new FlowLayoutPanel { Name = "ViewActions", AutoSize = true, Dock = DockStyle.Fill, WrapContents = false };
+        viewActions.Controls.AddRange([_addColumn, _export]);
+        _status.AutoSize = true;
+        _status.ForeColor = TrackerTheme.Muted;
+        _status.Padding = new Padding(0, 4, 0, 0);
+        _status.Margin = new Padding(3, 0, 3, 0);
+        _status.MaximumSize = new Size(600, 0);
+        var footer = new TableLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, ColumnCount = 1 };
+        footer.Controls.Add(noteRow, 0, 0);
+        footer.Controls.Add(viewActions, 0, 1);
+        footer.Controls.Add(_status, 0, 2);
+
+        var root = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 5, Padding = new Padding(0, 4, 0, 0) };
+        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        root.Controls.Add(header, 0, 0);
+        root.Controls.Add(_sessionsToolbar, 0, 1);
+        root.Controls.Add(_allToolbar, 0, 2);
+        root.Controls.Add(_measurements, 0, 3);
+        root.Controls.Add(footer, 0, 4);
+        Controls.Add(root);
+        TrackerTheme.Apply(this);
+        TrackerTheme.Primary(_newSession);
+        TrackerTheme.SetTypography(_activeSession, 9, FontStyle.Regular);
+        Paint += (_, args) =>
+        {
+            using var pen = new Pen(TrackerTheme.Border);
+            args.Graphics.DrawLine(pen, 0, 0, Width, 0);
+        };
+
+        _mode.SelectionChanged += (_, _) => ApplyMode();
+        _sessionPicker.SelectedIndexChanged += (_, _) =>
+        {
+            RebuildCustomColumns();
+            RefreshMeasurements();
+        };
+        _abilityFilter.SelectedIndexChanged += (_, _) => RefreshMeasurements();
+        _measurements.SelectionChanged += (_, _) => LoadSelectedNote();
+        _newSession.Click += (_, _) => NewSession();
+        _toggleActive.Click += (_, _) => ToggleActive();
+        _sessionMore.Click += (_, _) => ShowMenu(_sessionMenu, _sessionMore);
+        _saveNote.Click += (_, _) => SaveSelectedNote();
+        _assignSession.Click += (_, _) => ShowMenu(_assignMenu, _assignSession);
+        _addColumn.Click += (_, _) => AddColumn();
+        _export.Click += (_, _) => ExportCsv();
+        _measurements.CellValidating += (_, args) =>
+        {
+            if (!SaveCustomCell(args.RowIndex, args.ColumnIndex, args.FormattedValue?.ToString() ?? ""))
+                args.Cancel = true;
+        };
+        _measurements.CellEndEdit += (_, args) =>
+        {
+            var cell = _measurements.Rows[args.RowIndex].Cells[args.ColumnIndex];
+            cell.ErrorText = SaveCustomCell(args.RowIndex, args.ColumnIndex, cell.Value?.ToString() ?? "")
+                ? "" : "This value could not be saved. Edit it to retry before exporting.";
+        };
+        _measurements.EditingControlShowing += (_, args) =>
+        {
+            args.Control.BackColor = TrackerTheme.Surface;
+            args.Control.ForeColor = TrackerTheme.Text;
+        };
+
+        _abilityFilter.SelectedIndex = 0;
+        _mode.SelectedIndex = SessionsView;
+        RefreshSessionChoices();
+        ApplyMode();
+    }
+
+    /// <summary>Shows a modal prompt and returns its result. Tests replace it to answer without a window.</summary>
+    [System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
+    internal Func<PromptDialog, DialogResult> ShowPrompt { get; set; }
+
+    /// <summary>The selected view: <see cref="SessionsView"/> or <see cref="AllView"/>.</summary>
+    [System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
+    internal int ViewMode
+    {
+        get => _mode.SelectedIndex;
+        set
+        {
+            _mode.SelectedIndex = value;
+            ApplyMode();
+        }
+    }
+
+    internal Guid? SelectedSessionId => (_sessionPicker.SelectedItem as SessionChoice)?.Id;
+
+    internal ContextMenuStrip SessionMenu => _sessionMenu;
+
+    internal ContextMenuStrip AssignMenu => _assignMenu;
+
+    private Guid? SelectedMeasurementId => _measurements.SelectedRows.Count == 1
+        ? _measurements.SelectedRows[0].Tag as Guid?
+        : null;
+
+    internal void UseStore(MeasurementHistoryStore history)
+    {
+        _history = history;
+        RefreshSessionChoices();
+        ApplyMode();
+    }
+
+    /// <summary>Re-reads the store unless the user is mid-edit, keeping the view, selection and filters.</summary>
+    internal void Reload()
+    {
+        if (_measurements.IsCurrentCellInEditMode || _note.Modified || _note.Focused) return;
+        var selected = SelectedMeasurementId;
+        RefreshSessionChoices();
+        RebuildCustomColumns();
+        RefreshMeasurements(selected);
+    }
+
+    /// <summary>Selects a session in the Sessions view.</summary>
+    internal void SelectSession(Guid sessionId)
+    {
+        _mode.SelectedIndex = SessionsView;
+        RefreshSessionChoices(sessionId);
+        ApplyMode();
+    }
+
+    private void ApplyMode()
+    {
+        var sessions = _mode.SelectedIndex == SessionsView;
+        _sessionsToolbar.Visible = sessions;
+        _allToolbar.Visible = !sessions;
+        _addColumn.Visible = sessions;
+        _assignSession.Visible = !sessions;
+        _measurements.Columns["Session"]!.Visible = !sessions;
+        RebuildCustomColumns();
+        RefreshMeasurements();
+    }
+
+    private void ConfigureGrid()
+    {
         _measurements.Dock = DockStyle.Fill;
         _measurements.ReadOnly = false;
         _measurements.AllowUserToAddRows = false;
@@ -110,163 +284,32 @@ internal sealed class MeasurementHistoryView : UserControl
             _ = new ScrollBarSkin(bar);
         AddTextColumn("Ability", "Ability", 58);
         AddTextColumn("Result", "Result", 68);
-        AddTextColumn("Measured", "Measured ±", 112);
-        AddTextColumn("Regression", "Regression ±", 112);
-        AddTextColumn("Time", "Measured at", 90);
-        AddTextColumn("Note", "Note", 104, minimumWidth: 104, fill: true);
-        AddCustomColumns();
+        AddTextColumn("Session", "Session", 100);
+        AddTextColumn("Measured", "Measured ±", 108);
+        AddTextColumn("Regression", "Regression ±", 108);
+        AddTextColumn("Time", "Measured at", 82);
+        AddTextColumn("Note", "Note", 80, minimumWidth: 80, fill: true);
         _measurements.Columns["Measured"]!.ToolTipText = "Observed event-to-event duration ± measurement uncertainty, in seconds.";
         _measurements.Columns["Regression"]!.ToolTipText = "Full duration fitted from 10–90% charge ± regression uncertainty, in seconds.";
-
-        _note.Multiline = true;
-        _note.ScrollBars = ScrollBars.None;
-        _note.Dock = DockStyle.Fill;
-        _note.Height = 44;
-        _note.MaxLength = 240;
-        _note.AccessibleName = "Measurement note";
-        _note.BackColor = TrackerTheme.Surface;
-        _saveNote.Text = "Save note";
-        _assignSession.Text = "Add to session";
-        foreach (var button in new[] { _startSession, _endSession, _setActiveSession, _saveNote, _assignSession })
-        {
-            button.AutoSize = true;
-            button.AutoSizeMode = AutoSizeMode.GrowAndShrink;
-            button.MinimumSize = new Size(80, TrackerTheme.ControlHeight);
-            button.Padding = new Padding(6, 0, 6, 0);
-        }
-        var noteActions = new FlowLayoutPanel
-        {
-            AutoSize = true,
-            Dock = DockStyle.Fill,
-            WrapContents = false,
-            FlowDirection = FlowDirection.LeftToRight,
-            Padding = new Padding(6, 3, 0, 0)
-        };
-        noteActions.Controls.AddRange([_saveNote, _assignSession]);
-        var noteRow = new TableLayoutPanel
-        {
-            Dock = DockStyle.Fill,
-            AutoSize = true,
-            ColumnCount = 2,
-            RowCount = 1,
-            Padding = new Padding(0, 2, 0, 0)
-        };
-        noteRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        noteRow.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        var noteFrame = new InputFrame(_note) { Dock = DockStyle.Fill, Height = 44, MinimumSize = new Size(80, 44) };
-        noteRow.Controls.Add(noteFrame, 0, 0);
-        noteRow.Controls.Add(noteActions, 1, 0);
-
-        _status.AutoSize = true;
-        _status.ForeColor = TrackerTheme.Muted;
-        _status.Padding = new Padding(0, 4, 0, 0);
-        var root = new TableLayoutPanel
-        {
-            Dock = DockStyle.Fill,
-            ColumnCount = 1,
-            RowCount = 5,
-            Padding = new Padding(0, 4, 0, 0)
-        };
-        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        var heading = new Label
-        {
-            Text = "Measurement history",
-            AutoSize = true,
-            ForeColor = TrackerTheme.Muted,
-            Margin = new Padding(3, 4, 3, 6)
-        };
-        TrackerTheme.SetTypography(heading, 9, FontStyle.Bold);
-        root.Controls.Add(heading, 0, 0);
-        root.Controls.Add(filters, 0, 1);
-        root.Controls.Add(activeSessionRow, 0, 2);
-        root.Controls.Add(_measurements, 0, 3);
-        var footer = new TableLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, ColumnCount = 1 };
-        footer.Controls.Add(noteRow, 0, 0);
-        var columnActions = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Fill, WrapContents = true };
-        _addColumn.Text = "Add column…";
-        _addColumn.AutoSize = true;
-        _export.Text = "Export CSV…";
-        _export.AutoSize = true;
-        columnActions.Controls.AddRange([_addColumn, _export]);
-        footer.Controls.Add(columnActions, 0, 1);
-        footer.Controls.Add(_status, 0, 2);
-        root.Controls.Add(footer, 0, 4);
-        Controls.Add(root);
-        TrackerTheme.Apply(this);
-        Paint += (_, args) =>
-        {
-            using var pen = new Pen(TrackerTheme.Border);
-            args.Graphics.DrawLine(pen, 0, 0, Width, 0);
-        };
-
-        _abilityFilter.SelectedIndexChanged += (_, _) => RefreshMeasurements();
-        _sessionFilter.SelectedIndexChanged += (_, _) => RefreshMeasurements();
-        _measurements.SelectionChanged += (_, _) => LoadSelectedNote();
-        _startSession.Click += (_, _) => StartSession();
-        _endSession.Click += (_, _) => EndSession();
-        _setActiveSession.Click += (_, _) => SetActiveSession();
-        _saveNote.Click += (_, _) => SaveSelectedNote();
-        _assignSession.Click += (_, _) => AssignSelectedMeasurement();
-        _addColumn.Click += (_, _) => AddColumn();
-        _export.Click += (_, _) => ExportCsv();
-        _measurements.CellValidating += (_, args) =>
-        {
-            if (!SaveCustomCell(args.RowIndex, args.ColumnIndex, args.FormattedValue?.ToString() ?? ""))
-                args.Cancel = true;
-        };
-        _measurements.CellEndEdit += (_, args) =>
-        {
-            var cell = _measurements.Rows[args.RowIndex].Cells[args.ColumnIndex];
-            cell.ErrorText = SaveCustomCell(args.RowIndex, args.ColumnIndex, cell.Value?.ToString() ?? "")
-                ? "" : "This value could not be saved. Edit it to retry before exporting.";
-        };
-        _measurements.EditingControlShowing += (_, args) =>
-        {
-            args.Control.BackColor = TrackerTheme.Surface;
-            args.Control.ForeColor = TrackerTheme.Text;
-        };
-
-        _abilityFilter.SelectedIndex = 0;
-        RefreshSessionChoices();
-        RefreshMeasurements();
     }
 
-    private Guid? SelectedMeasurementId => _measurements.SelectedRows.Count == 1
-        ? _measurements.SelectedRows[0].Tag as Guid?
-        : null;
-
-    internal void UseStore(MeasurementHistoryStore history)
+    /// <summary>Shows the selected session's own custom columns (Sessions view only).</summary>
+    private void RebuildCustomColumns()
     {
-        _history = history;
+        var columns = _mode.SelectedIndex == SessionsView && SelectedSessionId is { } id
+            ? _history.GetCustomColumns(id) : [];
+        if (columns.SequenceEqual(_visibleColumns) &&
+            _measurements.Columns.Cast<DataGridViewColumn>().All(column => column.Tag is not string || column.ReadOnly == !_history.CanWrite))
+            return;
         foreach (var column in _measurements.Columns.Cast<DataGridViewColumn>().Where(item => item.Tag is string).ToArray())
             _measurements.Columns.Remove(column);
-        AddCustomColumns();
-        RefreshSessionChoices();
-        RefreshMeasurements();
-    }
-
-    /// <summary>Re-reads the store unless the user is mid-edit, keeping filters and selection.</summary>
-    internal void Reload()
-    {
-        if (_measurements.IsCurrentCellInEditMode || _note.Modified || _note.Focused) return;
-        RefreshSessionChoices();
-        RefreshMeasurements(SelectedMeasurementId);
-    }
-
-    private void AddCustomColumns()
-    {
-        foreach (var column in _history.CustomColumns)
+        foreach (var name in columns)
         {
-            if (_measurements.Columns.Cast<DataGridViewColumn>().Any(item => item.Tag as string == column)) continue;
             _measurements.Columns.Add(new DataGridViewTextBoxColumn
             {
                 Name = $"Custom{_measurements.Columns.Count}",
-                HeaderText = column,
-                Tag = column,
+                HeaderText = name,
+                Tag = name,
                 ReadOnly = !_history.CanWrite,
                 Width = 80,
                 MinimumWidth = 72,
@@ -274,27 +317,129 @@ internal sealed class MeasurementHistoryView : UserControl
                 SortMode = DataGridViewColumnSortMode.NotSortable
             });
         }
+
+        _visibleColumns = columns;
     }
 
-    /// <summary>Asks for a new column name; returns null when cancelled. Tests replace it to skip the modal dialog.</summary>
-    [System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
-    internal Func<IWin32Window, string?> ColumnNamePrompt { get; set; } = owner =>
+    private bool Ask(PromptDialog dialog)
     {
-        using var dialog = new ColumnNameDialog();
-        return dialog.ShowDialog(owner) == DialogResult.OK ? dialog.ColumnName : null;
-    };
+        using (dialog) return ShowPrompt(dialog) == DialogResult.OK;
+    }
+
+    private void NewSession()
+    {
+        string name;
+        using (var dialog = new PromptDialog("New session",
+            "New measurements join this session until you end it or make another session active.",
+            "Start session", placeholder: "e.g. Grenade stat 70", maxLength: 80))
+        {
+            if (ShowPrompt(dialog) != DialogResult.OK) return;
+            name = dialog.Value;
+        }
+
+        try
+        {
+            var session = _history.CreateSession(name, DateTimeOffset.UtcNow);
+            SelectSession(session.Id);
+            SetStatus($"Started “{session.Name}”. New measurements join it automatically.");
+        }
+        catch (Exception exception) when (exception is ArgumentException or IOException or UnauthorizedAccessException or InvalidOperationException or InvalidDataException)
+        {
+            SetStatus($"Couldn't start session: {exception.Message}", error: true);
+        }
+    }
+
+    private void ToggleActive()
+    {
+        if (SelectedSessionId is not { } id) return;
+        try
+        {
+            if (id == _history.ActiveSessionId)
+            {
+                _history.EndActiveSession(DateTimeOffset.UtcNow);
+                SetStatus("Session ended. New measurements stay unsorted until a session is active.");
+            }
+            else
+            {
+                _history.SetActiveSession(id, DateTimeOffset.UtcNow);
+                SetStatus("Session is active. New measurements join it automatically.");
+            }
+
+            RefreshSessionChoices(id);
+            UpdateActionStates();
+        }
+        catch (Exception exception) when (exception is ArgumentException or IOException or UnauthorizedAccessException or InvalidOperationException or InvalidDataException)
+        {
+            SetStatus($"Couldn't change the active session: {exception.Message}", error: true);
+        }
+    }
+
+    private void RenameSession()
+    {
+        if (SelectedSession is not { } session) return;
+        string name;
+        using (var dialog = new PromptDialog("Rename session", "Enter a new name for this session.", "Rename",
+            placeholder: "Session name", initialValue: session.Name, maxLength: 80))
+        {
+            if (ShowPrompt(dialog) != DialogResult.OK) return;
+            name = dialog.Value;
+        }
+
+        try
+        {
+            _history.RenameSession(session.Id, name);
+            RefreshSessionChoices(session.Id);
+            RefreshMeasurements(SelectedMeasurementId);
+            SetStatus("Session renamed.");
+        }
+        catch (Exception exception) when (exception is ArgumentException or IOException or UnauthorizedAccessException or InvalidOperationException or InvalidDataException)
+        {
+            SetStatus($"Couldn't rename session: {exception.Message}", error: true);
+        }
+    }
+
+    private void DeleteSession()
+    {
+        if (SelectedSession is not { } session) return;
+        var count = _history.Measurements.Count(item => item.SessionId == session.Id);
+        if (!Ask(new PromptDialog("Delete session",
+            $"Delete “{session.Name}” and its columns? Its {Results(count)} and their notes move to Unsorted in All measurements.",
+            "Delete session", destructive: true)))
+            return;
+        try
+        {
+            _history.DeleteSession(session.Id);
+            RefreshSessionChoices();
+            RebuildCustomColumns();
+            RefreshMeasurements();
+            SetStatus($"Deleted “{session.Name}”; its measurements are now unsorted.");
+        }
+        catch (Exception exception) when (exception is ArgumentException or IOException or UnauthorizedAccessException or InvalidOperationException or InvalidDataException)
+        {
+            SetStatus($"Couldn't delete session: {exception.Message}", error: true);
+        }
+    }
 
     private void AddColumn()
     {
-        if (ColumnNamePrompt(this) is not { Length: > 0 } name) return;
+        if (SelectedSession is not { } session) return;
+        string name;
+        using (var dialog = new PromptDialog("Add column",
+            $"Name a new column for “{session.Name}”. Double-click its cells to edit values; this session's CSV export includes it.",
+            "Add column", placeholder: "e.g. Grenade Stat"))
+        {
+            if (ShowPrompt(dialog) != DialogResult.OK || dialog.Value.Length == 0) return;
+            name = dialog.Value;
+        }
+
         try
         {
-            _history.AddCustomColumn(name);
-            AddCustomColumns();
+            _history.AddCustomColumn(session.Id, name);
+            RebuildCustomColumns();
             RefreshMeasurements(SelectedMeasurementId);
             SetStatus("Column added. Double-click its cells to edit values.");
         }
-        catch (Exception exception) when (exception is ArgumentException or IOException or UnauthorizedAccessException or InvalidOperationException)
+        catch (Exception exception) when (exception is ArgumentException or IOException or UnauthorizedAccessException or InvalidOperationException or InvalidDataException)
         {
             SetStatus($"Couldn't add column: {exception.Message}", error: true);
         }
@@ -312,13 +457,14 @@ internal sealed class MeasurementHistoryView : UserControl
             SetStatus("Custom value saved.");
             return true;
         }
-        catch (Exception exception) when (exception is ArgumentException or IOException or UnauthorizedAccessException or InvalidOperationException)
+        catch (Exception exception) when (exception is ArgumentException or IOException or UnauthorizedAccessException or InvalidOperationException or InvalidDataException)
         {
             SetStatus($"Couldn't save value: {exception.Message}", error: true);
             return false;
         }
     }
 
+    /// <summary>CSV of the rows on screen: the session's custom columns in Sessions, base columns only in All measurements.</summary>
     internal string ExportVisibleCsv()
     {
         if (!_measurements.EndEdit()) throw new InvalidOperationException("Finish editing the current cell before exporting.");
@@ -327,15 +473,18 @@ internal sealed class MeasurementHistoryView : UserControl
             throw new InvalidOperationException("A custom value could not be saved. Edit that cell to retry before exporting.");
         var ids = _measurements.Rows.Cast<DataGridViewRow>().Select(row => (Guid)row.Tag!).ToArray();
         var records = _history.Measurements.ToDictionary(item => item.Id);
-        return MeasurementCsv.Create(ids.Select(id => records[id]), _history.Sessions, _history.CustomColumns);
+        return MeasurementCsv.Create(ids.Select(id => records[id]), _history.Sessions, _visibleColumns);
     }
 
     private void ExportCsv()
     {
+        var fileName = SelectedSession is { } session && _mode.SelectedIndex == SessionsView
+            ? string.Concat(session.Name.Select(c => Path.GetInvalidFileNameChars().Contains(c) ? '-' : c)) + ".csv"
+            : "ability-measurements.csv";
         using var dialog = new SaveFileDialog
         {
             Filter = "CSV files (*.csv)|*.csv",
-            FileName = "ability-measurements.csv",
+            FileName = fileName,
             DefaultExt = "csv",
             AddExtension = true
         };
@@ -343,7 +492,7 @@ internal sealed class MeasurementHistoryView : UserControl
         try
         {
             File.WriteAllText(dialog.FileName, ExportVisibleCsv(), new System.Text.UTF8Encoding(true));
-            SetStatus($"Exported visible measurements to {dialog.FileName}.");
+            SetStatus($"Exported {Results(_measurements.Rows.Count)} to {dialog.FileName}.");
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidOperationException)
         {
@@ -351,203 +500,152 @@ internal sealed class MeasurementHistoryView : UserControl
         }
     }
 
-    private void StartSession()
-    {
-        try
-        {
-            var session = _history.CreateSession(_sessionName.Text, DateTimeOffset.UtcNow);
-            _sessionName.Clear();
-            RefreshSessionChoices(session.Id);
-            RefreshMeasurements();
-            SetStatus($"Started “{session.Name}”.");
-        }
-        catch (Exception exception)
-        {
-            SetStatus($"Couldn't start session: {exception.Message}", error: true);
-        }
-    }
-
-    private void EndSession()
-    {
-        try
-        {
-            if (_history.EndActiveSession(DateTimeOffset.UtcNow))
-            {
-                RefreshSessionChoices();
-                RefreshMeasurements();
-                SetStatus("Active session ended.");
-            }
-        }
-        catch (Exception exception)
-        {
-            SetStatus($"Couldn't end session: {exception.Message}", error: true);
-        }
-    }
-
-    private void SetActiveSession()
-    {
-        if (_sessionFilter.SelectedItem is not SessionFilter { Kind: SessionFilterKind.Session, SessionId: { } sessionId })
-        {
-            return;
-        }
-
-        try
-        {
-            _history.SetActiveSession(sessionId);
-            RefreshSessionChoices(sessionId);
-            RefreshMeasurements();
-            SetStatus("Active session updated.");
-        }
-        catch (Exception exception)
-        {
-            SetStatus($"Couldn't select active session: {exception.Message}", error: true);
-        }
-    }
-
     private void SaveSelectedNote()
     {
-        if (SelectedMeasurementId is not { } id)
-        {
-            return;
-        }
-
+        if (SelectedMeasurementId is not { } id) return;
         try
         {
             _history.SaveNote(id, _note.Text);
+            _note.Modified = false;
             RefreshMeasurements(id);
             SetStatus("Note saved.");
         }
-        catch (Exception exception)
+        catch (Exception exception) when (exception is ArgumentException or IOException or UnauthorizedAccessException or InvalidOperationException or InvalidDataException)
         {
             SetStatus($"Couldn't save note: {exception.Message}", error: true);
         }
     }
 
-    private void AssignSelectedMeasurement()
+    private void AssignSelectedMeasurement(Guid? sessionId)
     {
-        if (SelectedMeasurementId is not { } id)
-        {
-            return;
-        }
-
+        if (SelectedMeasurementId is not { } id) return;
         try
         {
-            _history.AssignToActiveSession(id);
+            _history.AssignToSession(id, sessionId);
             RefreshSessionChoices();
             RefreshMeasurements(id);
-            SetStatus("Measurement assigned to the active session.");
+            SetStatus(sessionId is { } target
+                ? $"Added to “{_history.Sessions.Single(session => session.Id == target).Name}”."
+                : "Measurement is now unsorted.");
         }
-        catch (Exception exception)
+        catch (Exception exception) when (exception is ArgumentException or IOException or UnauthorizedAccessException or InvalidOperationException or InvalidDataException)
         {
-            SetStatus($"Couldn't assign measurement: {exception.Message}", error: true);
+            SetStatus($"Couldn't move measurement: {exception.Message}", error: true);
         }
     }
 
+    private MeasurementHistorySession? SelectedSession =>
+        SelectedSessionId is { } id ? _history.Sessions.FirstOrDefault(session => session.Id == id) : null;
+
     private void RefreshSessionChoices(Guid? preferredSessionId = null)
     {
-        var previousChoice = _sessionFilter.SelectedItem as SessionFilter;
-        var previousId = preferredSessionId ?? previousChoice?.SessionId;
-        var previousKind = preferredSessionId is not null ? SessionFilterKind.Session : previousChoice?.Kind ?? SessionFilterKind.All;
         var sessions = _history.Sessions.OrderByDescending(session => session.StartedAt).ToArray();
-        _sessionFilter.BeginUpdate();
-        _sessionFilter.Items.Clear();
-        _sessionFilter.Items.Add(new SessionFilter(SessionFilterKind.All, null, "All sessions"));
-        _sessionFilter.Items.Add(new SessionFilter(SessionFilterKind.Unassigned, null, "Unassigned"));
+        var measurements = _history.Measurements;
+        var activeId = _history.ActiveSessionId;
+        var previous = preferredSessionId ?? SelectedSessionId;
+        _sessionPicker.BeginUpdate();
+        _sessionPicker.Items.Clear();
         foreach (var session in sessions)
         {
-            var active = session.Id == _history.ActiveSessionId ? " · active" : string.Empty;
-            var ended = session.EndedAt is null ? string.Empty : " · ended";
-            _sessionFilter.Items.Add(new SessionFilter(
-                SessionFilterKind.Session,
-                session.Id,
-                $"{session.Name}{active}{ended}"));
+            var count = measurements.Count(item => item.SessionId == session.Id);
+            var active = session.Id == activeId ? " · Active" : "";
+            _sessionPicker.Items.Add(new SessionChoice(session.Id,
+                $"{session.Name} · {session.StartedAt.ToLocalTime():MMM d} · {Results(count)}{active}"));
         }
 
-        var selection = _sessionFilter.Items.Cast<SessionFilter>()
-            .FirstOrDefault(choice => choice.Kind == previousKind && choice.SessionId == previousId)
-            ?? _sessionFilter.Items[0] as SessionFilter;
-        _sessionFilter.SelectedItem = selection;
-        _sessionFilter.EndUpdate();
+        var choices = _sessionPicker.Items.Cast<SessionChoice>().ToArray();
+        _sessionPicker.SelectedItem = choices.FirstOrDefault(choice => choice.Id == previous)
+            ?? choices.FirstOrDefault(choice => choice.Id == activeId) ?? choices.FirstOrDefault();
+        _sessionPicker.EndUpdate();
 
-        var activeSession = sessions.FirstOrDefault(session => session.Id == _history.ActiveSessionId);
-        _activeSession.Text = activeSession is null
-            ? "No active session"
-            : $"Active session: {activeSession.Name}";
-        if (_history.LoadError is { } loadError)
+        var activeSession = sessions.FirstOrDefault(session => session.Id == activeId);
+        _activeSession.Text = activeSession is null ? "No active session" : $"● Active: {activeSession.Name}";
+        _activeSession.ForeColor = activeSession is null ? TrackerTheme.Muted : TrackerTheme.Text;
+
+        _assignMenu.Items.Clear();
+        foreach (var session in sessions)
         {
-            SetStatus($"Couldn't load measurement history; the file was left unchanged: {loadError}", error: true);
+            var item = new ToolStripMenuItem(session.Id == activeId ? $"{session.Name} · Active" : session.Name)
+            {
+                Tag = session.Id
+            };
+            var target = session.Id;
+            item.Click += (_, _) => AssignSelectedMeasurement(target);
+            _assignMenu.Items.Add(item);
         }
 
+        if (sessions.Length > 0) _assignMenu.Items.Add(new ToolStripSeparator());
+        _assignMenu.Items.Add("Unsorted", null, (_, _) => AssignSelectedMeasurement(null));
+
+        if (_history.LoadError is { } loadError)
+            SetStatus($"Couldn't load measurement history; the file was left unchanged: {loadError}", error: true);
         UpdateActionStates();
     }
 
     private void RefreshMeasurements(Guid? preferredMeasurementId = null)
     {
+        var sessionsView = _mode.SelectedIndex == SessionsView;
+        var sessionId = SelectedSessionId;
         var ability = (_abilityFilter.SelectedItem as AbilityFilter)?.Ability;
-        var sessionFilter = _sessionFilter.SelectedItem as SessionFilter
-            ?? new SessionFilter(SessionFilterKind.All, null, "All sessions");
+        var sessionNames = _history.Sessions.ToDictionary(session => session.Id, session => session.Name);
         var records = _history.Measurements
-            .Where(measurement => ability is null || measurement.Ability == ability)
-            .Where(measurement => sessionFilter.Kind switch
-            {
-                SessionFilterKind.Unassigned => measurement.SessionId is null,
-                SessionFilterKind.Session => measurement.SessionId == sessionFilter.SessionId,
-                _ => true
-            })
+            .Where(measurement => sessionsView
+                ? sessionId is not null && measurement.SessionId == sessionId
+                : ability is null || measurement.Ability == ability)
             .OrderByDescending(measurement => measurement.MeasuredAt)
             .ToArray();
         _measurements.Rows.Clear();
         foreach (var measurement in records)
         {
-            var regression = measurement.RegressionSeconds is { } seconds
-                ? $"{seconds:F2}"
-                : "—";
+            var regression = measurement.RegressionSeconds is { } seconds ? $"{seconds:F2}" : "—";
             var regressionUncertainty = measurement.RegressionUncertaintySeconds is { } regressionSpread
                 ? $" ± {regressionSpread:F3} s"
                 : string.Empty;
+            var sessionName = measurement.SessionId is { } owner && sessionNames.TryGetValue(owner, out var name) ? name : null;
             var index = _measurements.Rows.Add(
                 AbilityName(measurement.Ability),
                 measurement.Id == measurement.RepeatTestId ? $"Mean · {measurement.CycleCount}" :
                     measurement.RepeatTestId is not null ? "Cycle" : "Single",
+                sessionName ?? "Unsorted",
                 $"{measurement.DurationSeconds:F2} ± {measurement.UncertaintySeconds:F3} s",
                 regression + regressionUncertainty,
                 measurement.MeasuredAt.ToLocalTime().ToString("MMM d HH:mm"),
                 measurement.Note ?? string.Empty);
-            _measurements.Rows[index].Tag = measurement.Id;
+            var row = _measurements.Rows[index];
+            row.Tag = measurement.Id;
+            if (sessionName is null) row.Cells["Session"].Style.ForeColor = TrackerTheme.Muted;
             foreach (DataGridViewColumn column in _measurements.Columns)
                 if (column.Tag is string customName)
-                    _measurements.Rows[index].Cells[column.Index].Value = measurement.CustomValues?.GetValueOrDefault(customName) ?? "";
+                    row.Cells[column.Index].Value = measurement.CustomValues?.GetValueOrDefault(customName) ?? "";
             if (measurement.Id == measurement.RepeatTestId)
             {
-                var row = _measurements.Rows[index];
                 row.DefaultCellStyle.ForeColor = TrackerTheme.Accent;
                 row.Cells["Result"].ToolTipText = $"Repeat-test mean of {measurement.CycleCount} validated cycles. Uncertainty combines the mean per-cycle uncertainty floor with the standard error from cycle scatter.";
                 row.Cells["Regression"].ToolTipText = $"Regression mean uses {measurement.RegressionCycleCount}/{measurement.CycleCount} cycles with validated 10–90% fits.";
             }
         }
 
-        if (preferredMeasurementId is { } id)
+        var preferredRow = _measurements.Rows.Cast<DataGridViewRow>()
+            .FirstOrDefault(row => preferredMeasurementId is { } id && row.Tag is Guid rowId && rowId == id)
+            ?? _measurements.Rows.Cast<DataGridViewRow>().FirstOrDefault();
+        if (preferredRow is not null)
         {
-            foreach (DataGridViewRow row in _measurements.Rows)
-            {
-                if (row.Tag is Guid rowId && rowId == id)
-                {
-                    row.Selected = true;
-                    _measurements.CurrentCell = row.Cells[0];
-                    break;
-                }
-            }
-        }
-        else if (_measurements.Rows.Count > 0)
-        {
-            _measurements.Rows[0].Selected = true;
-            _measurements.CurrentCell = _measurements.Rows[0].Cells[0];
+            preferredRow.Selected = true;
+            _measurements.CurrentCell = preferredRow.Cells[0];
         }
 
         LoadSelectedNote();
         if (records.Length == 0 && _history.LoadError is null)
         {
-            SetStatus("No measurements match these filters.");
+            SetStatus(!sessionsView ? "No measurements match this filter."
+                : sessionId is null ? "No sessions yet. Choose New session… to group measurements while you test."
+                : "No measurements in this session yet. New results join the active session automatically.");
+        }
+        else if (_history.LoadError is null)
+        {
+            SetStatus(sessionsView
+                ? $"{Results(records.Length)} in this session."
+                : $"{Results(records.Length)}. Use Add to session to sort a result into any session.");
         }
 
         UpdateActionStates();
@@ -555,11 +653,11 @@ internal sealed class MeasurementHistoryView : UserControl
 
     private void LoadSelectedNote()
     {
-        var id = SelectedMeasurementId;
-        var measurement = id is { } selectedId
+        var measurement = SelectedMeasurementId is { } selectedId
             ? _history.Measurements.FirstOrDefault(item => item.Id == selectedId)
             : null;
         _note.Text = measurement?.Note ?? string.Empty;
+        _note.Modified = false;
         UpdateActionStates();
     }
 
@@ -567,18 +665,16 @@ internal sealed class MeasurementHistoryView : UserControl
     {
         var writable = _history.CanWrite;
         var hasSelection = SelectedMeasurementId is not null;
-        _startSession.Enabled = writable;
-        _sessionName.Enabled = writable;
-        _addColumn.Enabled = writable;
+        var session = SelectedSessionId;
+        _newSession.Enabled = writable;
+        _toggleActive.Text = session is not null && session == _history.ActiveSessionId ? "End session" : "Make active";
+        _toggleActive.Enabled = writable && session is not null;
+        foreach (ToolStripItem item in _sessionMenu.Items) item.Enabled = writable && session is not null;
+        _addColumn.Enabled = writable && session is not null;
         _export.Enabled = _measurements.Rows.Count > 0;
-        _endSession.Enabled = writable && _history.ActiveSessionId is not null;
-        _setActiveSession.Enabled = writable &&
-            _sessionFilter.SelectedItem is SessionFilter { Kind: SessionFilterKind.Session, SessionId: { } id } &&
-            id != _history.ActiveSessionId &&
-            _history.Sessions.Any(session => session.Id == id && session.EndedAt is null);
         _saveNote.Enabled = writable && hasSelection;
         _note.ReadOnly = !writable || !hasSelection;
-        _assignSession.Enabled = writable && hasSelection && _history.ActiveSessionId is not null;
+        _assignSession.Enabled = writable && hasSelection;
     }
 
     private void SetStatus(string message, bool error = false)
@@ -586,6 +682,9 @@ internal sealed class MeasurementHistoryView : UserControl
         _status.Text = message;
         _status.ForeColor = error ? TrackerTheme.Red : TrackerTheme.Muted;
     }
+
+    private static void ShowMenu(ContextMenuStrip menu, Control anchor) =>
+        menu.Show(anchor, new Point(0, anchor.Height + 2), ToolStripDropDownDirection.BelowRight);
 
     private void AddTextColumn(string name, string header, int width, int minimumWidth = 5, bool fill = false)
     {
@@ -601,25 +700,16 @@ internal sealed class MeasurementHistoryView : UserControl
         });
     }
 
-    private static Control Field(string title, Control control)
+    private static Label InlineLabel(string text) => new()
     {
-        var panel = new FlowLayoutPanel
-        {
-            AutoSize = true,
-            FlowDirection = FlowDirection.TopDown,
-            WrapContents = false,
-            Margin = new Padding(0, 0, 8, 0)
-        };
-        panel.Controls.Add(new Label
-        {
-            Text = title,
-            AutoSize = true,
-            ForeColor = TrackerTheme.Muted,
-            Margin = new Padding(2, 0, 0, 2)
-        });
-        panel.Controls.Add(control);
-        return panel;
-    }
+        Text = text,
+        AutoSize = true,
+        ForeColor = TrackerTheme.Muted,
+        Anchor = AnchorStyles.Left,
+        Margin = new Padding(3, 7, 2, 0)
+    };
+
+    private static string Results(int count) => count == 1 ? "1 result" : $"{count} results";
 
     private static string AbilityName(AbilityKind ability) => ability switch
     {
@@ -634,14 +724,7 @@ internal sealed class MeasurementHistoryView : UserControl
         public override string ToString() => Label;
     }
 
-    private enum SessionFilterKind
-    {
-        All,
-        Unassigned,
-        Session
-    }
-
-    private sealed record SessionFilter(SessionFilterKind Kind, Guid? SessionId, string Label)
+    private sealed record SessionChoice(Guid Id, string Label)
     {
         public override string ToString() => Label;
     }

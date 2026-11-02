@@ -286,9 +286,18 @@ if (args.Length == 2 && args[0] == "--ui-smoke")
                         overlay.SetMoveMode(false);
                         overlay.Close();
                     }
+                    // Fresh portable storage starts empty: seed two sessions with their own columns plus an unsorted result.
                     var smokeHistory = new MeasurementHistoryStore(Path.Combine(args[1], "smoke-history.json"));
-                    smokeHistory.AddCustomColumn("Grenade Stat");
-                    smokeHistory.CreateSession("Grenade stat testing", DateTimeOffset.UtcNow);
+                    var baseline = smokeHistory.CreateSession("Base stats", DateTimeOffset.UtcNow.AddHours(-3));
+                    smokeHistory.AddCustomColumn(baseline.Id, "Armor");
+                    var baselineEntry = new MeasurementHistoryEntry(Guid.NewGuid(), AbilityKind.Grenade, 82.40, 82.31, 0.02, 0.18,
+                        MeasurementSource.Event, DateTimeOffset.UtcNow.AddHours(-3), "No exotic", null);
+                    smokeHistory.TryAddMeasurement(baselineEntry);
+                    smokeHistory.SaveCustomValue(baselineEntry.Id, "Armor", "Legendary");
+                    smokeHistory.TryAddMeasurement(new MeasurementHistoryEntry(Guid.NewGuid(), AbilityKind.Melee, 20.10, 20.04, 0.02, 0.12,
+                        MeasurementSource.Event, DateTimeOffset.UtcNow.AddHours(-3).AddMinutes(4), null, null));
+                    var statSession = smokeHistory.CreateSession("Grenade stat testing", DateTimeOffset.UtcNow.AddMinutes(-5));
+                    smokeHistory.AddCustomColumn(statSession.Id, "Grenade Stat");
                     smokeHistory.TryAddMeasurement(new MeasurementHistoryEntry(
                         Guid.NewGuid(), AbilityKind.Grenade, 64.25, 64.22, 0.02, 0.16,
                         MeasurementSource.Event, DateTimeOffset.UtcNow, "Grenade stat 5", null));
@@ -302,6 +311,9 @@ if (args.Length == 2 && args[0] == "--ui-smoke")
                     smokeHistory.TryAddMeasurement(sampleMean);
                     smokeHistory.SaveNote(sampleMean.Id, "Grenade stat 5 · repeat test");
                     smokeHistory.SaveCustomValue(sampleMean.Id, "Grenade Stat", "5");
+                    var unsortedEntry = new MeasurementHistoryEntry(Guid.NewGuid(), AbilityKind.ClassAbility, 30.02, 29.95, 0.02, 0.14,
+                        MeasurementSource.Event, DateTimeOffset.UtcNow.AddDays(-1), "Before sessions", null);
+                    smokeHistory.TryAddMeasurement(unsortedEntry, null);
                     form.UseMeasurementHistory(smokeHistory);
                     var historyLink = navigation.Controls.OfType<Button>().Single(button => button.Text == "History");
                     navigation.Controls.OfType<Button>().Single(button => button.Text == "Repeat test").PerformClick();
@@ -317,21 +329,49 @@ if (args.Length == 2 && args[0] == "--ui-smoke")
                     var workHeight = Screen.FromControl(form).WorkingArea.Height;
                     Assert(form.Height > collapsedSize.Height || form.Height >= workHeight - 48,
                         "The History tab must get its own, taller explicit height.");
-                    using (var image = new Bitmap(form.Width, form.Height))
-                    {
-                        form.DrawToBitmap(image, new Rectangle(Point.Empty, image.Size));
-                        image.Save(Path.Combine(args[1], "ui-History.png"));
-                    }
-                    var sessionActions = Descendants(historyForm).Single(control => control.Name == "SessionActions");
-                    var actionTops = sessionActions.Controls.Cast<Control>().Select(control => control.Top).Distinct().Count();
-                    Assert(actionTops == 1, "Session controls must remain together without an orphaned action.");
-                    Assert(sessionActions.Controls.Cast<Control>().Select(control => control.Height).Distinct().Count() == 1,
-                        "Session name field and its action buttons must have the same height.");
+                    historyForm.ShowPrompt = _ => throw new InvalidOperationException("Tests must answer History prompts explicitly.");
                     var historyGrid = Descendants(historyForm).OfType<DataGridView>().Single();
+                    var sessionsToolbar = Descendants(historyForm).Single(control => control.Name == "SessionsToolbar");
+                    var allToolbar = Descendants(historyForm).Single(control => control.Name == "AllToolbar");
+                    var activeLabel = Descendants(historyForm).OfType<Label>().Single(label => label.Name == "ActiveSession");
+                    var toggleActive = Descendants(historyForm).OfType<Button>().Single(button => button.Name == "ToggleActive");
+                    string[] HeaderTexts() => historyGrid.Columns.Cast<DataGridViewColumn>().Where(column => column.Visible)
+                        .Select(column => column.HeaderText).ToArray();
+                    Button[] VisibleActions() => Descendants(historyForm).OfType<Button>().Where(button => button.Visible).ToArray();
+                    void AssertTidy(string view)
+                    {
+                        historyForm.PerformLayout();
+                        Assert(VisibleActions().Length <= 6, $"{view} must show at most six actions.");
+                        foreach (var control in Descendants(historyForm).Where(control => control.Visible && control is Button or ComboBox or Label or SegmentedControl))
+                        {
+                            Assert(historyForm.ClientRectangle.Contains(historyForm.RectangleToClient(
+                                control.RectangleToScreen(control.ClientRectangle))),
+                                $"{view}: {control.Name} {control.Text} must fit inside the History tab.");
+                        }
+                    }
+                    void SaveHistoryImage(string name)
+                    {
+                        using var image = new Bitmap(form.Width, form.Height);
+                        form.DrawToBitmap(image, new Rectangle(Point.Empty, image.Size));
+                        image.Save(Path.Combine(args[1], name));
+                    }
+
+                    // Sessions view: one session at a time, with only that session's columns.
+                    Assert(historyForm.ViewMode == MeasurementHistoryView.SessionsView && historyForm.SelectedSessionId == statSession.Id &&
+                        sessionsToolbar.Visible && !allToolbar.Visible && activeLabel.Text == "● Active: Grenade stat testing" &&
+                        toggleActive.Text == "End session",
+                        "History must open on the Sessions view with the active session selected and marked.");
+                    Assert(HeaderTexts().Contains("Grenade Stat") && !HeaderTexts().Contains("Armor") && !HeaderTexts().Contains("Session") &&
+                        historyGrid.Rows.Count == 5,
+                        "The Sessions view must show only the selected session's measurements and custom columns.");
+                    AssertTidy("Sessions view");
+                    SaveHistoryImage("ui-History-sessions.png");
+                    var sessionCsv = historyForm.ExportVisibleCsv();
+                    Assert(sessionCsv.Contains("\"Grenade Stat\"") && !sessionCsv.Contains("Armor") && !sessionCsv.Contains("Before sessions"),
+                        "Session export must include only that session's rows and columns.");
                     var customColumn = historyGrid.Columns.Cast<DataGridViewColumn>().Single(column => column.HeaderText == "Grenade Stat");
-                    Assert(!customColumn.ReadOnly && historyGrid.Columns["Measured"]!.ReadOnly &&
-                        historyForm.ExportVisibleCsv().Contains("\"Grenade Stat\""),
-                        "Custom columns must be editable while measured values stay protected and exports include metadata.");
+                    Assert(!customColumn.ReadOnly && historyGrid.Columns["Measured"]!.ReadOnly,
+                        "Custom columns must be editable while measured values stay protected.");
                     var meanRow = historyGrid.Rows.Cast<DataGridViewRow>().Single(row => row.Tag is Guid id && id == sampleMean.Id);
                     historyGrid.CurrentCell = meanRow.Cells[customColumn.Index];
                     Assert(historyGrid.BeginEdit(false), "A custom value must support inline editing.");
@@ -353,74 +393,112 @@ if (args.Length == 2 && args[0] == "--ui-smoke")
                         .Single(textBox => textBox.AccessibleName == "Measurement note");
                     var noteFrame = noteEditor.Parent!;
                     var saveNote = Descendants(historyForm).OfType<Button>().Single(button => button.Text == "Save note");
-                    var assignNote = Descendants(historyForm).OfType<Button>().Single(button => button.Text == "Add to session");
-                    Assert(historyGrid.Columns["Note"]!.MinimumWidth == 104 &&
-                        customColumn.AutoSizeMode == DataGridViewAutoSizeColumnMode.Fill &&
+                    var assignButton = Descendants(historyForm).OfType<Button>().Single(button => button.Text == "Add to session ▾");
+                    Assert(!assignButton.Visible && customColumn.AutoSizeMode == DataGridViewAutoSizeColumnMode.Fill &&
                         noteEditor.MaxLength == 240 && noteEditor.Height <= 44 &&
-                        saveNote.Top == assignNote.Top &&
                         Math.Abs(saveNote.PointToScreen(new Point(0, saveNote.Height / 2)).Y -
                             noteFrame.PointToScreen(new Point(0, noteFrame.Height / 2)).Y) <= 1 &&
-                        !historyGrid.Controls.OfType<HScrollBar>().Any(bar => bar.Visible) &&
-                        historyGrid.ScrollBars == ScrollBars.Both,
-                        "A custom column should share the available grid width while the compact note editor and its buttons stay aligned.");
-                    Assert(!historyGrid.Columns.Contains("Uncertainty") &&
-                        historyGrid.Columns["Measured"]!.HeaderText == "Measured ±" &&
+                        !historyGrid.Controls.OfType<HScrollBar>().Any(bar => bar.Visible),
+                        "A custom column should share the grid width while the compact note editor and Save note stay aligned.");
+                    Assert(historyGrid.Columns["Measured"]!.HeaderText == "Measured ±" &&
                         historyGrid.Columns["Regression"]!.HeaderText == "Regression ±",
                         "Each duration must have its own clearly identified uncertainty.");
                     Assert(historyGrid.ClientSize.Height >= historyGrid.ColumnHeadersHeight + 4 * historyGrid.RowTemplate.Height + SystemInformation.HorizontalScrollBarHeight,
-                        "Minimum-size history should reserve at least four measurement rows.");
-                    foreach (var control in sessionActions.Controls.Cast<Control>())
-                    {
-                        Assert(historyForm.ClientRectangle.Contains(historyForm.RectangleToClient(
-                            control.RectangleToScreen(control.ClientRectangle))),
-                            "Session actions must fit inside the embedded history.");
-                    }
-                    using (var image = new Bitmap(historyForm.Width, historyForm.Height))
-                    {
-                        historyForm.DrawToBitmap(image, new Rectangle(Point.Empty, image.Size));
-                        image.Save(Path.Combine(args[1], "ui-History-minimum.png"));
-                    }
-                    Assert(Descendants(historyForm).OfType<Label>().Any(label => label.Text == "Session filter") &&
-                        !Descendants(historyForm).OfType<TextBox>().Any(box => box.AccessibleName == "Custom column name") &&
-                        Descendants(historyForm).OfType<Button>().Single(button => button.Text == "Export CSV…").Visible,
-                        "History must label the session filter, keep Export CSV visible and replace the column textbox with a prompt.");
+                        "History should reserve at least four measurement rows.");
+
+                    // All measurements view: every result with its session, base columns only.
+                    historyForm.ViewMode = MeasurementHistoryView.AllView;
+                    Assert(!sessionsToolbar.Visible && allToolbar.Visible && assignButton.Visible &&
+                        HeaderTexts().Contains("Session") && !HeaderTexts().Contains("Grenade Stat") && !HeaderTexts().Contains("Armor") &&
+                        historyGrid.Rows.Count == smokeHistory.Measurements.Count &&
+                        historyGrid.Rows.Cast<DataGridViewRow>().Any(row => row.Cells["Session"].Value?.ToString() == "Unsorted") &&
+                        !Descendants(historyForm).OfType<Button>().Single(button => button.Text == "Add column…").Visible,
+                        "All measurements must list every result with a Session column and no custom columns.");
+                    AssertTidy("All measurements view");
+                    SaveHistoryImage("ui-History-all.png");
+                    var allCsv = historyForm.ExportVisibleCsv();
+                    Assert(allCsv.Contains("\"Before sessions\"") && !allCsv.Contains("Grenade Stat") && !allCsv.Contains("Armor"),
+                        "All-measurements export must include every row with base columns only.");
+                    var unsortedRow = historyGrid.Rows.Cast<DataGridViewRow>().Single(row => row.Tag is Guid id && id == unsortedEntry.Id);
+                    historyGrid.CurrentCell = unsortedRow.Cells[0];
+                    var assignItems = historyForm.AssignMenu.Items.OfType<ToolStripMenuItem>().ToArray();
+                    Assert(assignItems.Select(item => item.Text).SequenceEqual(["Grenade stat testing · Active", "Base stats", "Unsorted"]),
+                        "Add to session must offer every session (marking the active one) and Unsorted.");
+                    assignItems.Single(item => item.Text == "Base stats").PerformClick();
+                    Assert(smokeHistory.Measurements.Single(item => item.Id == unsortedEntry.Id).SessionId == baseline.Id &&
+                        smokeHistory.ActiveSessionId == statSession.Id &&
+                        unsortedRow.DataGridView is null && historyGrid.SelectedRows[0].Cells["Session"].Value?.ToString() == "Base stats",
+                        "Add to session must move the selected result into any session without changing the active one.");
+
+                    // Session actions: columns stay per session; rename, activate, create and delete.
+                    historyForm.SelectSession(baseline.Id);
+                    Assert(HeaderTexts().Contains("Armor") && !HeaderTexts().Contains("Grenade Stat") && historyGrid.Rows.Count == 3 &&
+                        toggleActive.Text == "Make active",
+                        "Selecting another session must show its own columns and rows.");
                     var addColumn = Descendants(historyForm).OfType<Button>().Single(button => button.Text == "Add column…");
-                    historyForm.ColumnNamePrompt = _ => "Stat 2";
+                    historyForm.ShowPrompt = dialog => { dialog.Value = "Stat 2"; return DialogResult.OK; };
                     addColumn.PerformClick();
-                    Assert(smokeHistory.CustomColumns.Contains("Stat 2") &&
-                        historyGrid.Columns.Cast<DataGridViewColumn>().Any(column => column.HeaderText == "Stat 2"),
-                        "Add column… must add the prompted column.");
-                    historyForm.ColumnNamePrompt = _ => null;
+                    Assert(smokeHistory.GetCustomColumns(baseline.Id).SequenceEqual(["Armor", "Stat 2"]) &&
+                        smokeHistory.GetCustomColumns(statSession.Id).SequenceEqual(["Grenade Stat"]) && HeaderTexts().Contains("Stat 2"),
+                        "Add column… must add the prompted column to the selected session only.");
+                    historyForm.ShowPrompt = _ => DialogResult.Cancel;
                     addColumn.PerformClick();
-                    Assert(smokeHistory.CustomColumns.Count == 2, "Cancelling the column prompt must not add a column.");
-                    using (var columnDialog = new ColumnNameDialog())
+                    Assert(smokeHistory.GetCustomColumns(baseline.Id).Count == 2, "Cancelling the column prompt must not add a column.");
+                    historyForm.ShowPrompt = dialog =>
                     {
-                        columnDialog.Show(form);
-                        var addButton = Descendants(columnDialog).OfType<Button>().Single(button => button.Text == "Add column");
-                        Assert(columnDialog.Location == HeadlessUi.OffscreenLocation && !addButton.Enabled,
-                            "The column prompt must open off-screen in tests and disable Add until a name is typed.");
-                        columnDialog.ColumnName = "  Melee Stat ";
-                        Assert(addButton.Enabled && columnDialog.ColumnName == "Melee Stat" &&
-                            Descendants(columnDialog).Where(control => control.Visible && control != columnDialog).All(control =>
-                                columnDialog.ClientRectangle.Contains(columnDialog.RectangleToClient(control.RectangleToScreen(control.ClientRectangle)))),
-                            "The column prompt must fit its controls and trim the typed name.");
-                        using var dialogImage = new Bitmap(columnDialog.Width, columnDialog.Height);
-                        columnDialog.DrawToBitmap(dialogImage, new Rectangle(Point.Empty, dialogImage.Size));
-                        dialogImage.Save(Path.Combine(args[1], "ui-AddColumn.png"));
-                        columnDialog.Close();
+                        Assert(dialog.HasInput && dialog.Value == "Base stats", "Rename must start from the current name.");
+                        dialog.Value = "Base stats (40)";
+                        return DialogResult.OK;
+                    };
+                    historyForm.SessionMenu.Items.OfType<ToolStripMenuItem>().Single(item => item.Text == "Rename…").PerformClick();
+                    Assert(smokeHistory.Sessions.Single(session => session.Id == baseline.Id).Name == "Base stats (40)",
+                        "Rename… must rename the selected session.");
+                    toggleActive.PerformClick();
+                    Assert(smokeHistory.ActiveSessionId == baseline.Id && toggleActive.Text == "End session" &&
+                        activeLabel.Text == "● Active: Base stats (40)",
+                        "Make active must reopen and activate the selected session.");
+                    toggleActive.PerformClick();
+                    Assert(smokeHistory.ActiveSessionId is null && toggleActive.Text == "Make active" && activeLabel.Text == "No active session",
+                        "End session must clear the active session.");
+                    historyForm.ShowPrompt = dialog => { dialog.Value = "Next stat test"; return DialogResult.OK; };
+                    Descendants(historyForm).OfType<Button>().Single(button => button.Text == "New session…").PerformClick();
+                    var nextSession = smokeHistory.Sessions.Single(session => session.Name == "Next stat test");
+                    Assert(smokeHistory.ActiveSessionId == nextSession.Id && historyForm.SelectedSessionId == nextSession.Id &&
+                        historyGrid.Rows.Count == 0 && HeaderTexts().All(header => header is not ("Armor" or "Grenade Stat")),
+                        "New session… must create, activate and select an empty session without other sessions' columns.");
+                    historyForm.SelectSession(baseline.Id);
+                    var baselineCount = historyGrid.Rows.Count;
+                    PromptDialog? confirmation = null;
+                    historyForm.ShowPrompt = dialog => { confirmation = dialog; return DialogResult.OK; };
+                    historyForm.SessionMenu.Items.OfType<ToolStripMenuItem>().Single(item => item.Text == "Delete…").PerformClick();
+                    Assert(confirmation is { HasInput: false } && smokeHistory.Sessions.All(session => session.Id != baseline.Id) &&
+                        smokeHistory.Measurements.Count(item => item.SessionId is null) == baselineCount &&
+                        smokeHistory.Measurements.Single(item => item.Id == baselineEntry.Id).CustomValues!["Armor"] == "Legendary" &&
+                        historyForm.SelectedSessionId is { } remaining && remaining != baseline.Id,
+                        "Delete… must confirm, then remove the session and leave its measurements unsorted.");
+                    foreach (var (dialogName, prompt) in new[]
+                    {
+                        ("ui-AddColumn.png", new PromptDialog("Add column", "Name a new column for “Grenade stat testing”. Double-click its cells to edit values; this session's CSV export includes it.", "Add column", placeholder: "e.g. Grenade Stat")),
+                        ("ui-DeleteSession.png", new PromptDialog("Delete session", "Delete “Grenade stat testing” and its columns? Its 5 results and their notes move to Unsorted in All measurements.", "Delete session", destructive: true))
+                    })
+                    {
+                        using (prompt)
+                        {
+                            prompt.Show(form);
+                            var accept = Descendants(prompt).OfType<Button>().Single(button => button == prompt.AcceptButton);
+                            Assert(prompt.Location == HeadlessUi.OffscreenLocation && accept.Enabled != prompt.HasInput,
+                                "History prompts must open off-screen in tests; name prompts disable their action until a name is typed.");
+                            if (prompt.HasInput) prompt.Value = "  Melee Stat ";
+                            Assert((!prompt.HasInput || accept.Enabled && prompt.Value == "Melee Stat") &&
+                                Descendants(prompt).Where(control => control.Visible && control != prompt).All(control =>
+                                    prompt.ClientRectangle.Contains(prompt.RectangleToClient(control.RectangleToScreen(control.ClientRectangle)))),
+                                "History prompts must fit their controls and trim the typed name.");
+                            using var dialogImage = new Bitmap(prompt.Width, prompt.Height);
+                            prompt.DrawToBitmap(dialogImage, new Rectangle(Point.Empty, dialogImage.Size));
+                            dialogImage.Save(Path.Combine(args[1], dialogName));
+                            prompt.Close();
+                        }
                     }
-                    var newSession = sessionActions.Controls.OfType<InputFrame>().Single().Controls.OfType<TextBox>().Single();
-                    newSession.Text = "Next stat test";
-                    sessionActions.Controls.OfType<Button>().Single(button => button.Text == "Start session").PerformClick();
-                    var sessionFilter = Descendants(historyForm).OfType<ComboBox>().Single(combo => combo.Items.Cast<object>()
-                        .Any(item => item.ToString() == "All sessions"));
-                    Assert(sessionFilter.Text.StartsWith("Next stat test") &&
-                        smokeHistory.Sessions.Single(session => session.Id == smokeHistory.ActiveSessionId).Name == "Next stat test",
-                        "Starting a session must activate it and select its history filter.");
-                    Descendants(historyForm).OfType<Button>().Single(button => button.Text == "End session").PerformClick();
-                    Assert(smokeHistory.ActiveSessionId is null &&
-                        !Descendants(historyForm).OfType<Button>().Single(button => button.Text == "Make active").Enabled,
-                        "Ending the selected session must clear activity and prevent reopening an ended session.");
                     form.SetHistoryVisible(false);
                     Assert(!historyForm.Visible && !form.HistoryVisible && form.Size == collapsedSize &&
                         pages.Controls.Cast<Control>().Single(control => control.Visible) == testPage(),
@@ -1665,7 +1743,7 @@ static void RenderCaptureStatusStates(MainForm form, Control navigation, string 
         var chip = Descendants(form).OfType<StatusPill>().Single(control => control.Name == "RecordingChip");
         var stop = Descendants(form).OfType<Button>().Single(control => control.Name == "StopRecording");
         var trackRow = Descendants(form).Single(control => control.Name == "TrackRow");
-        var selector = Descendants(form).OfType<SegmentedControl>().Single();
+        var selector = Descendants(form).OfType<SegmentedControl>().Single(control => control.Name == "TrackSelector");
         chip.Text = "Recording HUD · 00:42 · 2520 frames";
         typeof(MainForm).GetMethod("ShowRecordingIndicator", flags)!.Invoke(form, [true]);
         form.PerformLayout();

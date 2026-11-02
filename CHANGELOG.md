@@ -22,3 +22,6 @@ Add a concise, single-line bullet for each notable user-facing change in the sam
 - History uses clearer session verbs (**Make active**, **Add to session**, **Session filter**), and **Add column…** asks for the column name in a small dialog.
 - The in-app changelog uses compact, consistent spacing between releases, headings and bullets.
 - The selection guide shows one example with practical tips, and explains that a thin margin above and below each area is added automatically.
+- History splits into **Sessions** (one session at a time with **New session…**, **Make active** / **End session**, **Rename…**, **Delete…** and its own export) and **All measurements** (every result with a Session column and **Add to session ▾** for any session).
+- Custom columns now belong to a session; existing columns are copied to the sessions that use them, and moved results keep their values.
+- Deleting a session keeps its measurements as Unsorted, and **Make active** can reopen an ended session.
