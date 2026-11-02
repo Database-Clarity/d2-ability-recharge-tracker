@@ -15,7 +15,6 @@ internal sealed class MeasurementHistoryView : UserControl
     private readonly TextBox _note = new();
     private readonly Label _activeSession = new();
     private readonly Label _status = new();
-    private readonly TextBox _columnName = new();
     private readonly Button _addColumn = new();
     private readonly Button _export = new();
 
@@ -45,7 +44,7 @@ internal sealed class MeasurementHistoryView : UserControl
         _sessionName.BackColor = TrackerTheme.Surface;
         _startSession.Text = "Start session";
         _endSession.Text = "End session";
-        _setActiveSession.Text = "Use session";
+        _setActiveSession.Text = "Make active";
 
         var filters = new FlowLayoutPanel
         {
@@ -65,7 +64,7 @@ internal sealed class MeasurementHistoryView : UserControl
         sessionActions.Controls.AddRange([new InputFrame(_sessionName), _startSession]);
         var sessionView = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Margin = Padding.Empty };
         sessionView.Controls.AddRange([_sessionFilter, _setActiveSession]);
-        filters.Controls.AddRange([Field("Ability", _abilityFilter), Field("View saved session", sessionView)]);
+        filters.Controls.AddRange([Field("Ability", _abilityFilter), Field("Session filter", sessionView)]);
 
         _activeSession.AutoSize = true;
         _activeSession.AutoEllipsis = true;
@@ -127,7 +126,7 @@ internal sealed class MeasurementHistoryView : UserControl
         _note.AccessibleName = "Measurement note";
         _note.BackColor = TrackerTheme.Surface;
         _saveNote.Text = "Save note";
-        _assignSession.Text = "Assign to active";
+        _assignSession.Text = "Add to session";
         foreach (var button in new[] { _startSession, _endSession, _setActiveSession, _saveNote, _assignSession })
         {
             button.AutoSize = true;
@@ -188,15 +187,11 @@ internal sealed class MeasurementHistoryView : UserControl
         var footer = new TableLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, ColumnCount = 1 };
         footer.Controls.Add(noteRow, 0, 0);
         var columnActions = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Fill, WrapContents = true };
-        _columnName.Width = 160;
-        _columnName.AccessibleName = "Custom column name";
-        _columnName.PlaceholderText = "e.g. Grenade Stat";
-        _addColumn.Text = "Add column";
+        _addColumn.Text = "Add column…";
         _addColumn.AutoSize = true;
         _export.Text = "Export CSV…";
         _export.AutoSize = true;
-        columnActions.Controls.AddRange([new Label { Text = "Custom column", AutoSize = true, ForeColor = TrackerTheme.Muted,
-            Margin = new Padding(3, 9, 6, 0) }, new InputFrame(_columnName), _addColumn, _export]);
+        columnActions.Controls.AddRange([_addColumn, _export]);
         footer.Controls.Add(columnActions, 0, 1);
         footer.Controls.Add(_status, 0, 2);
         root.Controls.Add(footer, 0, 4);
@@ -281,13 +276,21 @@ internal sealed class MeasurementHistoryView : UserControl
         }
     }
 
+    /// <summary>Asks for a new column name; returns null when cancelled. Tests replace it to skip the modal dialog.</summary>
+    [System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
+    internal Func<IWin32Window, string?> ColumnNamePrompt { get; set; } = owner =>
+    {
+        using var dialog = new ColumnNameDialog();
+        return dialog.ShowDialog(owner) == DialogResult.OK ? dialog.ColumnName : null;
+    };
+
     private void AddColumn()
     {
+        if (ColumnNamePrompt(this) is not { Length: > 0 } name) return;
         try
         {
-            _history.AddCustomColumn(_columnName.Text);
+            _history.AddCustomColumn(name);
             AddCustomColumns();
-            _columnName.Clear();
             RefreshMeasurements(SelectedMeasurementId);
             SetStatus("Column added. Double-click its cells to edit values.");
         }
@@ -566,7 +569,6 @@ internal sealed class MeasurementHistoryView : UserControl
         var hasSelection = SelectedMeasurementId is not null;
         _startSession.Enabled = writable;
         _sessionName.Enabled = writable;
-        _columnName.Enabled = writable;
         _addColumn.Enabled = writable;
         _export.Enabled = _measurements.Rows.Count > 0;
         _endSession.Enabled = writable && _history.ActiveSessionId is not null;

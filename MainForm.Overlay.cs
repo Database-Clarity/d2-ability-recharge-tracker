@@ -110,8 +110,11 @@ internal sealed partial class MainForm
                 ? Screen.AllScreens.FirstOrDefault(screen => screen.DeviceName.Equals(deviceName, StringComparison.OrdinalIgnoreCase))?.Bounds
                     ?? savedMonitor.MonitorBounds
                 : savedMonitor?.MonitorBounds;
-            var title = _monitoring ? "ABILITY RECHARGE"
-                : PauseBinding is { } pause ? $"PAUSED · {pause} TO RESUME".ToUpperInvariant() : "PAUSED";
+            var title = !_monitoring
+                ? PauseBinding is { } pause ? $"PAUSED · {pause} TO RESUME".ToUpperInvariant() : "PAUSED"
+                : _repeatTest.CompactStatus(DateTime.UtcNow) is { } testProgress
+                    ? $"TEST · {testProgress}".ToUpperInvariant()
+                    : "ABILITY RECHARGE";
             _overlay.SetContent(title, rows, twoLines, accent, monitor, _settings.OverlayAnchor);
         }
     }
@@ -120,14 +123,14 @@ internal sealed partial class MainForm
     {
         var tracker = _trackers.GetValueOrDefault(kind);
         var slot = _settings.Slots.FirstOrDefault(item => item.Kind == kind);
-        var label = KindShortName(kind).Trim();
+        var label = KindShortName(kind);
         var regression = tracker?.LastRegressionDuration is { } fitted ? $"regression {CompactDuration(fitted)}" : null;
         var last = tracker?.LastDuration is { } lastDuration
             ? regression is null ? $"Last {CompactDuration(lastDuration)}" : $"Last {CompactDuration(lastDuration)} · {regression}"
             : null;
 
-        OverlayRow Row(string line1, string? line2, string? compact, Color color) =>
-            new(label, twoLines ? line1 : compact ?? JoinCompact(line1, line2), twoLines ? line2 : null, color);
+        OverlayRow Row(string line1, string? line2, string? compact, Color color, float? progress = null) =>
+            new(label, twoLines ? line1 : compact ?? JoinCompact(line1, line2), twoLines ? line2 : null, color, progress);
 
         if (!_monitoring)
         {
@@ -166,7 +169,8 @@ internal sealed partial class MainForm
                 $"{FormatDuration(tracker.CurrentDuration)} · {progressText}",
                 estimateText,
                 $"{CompactDuration(tracker.CurrentDuration)} · {progressText} · {compactEstimate}",
-                color);
+                color,
+                tracker.TrackingWarning is null ? tracker.DisplayProgress : null);
         }
 
         if (tracker?.MeasurementDiscarded == true)

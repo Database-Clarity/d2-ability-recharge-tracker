@@ -18,3 +18,5 @@ Add a concise, single-line bullet for each notable user-facing change in the sam
 - Repeat test has a single **Start test** / **Stop test** button that explains inline why it can't start, clearer **Cycles**, **Delay after recharge (s)** and **Hold input for (s)** labels, wrapping status, and a note when the test switches solo tracking (restored afterwards).
 - Settings gains a **Shortcuts** section for pause / resume, show / hide overlay and start / stop test, and Capture shows the live measured rate and backend.
 - The Display picker leaves Settings; when Destiny 2 isn't found, area selection asks which display to preview in a small dialog.
+- The overlay header is slimmer and shows repeat-test progress (for example "Test · Cycle 2/5 · measuring"), recharging rows get a thin progress bar, and ability labels align without padding.
+- History uses clearer session verbs (**Make active**, **Add to session**, **Session filter**), and **Add column…** asks for the column name in a small dialog.

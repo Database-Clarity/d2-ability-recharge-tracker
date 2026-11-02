@@ -6,7 +6,8 @@ using Microsoft.Win32;
 namespace D2AbilityTracker;
 
 /// <summary>
-/// Always-on-top, click-through status overlay. Every ability row has a fixed height (one or two lines),
+/// Always-on-top, click-through status overlay. A slim header carries the state (tracking, paused, move mode or
+/// repeat-test progress). Every ability row has a fixed height (one or two lines),
 /// and the window width is fixed, so the overlay never resizes or shifts while tracking.
 /// In move mode the overlay becomes interactive and can be dragged to a custom location.
 /// </summary>
@@ -26,7 +27,7 @@ internal sealed class OverlayWindow : Form
     private const int HtCaption = 2;
 
     private const int LogicalWidth = 340;
-    private const int HeaderHeight = 32;
+    private const int HeaderHeight = 22;
     private const int Line1Height = 20;
     private const int Line2Height = 17;
     private const int RowGap = 6;
@@ -458,7 +459,7 @@ internal sealed class OverlayWindow : Form
         if (_moveMode)
         {
             var buttonSize = TextRenderer.MeasureText("Done", _buttonFont);
-            _doneBounds = new Rectangle(Width - padX - buttonSize.Width - Scale(16) + Scale(6), Scale(7), buttonSize.Width + Scale(16), Scale(20));
+            _doneBounds = new Rectangle(Width - padX - buttonSize.Width - Scale(16) + Scale(6), Scale(3), buttonSize.Width + Scale(16), Scale(17));
             using var buttonBrush = new SolidBrush(_accent);
             using var buttonPath = RoundedRectangle(_doneBounds, Scale(5));
             graphics.FillPath(buttonBrush, buttonPath);
@@ -468,7 +469,7 @@ internal sealed class OverlayWindow : Form
         }
 
         TextRenderer.DrawText(graphics, headerText, _titleFont,
-            new Rectangle(padX, Scale(6), headerRight - padX, Scale(HeaderHeight - 10)),
+            new Rectangle(padX, Scale(4), headerRight - padX, Scale(HeaderHeight - 7)),
             _accent, TextFlags);
 
         var labelX = padX + Scale(DotSize + DotGap);
@@ -489,6 +490,21 @@ internal sealed class OverlayWindow : Form
             graphics.FillEllipse(dotBrush, padX, y + (line1Height - dotSize) / 2f, dotSize, dotSize);
             TextRenderer.DrawText(graphics, row.Label, _labelFont, new Rectangle(labelX, y, labelWidth + Scale(2), line1Height), LabelColor, TextFlags);
             TextRenderer.DrawText(graphics, row.Line1, _line1Font, new Rectangle(valueX, y, valueWidth, line1Height), PrimaryTextColor, TextFlags);
+            if (row.Progress is { } progress)
+            {
+                // Thin recharge fill under the first line; drawn without anti-aliasing so it stays crisp.
+                var barHeight = Math.Max(1, Scale(2));
+                var barTop = y + line1Height - barHeight + Scale(1);
+                graphics.SmoothingMode = SmoothingMode.None;
+                using (var track = new SolidBrush(BorderColor))
+                {
+                    graphics.FillRectangle(track, valueX, barTop, valueWidth, barHeight);
+                }
+
+                dotBrush.Color = row.StatusColor ?? NeutralDotColor;
+                graphics.FillRectangle(dotBrush, valueX, barTop, (int)Math.Round(valueWidth * Math.Clamp(progress, 0f, 1f)), barHeight);
+                graphics.SmoothingMode = SmoothingMode.AntiAlias;
+            }
             y += line1Height;
             if (_twoLines)
             {

@@ -7,7 +7,9 @@ internal static class RepeatSummaryTests
         var now = new DateTime(2026, 11, 2, 0, 0, 0, DateTimeKind.Utc);
         var binding = new InputBinding(InputDevice.Keyboard, 0x47, InputModifiers.None);
         var test = new RepeatTestSession();
+        Assert(test.CompactStatus(now) is null, "An idle repeat test must not claim the overlay header.");
         test.Start(AbilityKind.Grenade, 2, TimeSpan.Zero, binding);
+        Assert(test.CompactStatus(now) == "Cycle 1/2 · use the ability", $"Overlay test progress must name the cycle: {test.CompactStatus(now)}");
         var run = test.RunId;
         var first = new MeasurementHistoryEntry(Guid.NewGuid(), AbilityKind.Grenade, 10, 10.1, 0.1, 0.2,
             MeasurementSource.Event, new DateTimeOffset(now), null, null, RepeatTestId: run);

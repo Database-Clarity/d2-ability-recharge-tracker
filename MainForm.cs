@@ -2479,8 +2479,8 @@ internal sealed partial class MainForm : AppWindow
     private static string KindShortName(AbilityKind kind) => kind switch
     {
         AbilityKind.Grenade => "Grenade",
-        AbilityKind.Melee => "Melee  ",
-        AbilityKind.ClassAbility => "Class    ",
+        AbilityKind.Melee => "Melee",
+        AbilityKind.ClassAbility => "Class",
         _ => kind.ToString()
     };
 

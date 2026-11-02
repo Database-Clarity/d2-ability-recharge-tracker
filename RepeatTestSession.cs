@@ -39,6 +39,21 @@ internal sealed class RepeatTestSession
         ? null
         : TimeSpan.FromTicks((long)_regressionDurations.Average(duration => duration.Ticks));
 
+    /// <summary>Short progress line for the overlay header while a test runs; null when no test is active.</summary>
+    public string? CompactStatus(DateTime now)
+    {
+        return Phase switch
+        {
+            RepeatTestPhase.AwaitingInitialUse => $"Cycle 1/{TargetCycles} · use the ability",
+            RepeatTestPhase.WaitingForRecharge => $"Cycle {CompletedCycles + 1}/{TargetCycles} · measuring",
+            RepeatTestPhase.WaitingForNextUse when _nextUseAt is { } nextUse && nextUse > now =>
+                $"Cycle {CompletedCycles}/{TargetCycles} done · next in {(nextUse - now).TotalSeconds:F1}s",
+            RepeatTestPhase.WaitingForNextUse => $"Cycle {CompletedCycles}/{TargetCycles} done · show the HUD",
+            RepeatTestPhase.AwaitingRechargeAfterAutomaticUse => $"Cycle {CompletedCycles + 1}/{TargetCycles} · input sent",
+            _ => null
+        };
+    }
+
     public string Status(DateTime now)
     {
         return Phase switch

@@ -260,6 +260,24 @@ if (args.Length == 2 && args[0] == "--ui-smoke")
                         Assert(Descendants(overlay).OfType<CopyResultButton>().Single().ResultText.Contains("± 0.160 s"),
                             "Overlay move mode must expose a copy action for the complete result.");
                         overlay.SetMoveMode(false);
+                        overlay.SetContent("TEST · CYCLE 2/5 · MEASURING", [
+                            new OverlayRow("Grenade", "41.20 s · 64%", "Est. total 64.25 ± 0.30 s", Color.FromArgb(86, 167, 229), 0.64f),
+                            new OverlayRow("Melee", "Ready", "Last 22.10 s", Color.FromArgb(89, 190, 130)),
+                            new OverlayRow("Class", "Ready", "Last 30.02 s", Color.FromArgb(89, 190, 130))], true, TrackerTheme.Accent);
+                        Assert(overlay.Height <= (int)Math.Round((22 + 3 * 37 + 2 * 6 + 10) * overlay.DeviceDpi / 96.0),
+                            "The overlay header must stay slim (about 20 px).");
+                        using (var overlayImage = new Bitmap(overlay.Width, overlay.Height))
+                        {
+                            overlay.DrawToBitmap(overlayImage, new Rectangle(Point.Empty, overlayImage.Size));
+                            overlayImage.Save(Path.Combine(args[1], "ui-Overlay-test.png"));
+                        }
+                        overlay.SetMoveMode(true);
+                        using (var overlayImage = new Bitmap(overlay.Width, overlay.Height))
+                        {
+                            overlay.DrawToBitmap(overlayImage, new Rectangle(Point.Empty, overlayImage.Size));
+                            overlayImage.Save(Path.Combine(args[1], "ui-Overlay-move.png"));
+                        }
+                        overlay.SetMoveMode(false);
                         overlay.Close();
                     }
                     var smokeHistory = new MeasurementHistoryStore(Path.Combine(args[1], "smoke-history.json"));
@@ -329,7 +347,7 @@ if (args.Length == 2 && args[0] == "--ui-smoke")
                         .Single(textBox => textBox.AccessibleName == "Measurement note");
                     var noteFrame = noteEditor.Parent!;
                     var saveNote = Descendants(historyForm).OfType<Button>().Single(button => button.Text == "Save note");
-                    var assignNote = Descendants(historyForm).OfType<Button>().Single(button => button.Text == "Assign to active");
+                    var assignNote = Descendants(historyForm).OfType<Button>().Single(button => button.Text == "Add to session");
                     Assert(historyGrid.Columns["Note"]!.MinimumWidth == 104 &&
                         customColumn.AutoSizeMode == DataGridViewAutoSizeColumnMode.Fill &&
                         noteEditor.MaxLength == 240 && noteEditor.Height <= 44 &&
@@ -356,6 +374,35 @@ if (args.Length == 2 && args[0] == "--ui-smoke")
                         historyForm.DrawToBitmap(image, new Rectangle(Point.Empty, image.Size));
                         image.Save(Path.Combine(args[1], "ui-History-minimum.png"));
                     }
+                    Assert(Descendants(historyForm).OfType<Label>().Any(label => label.Text == "Session filter") &&
+                        !Descendants(historyForm).OfType<TextBox>().Any(box => box.AccessibleName == "Custom column name") &&
+                        Descendants(historyForm).OfType<Button>().Single(button => button.Text == "Export CSV…").Visible,
+                        "History must label the session filter, keep Export CSV visible and replace the column textbox with a prompt.");
+                    var addColumn = Descendants(historyForm).OfType<Button>().Single(button => button.Text == "Add column…");
+                    historyForm.ColumnNamePrompt = _ => "Stat 2";
+                    addColumn.PerformClick();
+                    Assert(smokeHistory.CustomColumns.Contains("Stat 2") &&
+                        historyGrid.Columns.Cast<DataGridViewColumn>().Any(column => column.HeaderText == "Stat 2"),
+                        "Add column… must add the prompted column.");
+                    historyForm.ColumnNamePrompt = _ => null;
+                    addColumn.PerformClick();
+                    Assert(smokeHistory.CustomColumns.Count == 2, "Cancelling the column prompt must not add a column.");
+                    using (var columnDialog = new ColumnNameDialog())
+                    {
+                        columnDialog.Show(form);
+                        var addButton = Descendants(columnDialog).OfType<Button>().Single(button => button.Text == "Add column");
+                        Assert(columnDialog.Location == HeadlessUi.OffscreenLocation && !addButton.Enabled,
+                            "The column prompt must open off-screen in tests and disable Add until a name is typed.");
+                        columnDialog.ColumnName = "  Melee Stat ";
+                        Assert(addButton.Enabled && columnDialog.ColumnName == "Melee Stat" &&
+                            Descendants(columnDialog).Where(control => control.Visible && control != columnDialog).All(control =>
+                                columnDialog.ClientRectangle.Contains(columnDialog.RectangleToClient(control.RectangleToScreen(control.ClientRectangle)))),
+                            "The column prompt must fit its controls and trim the typed name.");
+                        using var dialogImage = new Bitmap(columnDialog.Width, columnDialog.Height);
+                        columnDialog.DrawToBitmap(dialogImage, new Rectangle(Point.Empty, dialogImage.Size));
+                        dialogImage.Save(Path.Combine(args[1], "ui-AddColumn.png"));
+                        columnDialog.Close();
+                    }
                     var newSession = sessionActions.Controls.OfType<InputFrame>().Single().Controls.OfType<TextBox>().Single();
                     newSession.Text = "Next stat test";
                     sessionActions.Controls.OfType<Button>().Single(button => button.Text == "Start session").PerformClick();
@@ -366,7 +413,7 @@ if (args.Length == 2 && args[0] == "--ui-smoke")
                         "Starting a session must activate it and select its history filter.");
                     Descendants(historyForm).OfType<Button>().Single(button => button.Text == "End session").PerformClick();
                     Assert(smokeHistory.ActiveSessionId is null &&
-                        !Descendants(historyForm).OfType<Button>().Single(button => button.Text == "Use session").Enabled,
+                        !Descendants(historyForm).OfType<Button>().Single(button => button.Text == "Make active").Enabled,
                         "Ending the selected session must clear activity and prevent reopening an ended session.");
                     form.SetHistoryVisible(false);
                     Assert(!historyForm.Visible && !form.HistoryVisible && form.Size == collapsedSize &&
