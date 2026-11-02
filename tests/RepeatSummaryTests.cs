@@ -38,6 +38,15 @@ internal static class RepeatSummaryTests
             first with { RepeatTestId = test.RunId, RegressionSeconds = null, RegressionUncertaintySeconds = null });
         Assert(test.ValidatedSummary is { CycleCount: 1, RegressionCycleCount: 0, RegressionSeconds: null, UncertaintySeconds: 0.1 },
             "One-cycle repeats must retain the measured uncertainty without fabricating a regression.");
+        test.Start(AbilityKind.Grenade, 2, TimeSpan.Zero, binding, 12000);
+        test.ObserveState(AbilityKind.Grenade, AbilityState.Recharging, now);
+        test.RecordRecharge(AbilityKind.Grenade, TimeSpan.FromSeconds(10), now);
+        Assert(test.TryGetDueUse(now, true, out _), "Long holds must schedule normally.");
+        test.ObserveState(AbilityKind.Grenade, AbilityState.Ready, now.AddSeconds(12));
+        Assert(test.Phase == RepeatTestPhase.AwaitingRechargeAfterAutomaticUse,
+            "The cooldown confirmation timeout must allow the full configured hold plus a post-release grace period.");
+        test.ObserveState(AbilityKind.Grenade, AbilityState.Ready, now.AddSeconds(20));
+        Assert(test.Phase == RepeatTestPhase.Failed, "An ignored long hold must still time out explicitly.");
     }
 
     private static void Assert(bool condition, string message)

@@ -64,6 +64,7 @@ internal sealed class TrackerSettings
     public AbilityKind TestAbility { get; set; } = AbilityKind.Grenade;
     public int TestCycles { get; set; } = 5;
     public decimal TestDelaySeconds { get; set; } = 1;
+    public decimal TestHoldSeconds { get; set; } = 0.12m;
     public string OverlayAnchor { get; set; } = "Bottom right";
 }
 

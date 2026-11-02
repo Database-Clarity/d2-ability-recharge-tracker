@@ -62,8 +62,10 @@ internal sealed class RepeatTestSession
 
     public string? FailureReason { get; private set; }
 
-    public void Start(AbilityKind ability, int targetCycles, TimeSpan delay, InputBinding useBinding)
+    public void Start(AbilityKind ability, int targetCycles, TimeSpan delay, InputBinding useBinding, int holdMilliseconds = 120)
     {
+        if (holdMilliseconds is < 10 or > 30000)
+            throw new ArgumentOutOfRangeException(nameof(holdMilliseconds), "Choose a hold time between 0.01 and 30 seconds.");
         if (targetCycles is < 1 or > 100)
         {
             throw new ArgumentOutOfRangeException(nameof(targetCycles), "Choose between 1 and 100 recharge cycles.");
@@ -87,9 +89,11 @@ internal sealed class RepeatTestSession
         FailureReason = null;
         Phase = RepeatTestPhase.AwaitingInitialUse;
         PostRechargeDelay = delay;
+        HoldMilliseconds = holdMilliseconds;
     }
 
     public TimeSpan PostRechargeDelay { get; private set; }
+    public int HoldMilliseconds { get; private set; } = 120;
 
     public void ObserveState(AbilityKind ability, AbilityState state, DateTime timestamp)
     {
@@ -111,7 +115,7 @@ internal sealed class RepeatTestSession
         if (Phase == RepeatTestPhase.AwaitingRechargeAfterAutomaticUse &&
             _automaticUseDeadline is { } deadline && timestamp >= deadline)
         {
-            Fail("No cooldown appeared after the automatic ability input.");
+            Fail($"No cooldown appeared after sending {UseBinding}. Check the game's ability binding and that the game and tracker run at the same privilege level.");
         }
     }
 
@@ -156,7 +160,7 @@ internal sealed class RepeatTestSession
 
         binding = configuredBinding;
         _nextUseAt = null;
-        _automaticUseDeadline = timestamp + TimeSpan.FromSeconds(8);
+        _automaticUseDeadline = timestamp + TimeSpan.FromMilliseconds(HoldMilliseconds) + TimeSpan.FromSeconds(8);
         Phase = RepeatTestPhase.AwaitingRechargeAfterAutomaticUse;
         return true;
     }

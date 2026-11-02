@@ -661,6 +661,8 @@ var settings = new TrackerSettings
     SoloAbility = AbilityKind.Melee,
     OverlayShortcutCleared = true,
     CaptureRate = 60
+    ,
+    TestHoldSeconds = 1.75m
 };
 var restoredSettings = JsonSerializer.Deserialize<TrackerSettings>(JsonSerializer.Serialize(settings));
 Assert(restoredSettings?.PauseBinding == useBinding, "Modified pause bindings should round-trip in settings.");
@@ -669,6 +671,9 @@ Assert(restoredSettings?.RepeatTestBinding == repeatShortcut && restoredSettings
     restoredSettings.SoloAbility == AbilityKind.Melee && restoredSettings.OverlayShortcutCleared,
     "Task shortcuts should round-trip in settings.");
 Assert(restoredSettings?.CaptureRate == 60, "The configured capture target should persist.");
+Assert(restoredSettings?.TestHoldSeconds == 1.75m &&
+    JsonSerializer.Deserialize<TrackerSettings>("{}")!.TestHoldSeconds == 0.12m,
+    "Hold time must persist and older settings must default to a 120 ms tap.");
 Assert(useBinding.ToString() == "Ctrl+Shift+G", "Key names and modifiers should be presented clearly.");
 var mouseBinding = new InputBinding(InputDevice.Mouse, MouseInputCode.X1, InputModifiers.Alt);
 Assert(mouseBinding.ToString() == "Alt+Mouse X1", "Mouse buttons should retain their modifier and readable label.");
@@ -676,6 +681,7 @@ Assert(new InputBinding(InputDevice.Keyboard, (int)Keys.Escape, InputModifiers.N
     !new InputBinding(InputDevice.Keyboard, (int)Keys.Escape, InputModifiers.Shift).IsClearRequest,
     "Plain Escape should clear a shortcut while recording it.");
 Assert(Marshal.SizeOf<InputBindingSender.InputEvent>() == (IntPtr.Size == 8 ? 40 : 28), "SendInput structure must match the Windows ABI.");
+InputSenderTests.Run();
 
 var viewport = new RectangleF(0, 86, 1080, 900);
 var submitSize = new Size(112, 32);

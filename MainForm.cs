@@ -42,11 +42,13 @@ internal sealed partial class MainForm : AppWindow
     private readonly FlatComboBox _testAbilityPicker = new();
     private readonly FlatNumericUpDown _testCyclesPicker = new();
     private readonly FlatNumericUpDown _testDelayPicker = new();
+    private readonly FlatNumericUpDown _testHoldPicker = new();
     private readonly Label _testStatus = new();
     private readonly Label _hudRecordingStatus = new();
     private readonly Button _captureFolderButton = new();
     private string? _lastRecordingPath;
     private readonly RepeatTestSession _repeatTest = new();
+    private Task _repeatInputTask = Task.CompletedTask;
     private readonly Dictionary<AbilityKind, AbilitySlotTracker> _trackers = [];
     private readonly Dictionary<AbilityKind, Label> _regionLabels = [];
     private readonly Dictionary<AbilityKind, Label> _statusLabels = [];
@@ -136,6 +138,20 @@ internal sealed partial class MainForm : AppWindow
         };
         FormClosing += async (_, args) =>
         {
+            Task inputTask;
+            lock (_captureSync)
+            {
+                _monitoring = false;
+                _repeatTest.Stop();
+                inputTask = _repeatInputTask;
+            }
+            if (!inputTask.IsCompleted)
+            {
+                args.Cancel = true;
+                await inputTask;
+                Close();
+                return;
+            }
             if (_hudRecordingTask is not { } recordingTask)
             {
                 return;
@@ -419,6 +435,18 @@ internal sealed partial class MainForm : AppWindow
             SaveSettings();
         };
         _abilityUseBindingButton.Text = _settings.AbilityUseBinding?.ToString() ?? "Record input…";
+        _testHoldPicker.DecimalPlaces = 2;
+        _testHoldPicker.Increment = 0.05m;
+        _testHoldPicker.Minimum = 0.01m;
+        _testHoldPicker.Maximum = 30;
+        _testHoldPicker.Value = Math.Clamp(_settings.TestHoldSeconds, 0.01m, 30);
+        _testHoldPicker.AccessibleName = "Ability input hold time in seconds";
+        _testHoldPicker.ValueChanged += (_, _) =>
+        {
+            _settings.TestHoldSeconds = _testHoldPicker.Value;
+            SaveSettings();
+        };
+        _toolTip.SetToolTip(_testHoldPicker, "How long to hold the ability key or mouse button. Wheel bindings are single impulses.");
         _abilityUseBindingButton.Click += (_, _) => ToggleBindingCapture(BindingCaptureTarget.AbilityUse);
         _toolTip.SetToolTip(_abilityUseBindingButton, "The in-game key or mouse button that uses the ability; sent between cycles.");
         _repeatTestBindingButton.Text = _settings.RepeatTestBinding?.ToString() ?? "Record shortcut…";
@@ -441,8 +469,10 @@ internal sealed partial class MainForm : AppWindow
         Place(test, _testDelayPicker, 3, 1);
         Place(test, GridLabel("Start / stop shortcut"), 0, 2);
         Place(test, _repeatTestBindingButton, 1, 2);
-        Place(test, _startTestButton, 2, 2);
-        Place(test, _stopTestButton, 3, 2);
+        Place(test, GridLabel("Hold time · s"), 2, 2);
+        Place(test, _testHoldPicker, 3, 2);
+        Place(test, _startTestButton, 2, 3);
+        Place(test, _stopTestButton, 3, 3);
         var testResult = new Panel { Height = 64 };
         _testStatus.Dock = DockStyle.Fill;
         var copyTest = new CopyResultButton("Copy repeat-test result", () => $"{KindName(_repeatTest.Ability ?? _settings.TestAbility)}: {_testStatus.Text}")
@@ -455,7 +485,7 @@ internal sealed partial class MainForm : AppWindow
         copyTestPanel.Controls.Add(copyTest);
         testResult.Controls.Add(_testStatus);
         testResult.Controls.Add(copyTestPanel);
-        Place(test, testResult, 0, 3, 4);
+        Place(test, testResult, 0, 4, 4);
         foreach (var control in new Control[] { _testAbilityPicker, _abilityUseBindingButton, _repeatTestBindingButton })
         {
             control.Margin = new Padding(3, 3, 29, 3);
@@ -1212,6 +1242,7 @@ internal sealed partial class MainForm : AppWindow
             CaptureHudRecordingFrame(desktopDeviceContext, duplication, timestamp);
 
             if (testAbilityCaptured &&
+                _repeatInputTask.IsCompleted &&
                 _repeatTest.IsUseDue(timestamp) &&
                 _repeatTest.Ability is { } testAbility &&
                 !_captureErrors.ContainsKey(testAbility) &&
@@ -1219,14 +1250,7 @@ internal sealed partial class MainForm : AppWindow
             {
                 if (_repeatTest.TryGetDueUse(timestamp, InputBindingSender.IsDestiny2Foreground(), out var binding))
                 {
-                    try
-                    {
-                        InputBindingSender.PressAndRelease(binding);
-                    }
-                    catch (Exception exception) when (exception is InvalidOperationException or ArgumentOutOfRangeException)
-                    {
-                        _repeatTest.Fail(exception.Message);
-                    }
+                    _repeatInputTask = SendRepeatInputAsync(binding, _repeatTest.RunId, _repeatTest.HoldMilliseconds);
                 }
             }
         }
@@ -1237,6 +1261,30 @@ internal sealed partial class MainForm : AppWindow
         }
 
         return capturedAny;
+    }
+
+    private async Task SendRepeatInputAsync(InputBinding binding, Guid runId, int holdMilliseconds)
+    {
+        try
+        {
+            if (!InputBindingSender.IsDestiny2Foreground())
+                throw new InvalidOperationException("Destiny 2 lost focus before the ability input could be sent.");
+            await InputBindingSender.PressAndReleaseAsync(binding, holdMilliseconds, () =>
+            {
+                lock (_captureSync)
+                    return _monitoring && _repeatTest.IsActive && _repeatTest.RunId == runId &&
+                        InputBindingSender.IsDestiny2Foreground();
+            }).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (exception is InvalidOperationException or ArgumentException or System.ComponentModel.Win32Exception)
+        {
+            lock (_captureSync)
+            {
+                if (_repeatTest.RunId == runId && _repeatTest.IsActive)
+                    _repeatTest.Fail(exception.Message);
+            }
+            RequestUiRefresh();
+        }
     }
 
     private void RequestUiRefresh()
@@ -1362,6 +1410,7 @@ internal sealed partial class MainForm : AppWindow
             _testAbilityPicker.Enabled = !_repeatTest.IsActive;
             _testCyclesPicker.Enabled = !_repeatTest.IsActive;
             _testDelayPicker.Enabled = !_repeatTest.IsActive;
+            _testHoldPicker.Enabled = !_repeatTest.IsActive;
             _abilityUseBindingButton.Enabled = !_repeatTest.IsActive;
             _repeatTestBindingButton.Enabled = !_repeatTest.IsActive;
             _startTestButton.Enabled = !_repeatTest.IsActive &&
@@ -1823,10 +1872,12 @@ internal sealed partial class MainForm : AppWindow
                 ability,
                 decimal.ToInt32(_testCyclesPicker.Value),
                 TimeSpan.FromSeconds((double)_testDelayPicker.Value),
-                binding);
+                binding,
+                decimal.ToInt32(_testHoldPicker.Value * 1000));
             _settings.TestAbility = ability;
             _settings.TestCycles = decimal.ToInt32(_testCyclesPicker.Value);
             _settings.TestDelaySeconds = _testDelayPicker.Value;
+            _settings.TestHoldSeconds = _testHoldPicker.Value;
         }
 
         if (_settings.SoloAbility is { } solo && solo != _settings.TestAbility)

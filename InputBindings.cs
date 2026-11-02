@@ -387,6 +387,8 @@ internal static class InputBindingSender
     private const uint InputKeyboard = 1;
     private const uint InputMouse = 0;
     private const uint KeyUp = 0x0002;
+    private const uint KeyScanCode = 0x0008;
+    private const uint KeyExtended = 0x0001;
     private const uint MouseLeftDown = 0x0002;
     private const uint MouseLeftUp = 0x0004;
     private const uint MouseRightDown = 0x0008;
@@ -431,9 +433,63 @@ internal static class InputBindingSender
         }
     }
 
-    public static void PressAndRelease(InputBinding binding)
+    public static Task PressAndReleaseAsync(InputBinding binding, int holdMilliseconds, Func<bool> canContinue)
+    {
+        if (holdMilliseconds is < 10 or > 30000) throw new ArgumentOutOfRangeException(nameof(holdMilliseconds));
+        var (press, release) = CreateEvents(binding, key => InputNativeMethods.MapVirtualKey(key, 4),
+            key => (InputNativeMethods.GetAsyncKeyState(key) & 0x8000) != 0);
+        return SendTapAsync(press, release, SendEvents, async milliseconds =>
+        {
+            var elapsed = Stopwatch.StartNew();
+            while (true)
+            {
+                var remaining = milliseconds - elapsed.ElapsedMilliseconds;
+                if (remaining <= 0) break;
+                if (!canContinue())
+                    throw new InvalidOperationException("Ability input released because the test stopped or Destiny 2 lost focus.");
+                await Task.Delay((int)Math.Min(25, remaining)).ConfigureAwait(false);
+            }
+        }, holdMilliseconds);
+    }
+
+    internal static async Task SendTapAsync(InputEvent[] press, InputEvent[] release,
+        Action<InputEvent[]> send, Func<int, Task> delay, int holdMilliseconds = 120)
+    {
+        try
+        {
+            send(press);
+            // Games may poll held state once per frame instead of consuming every queued edge.
+            if (release.Length > 0) await delay(holdMilliseconds).ConfigureAwait(false);
+        }
+        finally
+        {
+            // Also release after a partial SendInput failure; never leave injected keys held.
+            if (release.Length > 0) send(release);
+        }
+    }
+
+    internal static (InputEvent[] Press, InputEvent[] Release) CreateEvents(InputBinding binding,
+        Func<uint, uint> mapKey, Func<int, bool> isHeld)
     {
         var inputs = new List<InputEvent>(6);
+        var releases = new List<InputEvent>(6);
+        InputEvent Key(ushort key, bool up)
+        {
+            var scan = mapKey(key);
+            if (scan == 0) throw new ArgumentException("The recorded key has no keyboard scan code. Record another ability-use input.", nameof(binding));
+            return new InputEvent
+            {
+                Type = InputKeyboard,
+                Data = new InputUnion
+                {
+                    Keyboard = new KeyboardInput
+                    {
+                        ScanCode = (ushort)(scan & 0xff),
+                        Flags = KeyScanCode | (up ? KeyUp : 0) | ((scan & 0xff00) == 0xe000 ? KeyExtended : 0)
+                    }
+                }
+            };
+        }
         var modifierKeys = new List<ushort>(4);
         if (binding.Modifiers.HasFlag(InputModifiers.Control)) modifierKeys.Add(0x11);
         if (binding.Modifiers.HasFlag(InputModifiers.Alt)) modifierKeys.Add(0x12);
@@ -441,11 +497,9 @@ internal static class InputBindingSender
         if (binding.Modifiers.HasFlag(InputModifiers.Windows)) modifierKeys.Add(0x5B);
         foreach (var modifier in modifierKeys)
         {
-            inputs.Add(new InputEvent
-            {
-                Type = InputKeyboard,
-                Data = new InputUnion { Keyboard = new KeyboardInput { VirtualKey = modifier } }
-            });
+            if (isHeld(modifier)) continue;
+            inputs.Add(Key(modifier, false));
+            releases.Insert(0, Key(modifier, true));
         }
 
         if (binding.Device == InputDevice.Keyboard)
@@ -455,8 +509,10 @@ internal static class InputBindingSender
                 throw new ArgumentOutOfRangeException(nameof(binding), "The recorded keyboard key is invalid.");
             }
 
-            inputs.Add(new InputEvent { Type = InputKeyboard, Data = new InputUnion { Keyboard = new KeyboardInput { VirtualKey = (ushort)binding.Code } } });
-            inputs.Add(new InputEvent { Type = InputKeyboard, Data = new InputUnion { Keyboard = new KeyboardInput { VirtualKey = (ushort)binding.Code, Flags = KeyUp } } });
+            if (isHeld(binding.Code))
+                throw new InvalidOperationException("The ability-use key is already held. Release it before the next cycle.");
+            inputs.Add(Key((ushort)binding.Code, false));
+            releases.Insert(0, Key((ushort)binding.Code, true));
         }
         else
         {
@@ -476,23 +532,20 @@ internal static class InputBindingSender
             inputs.Add(new InputEvent { Type = InputMouse, Data = new InputUnion { Mouse = new MouseInput { Flags = downFlags, MouseData = mouseData } } });
             if (upFlags != 0)
             {
-                inputs.Add(new InputEvent { Type = InputMouse, Data = new InputUnion { Mouse = new MouseInput { Flags = upFlags, MouseData = mouseData } } });
+                releases.Insert(0, new InputEvent { Type = InputMouse, Data = new InputUnion { Mouse = new MouseInput { Flags = upFlags, MouseData = mouseData } } });
             }
         }
 
-        for (var index = modifierKeys.Count - 1; index >= 0; index--)
-        {
-            inputs.Add(new InputEvent
-            {
-                Type = InputKeyboard,
-                Data = new InputUnion { Keyboard = new KeyboardInput { VirtualKey = modifierKeys[index], Flags = KeyUp } }
-            });
-        }
+        return ([.. inputs], [.. releases]);
+    }
 
-        var sent = InputNativeMethods.SendInput((uint)inputs.Count, [.. inputs], Marshal.SizeOf<InputEvent>());
-        if (sent != inputs.Count)
+    private static void SendEvents(InputEvent[] inputs)
+    {
+        var sent = InputNativeMethods.SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<InputEvent>());
+        if (sent != inputs.Length)
         {
-            throw new InvalidOperationException($"Windows could not send the ability input (error {Marshal.GetLastWin32Error()}).");
+            throw new InvalidOperationException($"Windows accepted {sent}/{inputs.Length} ability-input events (error {Marshal.GetLastWin32Error()}). " +
+                "If Destiny 2 runs as administrator, run the tracker at the same privilege level.");
         }
     }
 
@@ -537,6 +590,12 @@ internal static class InputBindingSender
 
 internal static class InputNativeMethods
 {
+    [DllImport("user32.dll")]
+    internal static extern uint MapVirtualKey(uint code, uint mapType);
+
+    [DllImport("user32.dll")]
+    internal static extern short GetAsyncKeyState(int virtualKey);
+
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     internal static extern IntPtr GetModuleHandle(string? moduleName);
 
