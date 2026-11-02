@@ -102,6 +102,34 @@ jobs:
           name: windows-x64
           path: ${{ runner.temp }}\release
 
+      - name: Check out changelog
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Prepare release notes from changelog
+        shell: pwsh
+        run: |
+          $previousTag = git tag --list 'v*' |
+            Where-Object { $_ -match '^v\d+\.\d+\.\d+$' } |
+            Sort-Object { [version]$_.Substring(1) } -Descending |
+            Select-Object -First 1
+          if (-not $previousTag) {
+            throw 'Cannot prepare release notes because no previous semantic version tag exists.'
+          }
+
+          $changes = @(git diff --no-ext-diff --unified=0 "$previousTag..$env:GITHUB_SHA" -- CHANGELOG.md)
+          if ($LASTEXITCODE -ne 0) { throw 'Could not compare the changelog with the previous release.' }
+          $notes = @($changes |
+            Where-Object { $_ -match '^\+-\s+\S' } |
+            ForEach-Object { $_.Substring(1) })
+          if ($notes.Count -gt 0) {
+            $body = "## Changes`n`n" + ($notes -join "`n")
+          } else {
+            $body = 'No user-facing changes in this release.'
+          }
+          Set-Content -LiteralPath "$env:RUNNER_TEMP\release-notes.md" -Value $body -Encoding utf8
+
       - name: Create release
         shell: pwsh
         env:
@@ -110,4 +138,4 @@ jobs:
           RELEASE_VERSION: ${{ needs.build.outputs.version }}
         run: |
           $tag = "v$env:RELEASE_VERSION"
-          gh release create $tag "$env:RUNNER_TEMP\release\D2AbilityTracker-v$env:RELEASE_VERSION-Setup.exe" --target $env:GITHUB_SHA --title "Destiny 2 Ability Recharge Tracker $tag" --generate-notes --latest
+          gh release create $tag "$env:RUNNER_TEMP\release\D2AbilityTracker-v$env:RELEASE_VERSION-Setup.exe" --target $env:GITHUB_SHA --title "Destiny 2 Ability Recharge Tracker $tag" --notes-file "$env:RUNNER_TEMP\release-notes.md" --latest

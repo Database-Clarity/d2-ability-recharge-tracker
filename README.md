@@ -70,4 +70,6 @@ GitHub Actions checks formatting, runs the automated checks, and packages a fram
 
 Releases use semantic version tags such as `v0.1.0`; installer filenames include that same version, such as `D2AbilityTracker-v0.1.0-Setup.exe`, and the executable's version metadata matches. Each successful `main` update automatically increments the patch version beyond existing releases in the current major/minor series. Set `VersionPrefix` in `D2AbilityTracker.csproj` to start a new minor or major series when changes warrant it; the initial series is `0.1.0` while live-game behavior is still being refined. Release runs on the same branch are serialized to avoid version collisions. Older bundled-runtime releases remain available.
 
+For notable user-facing changes, add a concise, single-line bullet to `CHANGELOG.md` in the same commit. Releases include only bullets added since the previous release tag; remove an entry if its change is reverted before release. Releases without user-facing changes say so instead of listing commits.
+
 Pull requests produce downloadable workflow artifacts but never releases. You can also run **Build and release** manually from the Actions tab; only runs on `main` publish a release. Repository Actions must be enabled.
