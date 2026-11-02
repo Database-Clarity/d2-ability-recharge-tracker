@@ -32,6 +32,11 @@ if (args.Length == 2 && args[0] == "--ui-smoke")
                         "The integrated title bar must retain native window dragging.");
                     var navigation = Descendants(form).Single(control => control.Name == "PageNavigation");
                     var pages = Descendants(form).Single(control => control.Name == "Pages");
+                    var updateButton = Descendants(form).OfType<Button>().Single(button => button.Name == "CheckForUpdates");
+                    Assert(updateButton.Parent == navigation.Parent && updateButton.Parent is { Name: "MainNavigation" },
+                        "Update checks must sit alongside the page navigation, outside the Settings page.");
+                    Assert(pages.Top <= 80 * form.DeviceDpi / 96f,
+                        "The shared header and navigation should occupy no more than 80 logical pixels.");
                     Assert(navigation.Controls.Count == 3, "The utility should have Tracking, Repeat test, and Settings pages.");
                     Assert(!Descendants(form).OfType<LinkLabel>().Any(link => link.Visible),
                         "A new app launch must not show a previous recording path.");
@@ -40,6 +45,9 @@ if (args.Length == 2 && args[0] == "--ui-smoke")
                     {
                         link.PerformClick();
                         form.PerformLayout();
+                        Assert(updateButton.Visible && form.ClientRectangle.Contains(form.RectangleToClient(
+                            updateButton.RectangleToScreen(updateButton.ClientRectangle))),
+                            "The update action must remain visible and inside the window on every page.");
                         var page = pages.Controls.Cast<Control>().Single(control => control.Visible);
                         if (link.Text == "Tracking")
                         {
@@ -355,6 +363,25 @@ if (args.Length == 2 && args[0] == "--ui-smoke")
                     Descendants(fullPicker).OfType<Button>().Single(button => button.Text == "Use all three").PerformClick();
                     Assert(fullPicker.SelectedRegions.SequenceEqual(fullRegions),
                         "Zoom must preserve original full-frame selection coordinates.");
+                    var pendingCheck = new TaskCompletionSource<UpdateRelease?>();
+                    var startupCheck = form.CheckForUpdateAsync(interactive: false, _ => pendingCheck.Task);
+                    Assert(!updateButton.Enabled && updateButton.Text == "Checking…",
+                        "Startup update checks must visibly report their pending state.");
+                    pendingCheck.SetResult(new UpdateRelease(new Version(0, 1, 99), "v0.1.99", "setup.exe",
+                        new Uri("https://github.com/example/setup.exe"), 1, null,
+                        new Uri("https://github.com/example/releases")));
+                    startupCheck.GetAwaiter().GetResult();
+                    Assert(updateButton.Visible && updateButton.Enabled && updateButton.Text == "Update to v0.1.99…" &&
+                        updateButton.ForeColor == TrackerTheme.Accent,
+                        "A background update discovery must highlight the globally visible update action.");
+                    form.CheckForUpdateAsync(interactive: false,
+                        _ => Task.FromException<UpdateRelease?>(new HttpRequestException("Test network failure"))).GetAwaiter().GetResult();
+                    Assert(updateButton.Enabled && updateButton.Text == "Retry update check" &&
+                        updateButton.ForeColor == TrackerTheme.Orange,
+                        "Background update failures must not silently look like success or retain a stale available update.");
+                    form.CheckForUpdateAsync(interactive: false, _ => Task.FromResult<UpdateRelease?>(null)).GetAwaiter().GetResult();
+                    Assert(updateButton.Text == "Check for updates" && updateButton.ForeColor == TrackerTheme.Text,
+                        "A successful retry with no newer release must clear the error indicator.");
                 }
                 catch (Exception exception)
                 {

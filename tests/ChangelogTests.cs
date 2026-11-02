@@ -23,6 +23,17 @@ internal static class ChangelogTests
         var offeredUpdate = UpdateChecker.ParseLatestRelease(latestRelease, new Version(2, 1, 0));
         Assert(offeredUpdate?.Version == new Version(2, 4, 0),
             "An update check should offer the latest release directly instead of an intermediate release.");
+        var mixedAssets = latestRelease.Replace("v2.4.0", "v0.1.30", StringComparison.Ordinal)
+            .Replace("\"assets\": [{", """
+                "assets": [{
+                  "name": "D2AbilityTracker-v0.1.30-Portable-win-x64.zip",
+                  "browser_download_url": "https://github.com/example/portable.zip",
+                  "size": 1
+                }, {
+                """, StringComparison.Ordinal);
+        Assert(UpdateChecker.ParseLatestRelease(mixedAssets, new Version(0, 1, 27)) is
+        { Version: { Major: 0, Minor: 1, Build: 30 }, AssetName: "D2AbilityTracker-v0.1.30-Setup.exe" },
+            "The v0.1.27 updater must discover a later installer even when a portable ZIP is listed first.");
         CheckFreshUpdateClicksAsync(latestRelease).GetAwaiter().GetResult();
 
         const string releases = """

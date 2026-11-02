@@ -132,6 +132,8 @@ jobs:
 
       - name: Prepare release notes from changelog
         shell: pwsh
+        env:
+          RELEASE_VERSION: ${{ needs.build.outputs.version }}
         run: |
           $previousTag = git tag --list 'v*' |
             Where-Object { $_ -match '^v\d+\.\d+\.\d+$' } |
@@ -151,6 +153,10 @@ jobs:
           } else {
             $body = 'No user-facing changes in this release.'
           }
+          $commits = @(git log --reverse --format="- [%h](https://github.com/$env:GITHUB_REPOSITORY/commit/%H) %s" "$previousTag..$env:GITHUB_SHA")
+          if ($LASTEXITCODE -ne 0) { throw 'Could not read the commit history for this release.' }
+          $body += "`n`n## Commit history`n`n" + ($commits -join "`n")
+          $body += "`n`n[Full comparison](https://github.com/$env:GITHUB_REPOSITORY/compare/$previousTag...v$env:RELEASE_VERSION)"
           Set-Content -LiteralPath "$env:RUNNER_TEMP\release-notes.md" -Value $body -Encoding utf8
 
       - name: Create release

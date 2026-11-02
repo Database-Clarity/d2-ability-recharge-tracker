@@ -121,15 +121,15 @@ internal sealed partial class MainForm : AppWindow
         SetMonitoring(true);
         Shown += async (_, _) =>
         {
+            var updateCheck = UpdateChecker.IsReleaseBuild && _settings.CheckForUpdatesOnStartup
+                ? CheckForUpdateAsync(interactive: false)
+                : Task.FromResult<UpdateRelease?>(null);
             if (_startupChangelogPending)
             {
                 await OpenChangelogAsync(startup: true);
             }
 
-            if (!_storagePaths.IsPortable && UpdateChecker.IsReleaseBuild && _settings.CheckForUpdatesOnStartup)
-            {
-                await CheckForUpdateAsync(interactive: false);
-            }
+            await updateCheck;
         };
         FormClosing += async (_, args) =>
         {
@@ -293,19 +293,10 @@ internal sealed partial class MainForm : AppWindow
         _toolTip.BackColor = TrackerTheme.Surface;
         _toolTip.ForeColor = TrackerTheme.Text;
 
-        var header = Grid(214, 176, 120, GridWidth - 510);
-        _updateButton.Text = _storagePaths.IsPortable ? "Get updates" : "Check for updates";
-        _updateButton.Click += (_, _) =>
-        {
-            if (_storagePaths.IsPortable)
-            {
-                OpenPortableReleasePage();
-            }
-            else
-            {
-                CheckOrInstallUpdate();
-            }
-        };
+        var header = Grid(214, 226, 200);
+        _updateButton.Name = "CheckForUpdates";
+        _updateButton.Text = "Check for updates";
+        _updateButton.Click += (_, _) => CheckOrInstallUpdate();
         _changelogButton.Text = "Changelog";
         _changelogButton.Click += async (_, _) => await OpenChangelogAsync(startup: false);
 
@@ -581,7 +572,7 @@ internal sealed partial class MainForm : AppWindow
             AutoSize = true,
             AutoSizeMode = AutoSizeMode.GrowAndShrink,
             ColumnCount = 1,
-            Padding = new Padding(12, 8, 12, 8),
+            Padding = new Padding(12, 4, 12, 8),
             Location = Point.Empty,
             Margin = Padding.Empty
         };
@@ -589,23 +580,26 @@ internal sealed partial class MainForm : AppWindow
         Place(header, _overlayToggleButton, 1, 0);
         var historyView = CreateHistoryView();
         Place(header, _historyButton, 2, 0);
-        Place(header, _stateStatus, 0, 1, 4);
-        header.Margin = new Padding(0, 0, 0, 6);
+        header.Margin = new Padding(0, 0, 0, 2);
         var navigation = new FlowLayoutPanel
         {
             Name = "PageNavigation",
-            Width = GridWidth,
-            Height = 34,
+            Dock = DockStyle.Fill,
+            Height = TrackerTheme.ControlHeight,
             WrapContents = false,
             Margin = Padding.Empty,
             Padding = Padding.Empty
         };
+        var navigationRow = Grid(GridWidth - 180, 180);
+        navigationRow.Name = "MainNavigation";
+        navigationRow.Controls.Add(navigation, 0, 0);
+        Place(navigationRow, _updateButton, 1, 0);
         var pages = new Panel
         {
             Name = "Pages",
             Width = GridWidth,
             Height = 340,
-            Margin = new Padding(0, 6, 0, 0)
+            Margin = new Padding(0, 2, 0, 0)
         };
         TableLayoutPanel? selectedPage = null;
         var pageLinks = new List<(NavigationButton Button, TableLayoutPanel Page)>();
@@ -646,13 +640,15 @@ internal sealed partial class MainForm : AppWindow
         captureSection.Anchor = AnchorStyles.Top | AnchorStyles.Left;
         overlaySection.Anchor = AnchorStyles.Top | AnchorStyles.Left;
         settingsPage.Controls.Add(settingsColumns);
-        var updateRow = Grid(172, 120, GridWidth - 292);
-        Place(updateRow, _updateButton, 0, 0);
-        Place(updateRow, _changelogButton, 1, 0);
+        var updateRow = Grid(120, GridWidth - 120);
+        Place(updateRow, _changelogButton, 0, 0);
         settingsPage.Controls.Add(Section("Application", updateRow));
         root.Controls.Add(header);
-        root.Controls.Add(navigation);
+        root.Controls.Add(navigationRow);
         root.Controls.Add(pages);
+        _stateStatus.Width = GridWidth - 6;
+        _stateStatus.Margin = new Padding(3, 2, 3, 0);
+        root.Controls.Add(_stateStatus);
         root.Controls.Add(historyView);
         AutoSize = false;
         var viewport = new Panel { Dock = DockStyle.Fill, AutoScroll = true };
@@ -1511,7 +1507,12 @@ internal sealed partial class MainForm : AppWindow
 
         await CheckAndOfferUpdateAsync(
             () => CheckForUpdateAsync(interactive: true),
-            InstallUpdateAsync);
+            release =>
+            {
+                if (!_storagePaths.IsPortable) return InstallUpdateAsync(release);
+                OpenPortableReleasePage();
+                return Task.CompletedTask;
+            });
     }
 
     private void OpenPortableReleasePage()
@@ -1540,16 +1541,19 @@ internal sealed partial class MainForm : AppWindow
         }
     }
 
-    private async Task<UpdateRelease?> CheckForUpdateAsync(bool interactive)
+    internal async Task<UpdateRelease?> CheckForUpdateAsync(bool interactive,
+        Func<CancellationToken, Task<UpdateRelease?>>? checkForUpdate = null)
     {
         _updateBusy = true;
         _availableUpdate = null;
         _updateButton.Enabled = false;
         _updateButton.Text = "Checking…";
+        _toolTip.SetToolTip(_updateButton, "Checking GitHub for the latest release.");
+        string? checkError = null;
         try
         {
             using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
-            _availableUpdate = await UpdateChecker.CheckAsync(timeout.Token);
+            _availableUpdate = await (checkForUpdate ?? UpdateChecker.CheckAsync)(timeout.Token);
             if (_availableUpdate is null && interactive)
             {
                 MessageBox.Show(this, $"You're on the latest version (v{UpdateChecker.CurrentVersion.ToString(3)}).", Text,
@@ -1558,6 +1562,7 @@ internal sealed partial class MainForm : AppWindow
         }
         catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException or System.Text.Json.JsonException)
         {
+            checkError = exception.Message;
             if (interactive)
             {
                 MessageBox.Show(this, $"Couldn't check for updates: {exception.Message}", Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
@@ -1569,7 +1574,15 @@ internal sealed partial class MainForm : AppWindow
             if (!IsDisposed)
             {
                 _updateButton.Enabled = true;
-                _updateButton.Text = _availableUpdate is { } release ? $"Update to {release.Tag}…" : "Check for updates";
+                _updateButton.Text = checkError is not null ? "Retry update check" :
+                    _availableUpdate is { } release ? $"Update to {release.Tag}…" : "Check for updates";
+                _toolTip.SetToolTip(_updateButton, checkError is not null ? $"Couldn't check for updates: {checkError}" :
+                    _availableUpdate is { } update ? _storagePaths.IsPortable
+                        ? $"{update.Tag} is available. Download its portable ZIP and replace the executable; keep your data files."
+                        : $"{update.Tag} is available. Click to download and install it."
+                    : $"You're on the latest version (v{UpdateChecker.CurrentVersion.ToString(3)}).");
+                _updateButton.ForeColor = checkError is not null ? TrackerTheme.Orange :
+                    _availableUpdate is not null ? TrackerTheme.Accent : TrackerTheme.Text;
                 _updateButton.Font = _availableUpdate is null ? Font : new Font(Font, FontStyle.Bold);
             }
         }
