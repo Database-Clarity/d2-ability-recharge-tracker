@@ -351,7 +351,17 @@ internal sealed partial class MainForm : AppWindow
             _toolTip.SetToolTip(soloToggle, "Track only this ability (captures one slot for best performance). Click again to track all.");
             soloToggle.Click += (_, _) => ToggleSolo(kind);
             Place(abilities, name, 0, row, stretch: false);
-            Place(abilities, statusLabel, 1, row);
+            var resultPanel = new Panel { Height = 40, Margin = Padding.Empty };
+            statusLabel.Dock = DockStyle.Fill;
+            var copyResult = new CopyResultButton($"Copy {KindName(kind)} result", () => $"{KindName(kind)}: {statusLabel.Text}")
+            {
+                Dock = DockStyle.Right,
+                Width = 30
+            };
+            _toolTip.SetToolTip(copyResult, $"Copy {KindName(kind)} measurement and regression");
+            resultPanel.Controls.Add(statusLabel);
+            resultPanel.Controls.Add(copyResult);
+            Place(abilities, resultPanel, 1, row);
             regionLabel.AutoSize = false;
             regionLabel.Height = regionLabel.PreferredHeight;
             regionLabel.TextAlign = ContentAlignment.MiddleRight;
@@ -420,7 +430,7 @@ internal sealed partial class MainForm : AppWindow
         _testStatus.AutoSize = false;
         _testStatus.AutoEllipsis = true;
         _testStatus.ForeColor = TrackerTheme.Muted;
-        _testStatus.Height = 44;
+        _testStatus.Height = 64;
         Place(test, GridLabel("Ability"), 0, 0);
         Place(test, _testAbilityPicker, 1, 0);
         Place(test, GridLabel("Recharge cycles"), 2, 0);
@@ -433,7 +443,19 @@ internal sealed partial class MainForm : AppWindow
         Place(test, _repeatTestBindingButton, 1, 2);
         Place(test, _startTestButton, 2, 2);
         Place(test, _stopTestButton, 3, 2);
-        Place(test, _testStatus, 0, 3, 4);
+        var testResult = new Panel { Height = 64 };
+        _testStatus.Dock = DockStyle.Fill;
+        var copyTest = new CopyResultButton("Copy repeat-test result", () => $"{KindName(_repeatTest.Ability ?? _settings.TestAbility)}: {_testStatus.Text}")
+        {
+            Dock = DockStyle.Top,
+            Height = 30
+        };
+        _toolTip.SetToolTip(copyTest, "Copy repeat-test mean, uncertainty and regression");
+        var copyTestPanel = new Panel { Dock = DockStyle.Right, Width = 30 };
+        copyTestPanel.Controls.Add(copyTest);
+        testResult.Controls.Add(_testStatus);
+        testResult.Controls.Add(copyTestPanel);
+        Place(test, testResult, 0, 3, 4);
         foreach (var control in new Control[] { _testAbilityPicker, _abilityUseBindingButton, _repeatTestBindingButton })
         {
             control.Margin = new Padding(3, 3, 29, 3);

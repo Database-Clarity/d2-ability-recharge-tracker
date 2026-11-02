@@ -51,6 +51,9 @@ if (args.Length == 2 && args[0] == "--ui-smoke")
                                 "Tracking should expose one capture-folder action even before recording.");
                             Assert(Descendants(page).OfType<TwoLineStatusLabel>().Count() == 3,
                                 "Every ability should use the fixed two-line status renderer.");
+                            Assert(Descendants(page).OfType<CopyResultButton>().Count() == 3 &&
+                                Descendants(page).OfType<CopyResultButton>().All(button => !string.IsNullOrWhiteSpace(button.ResultText)),
+                                "Each tracking result must have an accessible copy action with complete text.");
                             Assert(Descendants(form).OfType<Button>().Any(button => button.Text.Contains("Pause detection (")),
                                 "The pause action should display its hotkey.");
                             const string longRecording = @"C:\Users\Somebody\Documents\D2AbilityTracker\HUD recordings\A very long directory for this measurement session\Another long directory\latest-hud-recording-2026-11-02.zip";
@@ -81,6 +84,12 @@ if (args.Length == 2 && args[0] == "--ui-smoke")
                             }
                             Assert(number.Parent is InputFrame frame && frame.Height == 30 * form.DeviceDpi / 96f,
                                 "Numeric frames must match the common control height.");
+                            number.Enabled = false;
+                            var edit = number.Controls.OfType<TextBox>().Single();
+                            using var disabledNumber = new Bitmap(edit.Width, edit.Height);
+                            edit.DrawToBitmap(disabledNumber, edit.ClientRectangle);
+                            Assert(HasReadableText(disabledNumber), "Disabled numeric values must remain readable on dark inputs.");
+                            number.Enabled = true;
                         }
                         Assert(form.ClientSize.Height <= 500 * form.DeviceDpi / 96f,
                             "Each page should fit a compact desktop window.");
@@ -95,7 +104,51 @@ if (args.Length == 2 && args[0] == "--ui-smoke")
                         image.Save(Path.Combine(args[1], $"ui-{link.Text.Replace(' ', '-')}.png"));
                     }
 
+                    foreach (var button in Descendants(form).OfType<Button>().Where(button => !button.Enabled && !string.IsNullOrWhiteSpace(button.Text)))
+                    {
+                        using var disabled = new Bitmap(button.Width, button.Height);
+                        button.DrawToBitmap(disabled, button.ClientRectangle);
+                        Assert(HasReadableText(disabled), "Disabled button text must not fall back to black on dark gray.");
+                    }
+                    var repeat = (RepeatTestSession)typeof(MainForm).GetField("_repeatTest",
+                        System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(form)!;
+                    var now = DateTime.UtcNow;
+                    repeat.Start(AbilityKind.Grenade, 3, TimeSpan.Zero, new InputBinding(InputDevice.Keyboard, 0x47, InputModifiers.None));
+                    for (var index = 0; index < 3; index++)
+                    {
+                        var entry = new MeasurementHistoryEntry(Guid.NewGuid(), AbilityKind.Grenade, TimeSpan.FromSeconds(64.23 + index * 0.02).TotalSeconds,
+                            64.20 + index * 0.02, 0.02, 0.16, MeasurementSource.Event, now, null, null, RepeatTestId: repeat.RunId);
+                        repeat.ObserveState(AbilityKind.Grenade, AbilityState.Recharging, now);
+                        repeat.RecordRecharge(AbilityKind.Grenade, TimeSpan.FromSeconds(entry.DurationSeconds), now,
+                            TimeSpan.FromSeconds(entry.RegressionSeconds!.Value), entry);
+                        if (index < 2) Assert(repeat.TryGetDueUse(now, true, out _), "Sample repeat must advance without sending input.");
+                    }
+                    navigation.Controls.OfType<Button>().Single(button => button.Text == "Repeat test").PerformClick();
+                    typeof(MainForm).GetMethod("UpdateStatus", System.Reflection.BindingFlags.Instance |
+                        System.Reflection.BindingFlags.NonPublic)!.Invoke(form, null);
+                    var repeatCopy = Descendants(form).OfType<CopyResultButton>().Single(button => button.AccessibleName == "Copy repeat-test result");
+                    Assert(repeatCopy.ResultText.Contains("± 0.023 s") && repeatCopy.ResultText.Contains("\nRegression") &&
+                        repeatCopy.ResultText.Contains("± 0.160 s") && repeatCopy.ResultText.Contains("3/3 cycles"),
+                        $"Standalone repeat results and their copy action must include both aggregates and uncertainties: {repeatCopy.ResultText}");
+                    using (var completed = new Bitmap(form.Width, form.Height))
+                    {
+                        form.DrawToBitmap(completed, new Rectangle(Point.Empty, completed.Size));
+                        completed.Save(Path.Combine(args[1], "ui-Repeat-completed.png"));
+                    }
+                    using (var overlay = new OverlayWindow())
+                    {
+                        overlay.SetContent("Result", [new OverlayRow("Grenade", "64.25 ± 0.023 s", "Regression 64.22 ± 0.160 s")], true, TrackerTheme.Accent);
+                        overlay.Show();
+                        Assert(!Descendants(overlay).OfType<CopyResultButton>().Any(button => button.Visible),
+                            "Normal overlay must retain noninteractive click-through presentation.");
+                        overlay.SetMoveMode(true);
+                        Assert(Descendants(overlay).OfType<CopyResultButton>().Single().ResultText.Contains("± 0.160 s"),
+                            "Overlay move mode must expose a copy action for the complete result.");
+                        overlay.SetMoveMode(false);
+                        overlay.Close();
+                    }
                     var smokeHistory = new MeasurementHistoryStore(Path.Combine(args[1], "smoke-history.json"));
+                    smokeHistory.AddCustomColumn("Grenade Stat");
                     smokeHistory.CreateSession("Grenade stat testing", DateTimeOffset.UtcNow);
                     smokeHistory.TryAddMeasurement(new MeasurementHistoryEntry(
                         Guid.NewGuid(), AbilityKind.Grenade, 64.25, 64.22, 0.02, 0.16,
@@ -109,6 +162,7 @@ if (args.Length == 2 && args[0] == "--ui-smoke")
                     var sampleMean = RepeatMeasurementSummary.Create(sampleRun, sampleCycles, DateTime.UtcNow.AddSeconds(4));
                     smokeHistory.TryAddMeasurement(sampleMean);
                     smokeHistory.SaveNote(sampleMean.Id, "Grenade stat 5 · repeat test");
+                    smokeHistory.SaveCustomValue(sampleMean.Id, "Grenade Stat", "5");
                     using var historyForm = new MeasurementHistoryForm(smokeHistory);
                     historyForm.Show(form);
                     historyForm.PerformLayout();
@@ -136,6 +190,17 @@ if (args.Length == 2 && args[0] == "--ui-smoke")
                     Assert(sessionActions.Controls.Cast<Control>().Select(control => control.Height).Distinct().Count() == 1,
                         "Session name field and its action buttons must have the same height.");
                     var historyGrid = Descendants(historyForm).OfType<DataGridView>().Single();
+                    var customColumn = historyGrid.Columns.Cast<DataGridViewColumn>().Single(column => column.HeaderText == "Grenade Stat");
+                    Assert(!customColumn.ReadOnly && historyGrid.Columns["Measured"]!.ReadOnly &&
+                        historyForm.ExportVisibleCsv().Contains("\"Grenade Stat\""),
+                        "Custom columns must be editable while measured values stay protected and exports include metadata.");
+                    var meanRow = historyGrid.Rows.Cast<DataGridViewRow>().Single(row => row.Tag is Guid id && id == sampleMean.Id);
+                    historyGrid.CurrentCell = meanRow.Cells[customColumn.Index];
+                    Assert(historyGrid.BeginEdit(false), "A custom value must support inline editing.");
+                    ((TextBox)historyGrid.EditingControl!).Text = "10";
+                    historyGrid.EndEdit();
+                    Assert(smokeHistory.Measurements.Single(item => item.Id == sampleMean.Id).CustomValues!["Grenade Stat"] == "10",
+                        "Editing a custom cell must persist its value.");
                     Assert(historyGrid.Rows.Cast<DataGridViewRow>().Any(row => row.Cells["Result"].Value?.ToString() == "Mean · 3" &&
                         row.Cells["Measured"].Value?.ToString()?.Contains("± 0.023 s") == true),
                         "History must display repeat count and aggregate uncertainty alongside individual cycles.");
@@ -1206,6 +1271,18 @@ static IEnumerable<Control> Descendants(Control parent)
             yield return descendant;
         }
     }
+}
+
+static bool HasReadableText(Bitmap image)
+{
+    var pixels = 0;
+    for (var y = 2; y < image.Height - 2; y++)
+        for (var x = 2; x < image.Width - 2; x++)
+        {
+            var color = image.GetPixel(x, y);
+            if (color.R >= 120 && color.G >= 120 && color.B >= 120) pixels++;
+        }
+    return pixels >= 5;
 }
 
 static void Assert(bool condition, string message)

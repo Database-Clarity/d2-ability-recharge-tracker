@@ -58,6 +58,7 @@ internal sealed class OverlayWindow : Form
     private Point? _customLocation;
     private bool _moveMode;
     private Rectangle _doneBounds;
+    private readonly List<CopyResultButton> _copyButtons = [];
 
     private Font _titleFont = null!;
     private Font _labelFont = null!;
@@ -169,6 +170,7 @@ internal sealed class OverlayWindow : Form
         }
 
         Opacity = enabled ? MoveOpacity : NormalOpacity;
+        UpdateCopyButtons();
         if (!enabled)
         {
             if (ClampToScreens(Location) is { } clamped)
@@ -243,6 +245,35 @@ internal sealed class OverlayWindow : Form
         {
             Size = size;
             UpdateRegion();
+        }
+        UpdateCopyButtons();
+    }
+
+    private void UpdateCopyButtons()
+    {
+        while (_copyButtons.Count > _rows.Count)
+        {
+            _copyButtons[^1].Dispose();
+            _copyButtons.RemoveAt(_copyButtons.Count - 1);
+        }
+        while (_copyButtons.Count < _rows.Count)
+        {
+            var index = _copyButtons.Count;
+            var button = new CopyResultButton("Copy overlay result", () => $"{_rows[index].Label}: {_rows[index].Line1}\n{_rows[index].Line2}")
+            {
+                BackColor = Background,
+                ForeColor = PrimaryTextColor
+            };
+            _copyButtons.Add(button);
+            Controls.Add(button);
+        }
+        for (var index = 0; index < _copyButtons.Count; index++)
+        {
+            var button = _copyButtons[index];
+            button.Visible = _moveMode;
+            button.AccessibleName = $"Copy {_rows[index].Label} overlay result";
+            button.SetBounds(Width - Scale(PaddingX + 24),
+                Scale(HeaderHeight + index * (Line1Height + (_twoLines ? Line2Height : 0) + RowGap)), Scale(24), Scale(Line1Height));
         }
     }
 
@@ -320,7 +351,7 @@ internal sealed class OverlayWindow : Form
             {
                 case WmNcHitTest:
                     var point = PointToClient(new Point(unchecked((short)(long)m.LParam), unchecked((short)((long)m.LParam >> 16))));
-                    m.Result = _doneBounds.Contains(point) ? HtClient : HtCaption;
+                    m.Result = _doneBounds.Contains(point) || GetChildAtPoint(point) is CopyResultButton ? HtClient : HtCaption;
                     return;
                 case WmSetCursor when ((int)(long)m.LParam & 0xFFFF) == HtCaption:
                     Cursor.Current = Cursors.SizeAll;
@@ -446,7 +477,7 @@ internal sealed class OverlayWindow : Form
             .Append("Grenade")
             .Max(label => TextRenderer.MeasureText(graphics, label, _labelFont, Size.Empty, TextFormatFlags.NoPadding | TextFormatFlags.NoPrefix).Width);
         var valueX = labelX + labelWidth + Scale(ColumnGap);
-        var valueWidth = Width - padX - valueX;
+        var valueWidth = Width - padX - valueX - (_moveMode ? Scale(28) : 0);
         var line1Height = Scale(Line1Height);
         var line2Height = Scale(Line2Height);
         var y = Scale(HeaderHeight);

@@ -34,6 +34,16 @@ internal static class TrackerTheme
                     button.BackColor = Surface;
                     button.UseVisualStyleBackColor = false;
                     button.Cursor = Cursors.Hand;
+                    button.Paint += (_, args) =>
+                    {
+                        if (button.Enabled || button is CopyResultButton) return;
+                        using var background = new SolidBrush(Surface);
+                        args.Graphics.FillRectangle(background, button.ClientRectangle);
+                        using var outline = new Pen(Border);
+                        args.Graphics.DrawRectangle(outline, 0, 0, button.Width - 1, button.Height - 1);
+                        TextRenderer.DrawText(args.Graphics, button.Text, button.Font, button.ClientRectangle, Muted,
+                            TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine);
+                    };
                     break;
                 case CheckBox toggle when toggle.Appearance == Appearance.Button:
                     toggle.Height = ControlHeight;

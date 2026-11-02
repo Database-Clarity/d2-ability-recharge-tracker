@@ -124,6 +124,35 @@ internal static class MeasurementHistoryTests
             var oneSummary = RepeatMeasurementSummary.Create(oneRun, [oneCycle], summary.MeasuredAt.UtcDateTime);
             Assert(restored.TryAddMeasurement(oneCycle) && restored.TryAddMeasurement(oneSummary),
                 "A one-cycle repeat mean and its individual cycle must both be retained even with identical values and timestamps.");
+            restored.AddCustomColumn("Grenade Stat");
+            restored.AddCustomColumn("Loadout, notes");
+            restored.SaveCustomValue(summary.Id, "Grenade Stat", "5");
+            restored.SaveCustomValue(summary.Id, "Loadout, notes", "=1+1\n\"test\"");
+            var customRestored = new MeasurementHistoryStore(path);
+            Assert(customRestored.CustomColumns.SequenceEqual(new[] { "Grenade Stat", "Loadout, notes" }) &&
+                customRestored.Measurements.Single(item => item.Id == run).CustomValues!["Grenade Stat"] == "5",
+                "Named columns and per-result values must persist independently of notes.");
+            var duplicateRejected = false;
+            try { customRestored.AddCustomColumn("grenade stat"); }
+            catch (ArgumentException) { duplicateRejected = true; }
+            Assert(duplicateRejected, "Custom column names must be unique without case ambiguity.");
+            var snapshot = customRestored.Measurements.Single(item => item.Id == run);
+            snapshot.CustomValues!["Grenade Stat"] = "999";
+            Assert(customRestored.Measurements.Single(item => item.Id == run).CustomValues!["Grenade Stat"] == "5",
+                "Editing a snapshot must not mutate persisted history.");
+            var csv = MeasurementCsv.Create(customRestored.Measurements.Where(item => item.Id == run),
+                customRestored.Sessions, customRestored.CustomColumns);
+            Assert(csv.Contains("\"Grenade Stat\",\"Loadout, notes\"") && csv.Contains("\"5\",\"'=1+1\n\"\"test\"\"\"") &&
+                csv.Contains("\"Mean\"") && csv.Contains("\"2\",\"1\"") && csv.Contains("\"Repeated at grenade stat 5\""),
+                "CSV must include custom columns, repeat counts, notes and safely quoted formula-like values.");
+            var culture = System.Globalization.CultureInfo.CurrentCulture;
+            try
+            {
+                System.Globalization.CultureInfo.CurrentCulture = System.Globalization.CultureInfo.GetCultureInfo("de-DE");
+                Assert(MeasurementCsv.Create([summary], customRestored.Sessions, []).Contains("\"11\",\"1.019803902718557\""),
+                    "CSV numeric values must remain invariant regardless of desktop locale.");
+            }
+            finally { System.Globalization.CultureInfo.CurrentCulture = culture; }
 
             Assert(restored.EndActiveSession(new DateTimeOffset(measuredAt.AddMinutes(2))),
                 "Ending an active session should succeed.");

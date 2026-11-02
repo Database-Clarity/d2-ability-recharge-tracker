@@ -16,7 +16,8 @@ internal sealed record MeasurementHistoryEntry(
     Guid? SessionId,
     int CycleCount = 1,
     int? RegressionCycleCount = null,
-    Guid? RepeatTestId = null);
+    Guid? RepeatTestId = null,
+    Dictionary<string, string>? CustomValues = null);
 
 internal sealed record MeasurementHistorySession(
     Guid Id,
@@ -33,6 +34,7 @@ internal sealed class MeasurementHistoryStore
     private List<MeasurementHistoryEntry> _measurements = [];
     private List<MeasurementHistorySession> _sessions = [];
     private Guid? _activeSessionId;
+    private List<string> _customColumns = [];
 
     public MeasurementHistoryStore(string? path = null)
     {
@@ -50,6 +52,7 @@ internal sealed class MeasurementHistoryStore
             _measurements = document.Measurements;
             _sessions = document.Sessions;
             _activeSessionId = document.ActiveSessionId;
+            _customColumns = document.CustomColumns;
         }
         catch (FileNotFoundException)
         {
@@ -64,6 +67,45 @@ internal sealed class MeasurementHistoryStore
     }
 
     public string? LoadError { get; }
+    public IReadOnlyList<string> CustomColumns
+    {
+        get { lock (_sync) return _customColumns.ToArray(); }
+    }
+
+    public void AddCustomColumn(string name)
+    {
+        name = name.Trim();
+        lock (_sync)
+        {
+            EnsureWritable();
+            if (string.IsNullOrWhiteSpace(name) || name.Length > 80 ||
+                _customColumns.Contains(name, StringComparer.OrdinalIgnoreCase) ||
+                new[] { "Ability", "Result", "Measured", "Measured ±", "Regression", "Regression ±", "Measured at", "Note", "Session",
+                    "Measured seconds", "Measurement uncertainty seconds", "Regression seconds",
+                    "Regression uncertainty seconds", "Cycles", "Regression cycles", "Repeat test ID" }
+                    .Contains(name, StringComparer.OrdinalIgnoreCase))
+                throw new ArgumentException("Choose a unique column name (1–80 characters), different from the built-in columns.", nameof(name));
+            Commit(_sessions, _measurements, _activeSessionId, [.. _customColumns, name]);
+        }
+    }
+
+    public void SaveCustomValue(Guid measurementId, string column, string value)
+    {
+        lock (_sync)
+        {
+            EnsureWritable();
+            if (!_customColumns.Contains(column)) throw new ArgumentException("The custom column does not exist.", nameof(column));
+            var index = _measurements.FindIndex(item => item.Id == measurementId);
+            if (index < 0) throw new ArgumentException("The measurement no longer exists.", nameof(measurementId));
+            var measurements = _measurements.ToList();
+            var values = measurements[index].CustomValues is { } existing
+                ? new Dictionary<string, string>(existing) : [];
+            values[column] = value;
+            measurements[index] = measurements[index] with { CustomValues = values };
+            Commit(_sessions, measurements, _activeSessionId);
+        }
+    }
+
     public bool CanWrite => LoadError is null;
 
     public IReadOnlyList<MeasurementHistoryEntry> Measurements
@@ -72,7 +114,10 @@ internal sealed class MeasurementHistoryStore
         {
             lock (_sync)
             {
-                return _measurements.ToArray();
+                return _measurements.Select(item => item with
+                {
+                    CustomValues = item.CustomValues is { } values ? new Dictionary<string, string>(values) : null
+                }).ToArray();
             }
         }
     }
@@ -123,7 +168,11 @@ internal sealed class MeasurementHistoryStore
                 return false;
             }
 
-            var entry = measurement with { SessionId = sessionId };
+            var entry = measurement with
+            {
+                SessionId = sessionId,
+                CustomValues = measurement.CustomValues is { } values ? new Dictionary<string, string>(values) : null
+            };
             Commit(_sessions, [.. _measurements, entry], _activeSessionId);
             return true;
         }
@@ -293,20 +342,23 @@ internal sealed class MeasurementHistoryStore
     private void Commit(
         List<MeasurementHistorySession> sessions,
         List<MeasurementHistoryEntry> measurements,
-        Guid? activeSessionId)
+        Guid? activeSessionId,
+        List<string>? customColumns = null)
     {
         var document = new MeasurementHistoryDocument
         {
             Version = CurrentVersion,
             Sessions = sessions,
             Measurements = measurements,
-            ActiveSessionId = activeSessionId
+            ActiveSessionId = activeSessionId,
+            CustomColumns = customColumns ?? _customColumns
         };
         Validate(document);
         WriteAtomically(document);
         _sessions = sessions;
         _measurements = measurements;
         _activeSessionId = activeSessionId;
+        _customColumns = document.CustomColumns;
     }
 
     private void WriteAtomically(MeasurementHistoryDocument document)
@@ -331,7 +383,9 @@ internal sealed class MeasurementHistoryStore
 
     private static void Validate(MeasurementHistoryDocument document)
     {
-        if (document.Version != CurrentVersion || document.Sessions is null || document.Measurements is null)
+        if (document.Version != CurrentVersion || document.Sessions is null || document.Measurements is null ||
+            document.CustomColumns is null || document.CustomColumns.Any(name => string.IsNullOrWhiteSpace(name) || name.Length > 80) ||
+            document.CustomColumns.Distinct(StringComparer.OrdinalIgnoreCase).Count() != document.CustomColumns.Count)
         {
             throw new InvalidDataException("The history file has an unsupported version or missing data.");
         }
@@ -357,6 +411,9 @@ internal sealed class MeasurementHistoryStore
         foreach (var measurement in document.Measurements)
         {
             ValidateMeasurement(measurement);
+            if (measurement.CustomValues is { } values && values.Any(pair =>
+                !document.CustomColumns.Contains(pair.Key) || pair.Value is null))
+                throw new InvalidDataException("A measurement refers to an invalid custom column.");
             if (!measurementIds.Add(measurement.Id) ||
                 measurement.SessionId is { } sessionId && !sessionIds.Contains(sessionId))
             {
@@ -410,5 +467,6 @@ internal sealed class MeasurementHistoryStore
         public List<MeasurementHistorySession> Sessions { get; set; } = [];
         public List<MeasurementHistoryEntry> Measurements { get; set; } = [];
         public Guid? ActiveSessionId { get; set; }
+        public List<string> CustomColumns { get; set; } = [];
     }
 }

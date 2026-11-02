@@ -16,6 +16,9 @@ internal sealed class MeasurementHistoryForm : AppWindow
     private readonly TextBox _note = new();
     private readonly Label _activeSession = new();
     private readonly Label _status = new();
+    private readonly TextBox _columnName = new();
+    private readonly Button _addColumn = new();
+    private readonly Button _export = new();
 
     public MeasurementHistoryForm(MeasurementHistoryStore history)
     {
@@ -23,7 +26,7 @@ internal sealed class MeasurementHistoryForm : AppWindow
         Text = "Measurement history";
         StartPosition = FormStartPosition.CenterParent;
         MinimizeBox = false;
-        MinimumSize = new Size(800, 500);
+        MinimumSize = new Size(800, 550);
         Size = new Size(980, 560);
         BackColor = TrackerTheme.Background;
         ForeColor = TrackerTheme.Text;
@@ -79,7 +82,7 @@ internal sealed class MeasurementHistoryForm : AppWindow
         };
         activeSessionRow.Controls.AddRange([_activeSession, _endSession]);
         _measurements.Dock = DockStyle.Fill;
-        _measurements.ReadOnly = true;
+        _measurements.ReadOnly = false;
         _measurements.AllowUserToAddRows = false;
         _measurements.AllowUserToDeleteRows = false;
         _measurements.AllowUserToResizeRows = false;
@@ -112,6 +115,7 @@ internal sealed class MeasurementHistoryForm : AppWindow
         AddTextColumn("Regression", "Regression ±", 190);
         AddTextColumn("Time", "Measured at", 110);
         AddTextColumn("Note", "Note", 200, fill: true);
+        AddCustomColumns();
         _measurements.Columns["Measured"]!.ToolTipText = "Observed event-to-event duration ± measurement uncertainty, in seconds.";
         _measurements.Columns["Regression"]!.ToolTipText = "Full duration fitted from 10–90% charge ± regression uncertainty, in seconds.";
 
@@ -171,7 +175,18 @@ internal sealed class MeasurementHistoryForm : AppWindow
         root.Controls.Add(_measurements, 0, 2);
         var footer = new TableLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, ColumnCount = 1 };
         footer.Controls.Add(noteRow, 0, 0);
-        footer.Controls.Add(_status, 0, 1);
+        var columnActions = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Fill, WrapContents = true };
+        _columnName.Width = 160;
+        _columnName.AccessibleName = "Custom column name";
+        _columnName.PlaceholderText = "e.g. Grenade Stat";
+        _addColumn.Text = "Add column";
+        _addColumn.AutoSize = true;
+        _export.Text = "Export CSV…";
+        _export.AutoSize = true;
+        columnActions.Controls.AddRange([new Label { Text = "Custom column", AutoSize = true, ForeColor = TrackerTheme.Muted,
+            Margin = new Padding(3, 9, 6, 0) }, new InputFrame(_columnName), _addColumn, _export]);
+        footer.Controls.Add(columnActions, 0, 1);
+        footer.Controls.Add(_status, 0, 2);
         root.Controls.Add(footer, 0, 3);
         Controls.Add(root);
         TrackerTheme.Apply(this);
@@ -184,6 +199,24 @@ internal sealed class MeasurementHistoryForm : AppWindow
         _setActiveSession.Click += (_, _) => SetActiveSession();
         _saveNote.Click += (_, _) => SaveSelectedNote();
         _assignSession.Click += (_, _) => AssignSelectedMeasurement();
+        _addColumn.Click += (_, _) => AddColumn();
+        _export.Click += (_, _) => ExportCsv();
+        _measurements.CellValidating += (_, args) =>
+        {
+            if (!SaveCustomCell(args.RowIndex, args.ColumnIndex, args.FormattedValue?.ToString() ?? ""))
+                args.Cancel = true;
+        };
+        _measurements.CellEndEdit += (_, args) =>
+        {
+            var cell = _measurements.Rows[args.RowIndex].Cells[args.ColumnIndex];
+            cell.ErrorText = SaveCustomCell(args.RowIndex, args.ColumnIndex, cell.Value?.ToString() ?? "")
+                ? "" : "This value could not be saved. Edit it to retry before exporting.";
+        };
+        _measurements.EditingControlShowing += (_, args) =>
+        {
+            args.Control.BackColor = TrackerTheme.Surface;
+            args.Control.ForeColor = TrackerTheme.Text;
+        };
 
         _abilityFilter.SelectedIndex = 0;
         RefreshSessionChoices();
@@ -193,6 +226,90 @@ internal sealed class MeasurementHistoryForm : AppWindow
     private Guid? SelectedMeasurementId => _measurements.SelectedRows.Count == 1
         ? _measurements.SelectedRows[0].Tag as Guid?
         : null;
+
+    private void AddCustomColumns()
+    {
+        foreach (var column in _history.CustomColumns)
+        {
+            if (_measurements.Columns.Cast<DataGridViewColumn>().Any(item => item.Tag as string == column)) continue;
+            _measurements.Columns.Add(new DataGridViewTextBoxColumn
+            {
+                Name = $"Custom{_measurements.Columns.Count}",
+                HeaderText = column,
+                Tag = column,
+                ReadOnly = !_history.CanWrite,
+                Width = 120,
+                SortMode = DataGridViewColumnSortMode.NotSortable
+            });
+        }
+    }
+
+    private void AddColumn()
+    {
+        try
+        {
+            _history.AddCustomColumn(_columnName.Text);
+            AddCustomColumns();
+            _columnName.Clear();
+            RefreshMeasurements(SelectedMeasurementId);
+            SetStatus("Column added. Double-click its cells to edit values.");
+        }
+        catch (Exception exception) when (exception is ArgumentException or IOException or UnauthorizedAccessException or InvalidOperationException)
+        {
+            SetStatus($"Couldn't add column: {exception.Message}", error: true);
+        }
+    }
+
+    private bool SaveCustomCell(int rowIndex, int columnIndex, string value)
+    {
+        if (rowIndex < 0 || columnIndex < 0 || _measurements.Columns[columnIndex].Tag is not string column ||
+            _measurements.Rows[rowIndex].Tag is not Guid id) return true;
+        try
+        {
+            if (_history.Measurements.Single(item => item.Id == id).CustomValues?.GetValueOrDefault(column) == value)
+                return true;
+            _history.SaveCustomValue(id, column, value);
+            SetStatus("Custom value saved.");
+            return true;
+        }
+        catch (Exception exception) when (exception is ArgumentException or IOException or UnauthorizedAccessException or InvalidOperationException)
+        {
+            SetStatus($"Couldn't save value: {exception.Message}", error: true);
+            return false;
+        }
+    }
+
+    internal string ExportVisibleCsv()
+    {
+        if (!_measurements.EndEdit()) throw new InvalidOperationException("Finish editing the current cell before exporting.");
+        if (_measurements.Rows.Cast<DataGridViewRow>().SelectMany(row => row.Cells.Cast<DataGridViewCell>())
+            .Any(cell => !string.IsNullOrEmpty(cell.ErrorText)))
+            throw new InvalidOperationException("A custom value could not be saved. Edit that cell to retry before exporting.");
+        var ids = _measurements.Rows.Cast<DataGridViewRow>().Select(row => (Guid)row.Tag!).ToArray();
+        var records = _history.Measurements.ToDictionary(item => item.Id);
+        return MeasurementCsv.Create(ids.Select(id => records[id]), _history.Sessions, _history.CustomColumns);
+    }
+
+    private void ExportCsv()
+    {
+        using var dialog = new SaveFileDialog
+        {
+            Filter = "CSV files (*.csv)|*.csv",
+            FileName = "ability-measurements.csv",
+            DefaultExt = "csv",
+            AddExtension = true
+        };
+        if (dialog.ShowDialog(this) != DialogResult.OK) return;
+        try
+        {
+            File.WriteAllText(dialog.FileName, ExportVisibleCsv(), new System.Text.UTF8Encoding(true));
+            SetStatus($"Exported visible measurements to {dialog.FileName}.");
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidOperationException)
+        {
+            SetStatus($"Couldn't export: {exception.Message}", error: true);
+        }
+    }
 
     private void StartSession()
     {
@@ -357,6 +474,9 @@ internal sealed class MeasurementHistoryForm : AppWindow
                 measurement.MeasuredAt.ToLocalTime().ToString("g"),
                 measurement.Note ?? string.Empty);
             _measurements.Rows[index].Tag = measurement.Id;
+            foreach (DataGridViewColumn column in _measurements.Columns)
+                if (column.Tag is string customName)
+                    _measurements.Rows[index].Cells[column.Index].Value = measurement.CustomValues?.GetValueOrDefault(customName) ?? "";
             if (measurement.Id == measurement.RepeatTestId)
             {
                 var row = _measurements.Rows[index];
@@ -409,6 +529,9 @@ internal sealed class MeasurementHistoryForm : AppWindow
         var hasSelection = SelectedMeasurementId is not null;
         _startSession.Enabled = writable;
         _sessionName.Enabled = writable;
+        _columnName.Enabled = writable;
+        _addColumn.Enabled = writable;
+        _export.Enabled = _measurements.Rows.Count > 0;
         _endSession.Enabled = writable && _history.ActiveSessionId is not null;
         _setActiveSession.Enabled = writable &&
             _sessionFilter.SelectedItem is SessionFilter { Kind: SessionFilterKind.Session, SessionId: { } id } &&
@@ -434,7 +557,8 @@ internal sealed class MeasurementHistoryForm : AppWindow
             Width = width,
             MinimumWidth = fill ? 120 : 5,
             AutoSizeMode = fill ? DataGridViewAutoSizeColumnMode.Fill : DataGridViewAutoSizeColumnMode.None,
-            SortMode = DataGridViewColumnSortMode.NotSortable
+            SortMode = DataGridViewColumnSortMode.NotSortable,
+            ReadOnly = true
         });
     }
 

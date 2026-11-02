@@ -189,7 +189,7 @@ internal sealed class RepeatTestSession
 
     private string RegressionSummary() =>
         AverageRegressionDuration is { } fitted
-            ? $" · regression {FormatDuration(fitted)}{RegressionUncertaintySummary()} ({_regressionDurations.Count}/{CompletedCycles})"
+            ? $"\nRegression {FormatDuration(fitted)}{RegressionUncertaintySummary()} ({_regressionDurations.Count}/{CompletedCycles} cycles)"
             : string.Empty;
 
     private string UncertaintySummary() => ValidatedSummary is { } summary
