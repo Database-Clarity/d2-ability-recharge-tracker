@@ -412,6 +412,7 @@ internal sealed partial class MainForm : AppWindow
             if (_testAbilityPicker.SelectedItem is AbilityChoice choice)
             {
                 _settings.TestAbility = choice.Kind;
+                UpdateBindingButtonText(BindingCaptureTarget.AbilityUse);
                 SaveSettings();
                 UpdateStatus();
             }
@@ -434,7 +435,7 @@ internal sealed partial class MainForm : AppWindow
             _settings.TestDelaySeconds = _testDelayPicker.Value;
             SaveSettings();
         };
-        _abilityUseBindingButton.Text = _settings.AbilityUseBinding?.ToString() ?? "Record input…";
+        UpdateBindingButtonText(BindingCaptureTarget.AbilityUse);
         _testHoldPicker.DecimalPlaces = 2;
         _testHoldPicker.Increment = 0.05m;
         _testHoldPicker.Minimum = 0.01m;
@@ -1407,7 +1408,7 @@ internal sealed partial class MainForm : AppWindow
             _testStatus.Text = _repeatTest.Phase == RepeatTestPhase.Idle
                 ? "Ready · start the test, then manually use the ability once. Cycle results appear here."
                 : _repeatTest.Status(DateTime.UtcNow);
-            _testAbilityPicker.Enabled = !_repeatTest.IsActive;
+            _testAbilityPicker.Enabled = !_repeatTest.IsActive && _bindingCaptureTarget != BindingCaptureTarget.AbilityUse;
             _testCyclesPicker.Enabled = !_repeatTest.IsActive;
             _testDelayPicker.Enabled = !_repeatTest.IsActive;
             _testHoldPicker.Enabled = !_repeatTest.IsActive;
@@ -1415,7 +1416,7 @@ internal sealed partial class MainForm : AppWindow
             _repeatTestBindingButton.Enabled = !_repeatTest.IsActive;
             _startTestButton.Enabled = !_repeatTest.IsActive &&
                 _inputListenerAvailable &&
-                _settings.AbilityUseBinding is not null &&
+                GetAbilityUseBinding(_settings.TestAbility) is not null &&
                     GetSlot(_settings.TestAbility).Region is not null &&
                     _bindingCaptureTarget is null;
             _stopTestButton.Enabled = _repeatTest.IsActive;
@@ -1772,7 +1773,7 @@ internal sealed partial class MainForm : AppWindow
                     }
                     else if (target == BindingCaptureTarget.AbilityUse)
                     {
-                        _settings.AbilityUseBinding = binding;
+                        _settings.AbilityUseBindings[GetSelectedTestAbility()] = binding;
                     }
                     else if (target == BindingCaptureTarget.RepeatTest)
                     {
@@ -1804,7 +1805,7 @@ internal sealed partial class MainForm : AppWindow
                 _settings.PauseShortcutCleared = true;
                 break;
             case BindingCaptureTarget.AbilityUse:
-                _settings.AbilityUseBinding = null;
+                _settings.AbilityUseBindings.Remove(GetSelectedTestAbility());
                 break;
             case BindingCaptureTarget.RepeatTest:
                 _settings.RepeatTestBinding = null;
@@ -1827,13 +1828,18 @@ internal sealed partial class MainForm : AppWindow
 
     private void UpdateBindingButtonText(BindingCaptureTarget target)
     {
-        GetBindingButton(target).Text = GetConfiguredBinding(target)?.ToString() ?? "Record input…";
+        var button = GetBindingButton(target);
+        button.Text = target == BindingCaptureTarget.AbilityUse
+            ? $"{KindName(GetSelectedTestAbility())}: {GetAbilityUseBinding(GetSelectedTestAbility())?.ToString() ?? "Record input…"}"
+            : GetConfiguredBinding(target)?.ToString() ?? "Record input…";
+        if (target == BindingCaptureTarget.AbilityUse)
+            button.AccessibleName = $"Ability-use input for {KindName(GetSelectedTestAbility())}";
     }
 
     private InputBinding? GetConfiguredBinding(BindingCaptureTarget target) => target switch
     {
         BindingCaptureTarget.Pause => PauseBinding,
-        BindingCaptureTarget.AbilityUse => _settings.AbilityUseBinding,
+        BindingCaptureTarget.AbilityUse => GetAbilityUseBinding(GetSelectedTestAbility()),
         BindingCaptureTarget.RepeatTest => _settings.RepeatTestBinding,
         BindingCaptureTarget.ToggleOverlay => OverlayToggleBinding,
         _ => null
@@ -1854,9 +1860,9 @@ internal sealed partial class MainForm : AppWindow
         }
 
         var ability = choice.Kind;
-        if (_settings.AbilityUseBinding is not { } binding)
+        if (GetAbilityUseBinding(ability) is not { } binding)
         {
-            MessageBox.Show(this, "Record the ability-use key or mouse button first.", Text, MessageBoxButtons.OK, MessageBoxIcon.Information);
+            MessageBox.Show(this, $"Record the {KindName(ability)} ability-use key or mouse button first.", Text, MessageBoxButtons.OK, MessageBoxIcon.Information);
             return;
         }
 
@@ -1888,6 +1894,12 @@ internal sealed partial class MainForm : AppWindow
         SaveSettings();
         UpdateStatus();
     }
+
+    private AbilityKind GetSelectedTestAbility() =>
+        (_testAbilityPicker.SelectedItem as AbilityChoice)?.Kind ?? _settings.TestAbility;
+
+    private InputBinding? GetAbilityUseBinding(AbilityKind ability) =>
+        _settings.AbilityUseBindings.TryGetValue(ability, out var binding) ? binding : _settings.AbilityUseBinding;
 
     private void StopRepeatabilityTest()
     {
@@ -2216,7 +2228,9 @@ internal sealed partial class MainForm : AppWindow
         {
             if (File.Exists(_settingsPath))
             {
-                return JsonSerializer.Deserialize<TrackerSettings>(File.ReadAllText(_settingsPath)) ?? new TrackerSettings();
+                var settings = JsonSerializer.Deserialize<TrackerSettings>(File.ReadAllText(_settingsPath)) ?? new TrackerSettings();
+                settings.MigrateAbilityUseBinding();
+                return settings;
             }
         }
         catch (Exception exception)

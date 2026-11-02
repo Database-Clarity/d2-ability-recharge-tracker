@@ -61,6 +61,32 @@ if (args.Length == 2 && args[0] == "--ui-smoke")
                             Assert(!Descendants(page).OfType<PathLinkLabel>().Any(),
                                 "The folder action must replace the path link.");
                         }
+                        if (link.Text == "Repeat test")
+                        {
+                            var settingsField = typeof(MainForm).GetField("_settings",
+                                System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
+                            var repeatSettings = (TrackerSettings)settingsField.GetValue(form)!;
+                            var abilityPicker = Descendants(page).OfType<FlatComboBox>().Single(picker => picker.Items.Count == 3);
+                            abilityPicker.SelectedItem = abilityPicker.Items.Cast<object>().Single(item => item.ToString() == "Grenade");
+                            var grenadeInput = new InputBinding(InputDevice.Keyboard, 0x47, InputModifiers.None);
+                            var meleeInput = new InputBinding(InputDevice.Keyboard, 0x42, InputModifiers.None);
+                            repeatSettings.AbilityUseBindings[AbilityKind.Grenade] = grenadeInput;
+                            repeatSettings.AbilityUseBindings[AbilityKind.Melee] = meleeInput;
+                            var captureTargetType = typeof(MainForm).GetNestedType("BindingCaptureTarget",
+                                System.Reflection.BindingFlags.NonPublic)!;
+                            typeof(MainForm).GetMethod("UpdateBindingButtonText",
+                                System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+                                .Invoke(form, [Enum.Parse(captureTargetType, "AbilityUse")]);
+                            var repeatButtons = Descendants(page).OfType<Button>().ToArray();
+                            var inputButton = repeatButtons.FirstOrDefault(button => button.Text.StartsWith("Grenade:", StringComparison.Ordinal))
+                                ?? throw new InvalidOperationException($"Missing Grenade binding button: {string.Join(" | ", repeatButtons.Select(button => $"{button.AccessibleName}={button.Text}"))}");
+                            Assert(inputButton.Text == $"Grenade: {grenadeInput}", "The repeat menu must show the selected ability's saved input.");
+                            abilityPicker.SelectedItem = abilityPicker.Items.Cast<object>().Single(item => item.ToString() == "Melee");
+                            Assert(inputButton.Text == $"Melee: {meleeInput}" &&
+                                inputButton.AccessibleName == "Ability-use input for Melee",
+                                "Changing repeat ability must select and label its own saved input.");
+                            abilityPicker.SelectedItem = abilityPicker.Items.Cast<object>().Single(item => item.ToString() == "Grenade");
+                        }
                         foreach (var picker in Descendants(page).OfType<ComboBox>())
                         {
                             Assert(picker is FlatComboBox, "All dropdowns must use the shared dark field.");
@@ -655,7 +681,11 @@ var repeatShortcut = new InputBinding(InputDevice.Keyboard, 0x79, InputModifiers
 var settings = new TrackerSettings
 {
     PauseBinding = useBinding,
-    AbilityUseBinding = new InputBinding(InputDevice.Mouse, MouseInputCode.X2, InputModifiers.Shift),
+    AbilityUseBindings = new()
+    {
+        [AbilityKind.Grenade] = new InputBinding(InputDevice.Mouse, MouseInputCode.X2, InputModifiers.Shift),
+        [AbilityKind.Melee] = new InputBinding(InputDevice.Keyboard, 0x42, InputModifiers.None)
+    },
     RepeatTestBinding = repeatShortcut,
     SoloBindings = new() { [AbilityKind.Melee] = useBinding },
     SoloAbility = AbilityKind.Melee,
@@ -666,7 +696,17 @@ var settings = new TrackerSettings
 };
 var restoredSettings = JsonSerializer.Deserialize<TrackerSettings>(JsonSerializer.Serialize(settings));
 Assert(restoredSettings?.PauseBinding == useBinding, "Modified pause bindings should round-trip in settings.");
-Assert(restoredSettings?.AbilityUseBinding == settings.AbilityUseBinding, "Modified ability-use bindings should round-trip in settings.");
+Assert(restoredSettings?.AbilityUseBindings.Count == 2 &&
+    restoredSettings.AbilityUseBindings[AbilityKind.Grenade] == settings.AbilityUseBindings[AbilityKind.Grenade] &&
+    restoredSettings.AbilityUseBindings[AbilityKind.Melee] == settings.AbilityUseBindings[AbilityKind.Melee],
+    "Ability-use inputs must round-trip independently per ability.");
+var legacyAbilityInput = new InputBinding(InputDevice.Mouse, MouseInputCode.X2, InputModifiers.Shift);
+var migratedAbilitySettings = JsonSerializer.Deserialize<TrackerSettings>(
+    JsonSerializer.Serialize(new TrackerSettings { AbilityUseBinding = legacyAbilityInput }))!;
+migratedAbilitySettings.MigrateAbilityUseBinding();
+Assert(migratedAbilitySettings.AbilityUseBindings.Count == Enum.GetValues<AbilityKind>().Length &&
+    Enum.GetValues<AbilityKind>().All(ability => migratedAbilitySettings.AbilityUseBindings[ability] == legacyAbilityInput),
+    "Existing installs with one shared ability input must migrate it to each ability without losing behavior.");
 Assert(restoredSettings?.RepeatTestBinding == repeatShortcut && restoredSettings.SoloBindings[AbilityKind.Melee] == useBinding &&
     restoredSettings.SoloAbility == AbilityKind.Melee && restoredSettings.OverlayShortcutCleared,
     "Task shortcuts should round-trip in settings.");

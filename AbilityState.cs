@@ -45,7 +45,9 @@ internal sealed class TrackerSettings
     public float[]? RechargingSignature { get; set; }
     public string Hotkey { get; set; } = "F8";
     public InputBinding? PauseBinding { get; set; }
+    // Legacy single ability-use binding, expanded to each ability while settings are loaded.
     public InputBinding? AbilityUseBinding { get; set; }
+    public Dictionary<AbilityKind, InputBinding> AbilityUseBindings { get; set; } = [];
     public InputBinding? RepeatTestBinding { get; set; }
     /// <summary>Shortcuts that track only one ability (pressing again tracks all).</summary>
     public Dictionary<AbilityKind, InputBinding> SoloBindings { get; set; } = [];
@@ -66,6 +68,15 @@ internal sealed class TrackerSettings
     public decimal TestDelaySeconds { get; set; } = 1;
     public decimal TestHoldSeconds { get; set; } = 0.12m;
     public string OverlayAnchor { get; set; } = "Bottom right";
+
+    public void MigrateAbilityUseBinding()
+    {
+        AbilityUseBindings ??= [];
+        if (AbilityUseBinding is not { } legacyBinding) return;
+        foreach (var ability in Enum.GetValues<AbilityKind>())
+            AbilityUseBindings.TryAdd(ability, legacyBinding);
+        AbilityUseBinding = null;
+    }
 }
 
 internal readonly record struct AbilitySignal(
