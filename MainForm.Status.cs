@@ -17,7 +17,8 @@ internal sealed record TrackingStatusSnapshot(
     bool CaptureStalled,
     string Backend,
     double CaptureRate,
-    int TargetCaptureRate);
+    int TargetCaptureRate,
+    bool AnyRegions = true);
 
 // Consolidated capture state: one banner on Tracking and one pill in the navigation row.
 internal sealed partial class MainForm
@@ -81,7 +82,10 @@ internal sealed partial class MainForm
 
         if (!status.HasRegions)
         {
-            return (new StatusMessage("Select the ability areas to begin · Auto-detect areas… finds all three.", StatusTone.Neutral),
+            // With no areas at all, the first-run card explains setup; otherwise only the tracked ability lacks one.
+            return (status.AnyRegions
+                    ? new StatusMessage("The tracked ability has no area · select it from Areas ▾ or track All.", StatusTone.Neutral)
+                    : null,
                 new StatusMessage("Areas not set", StatusTone.Neutral));
         }
 
@@ -149,11 +153,8 @@ internal sealed partial class MainForm
             return;
         }
 
+        // The Tracking page reserves the banner's height, so showing it never resizes the window.
         _statusBannerShown = show;
         _statusBanner.Visible = show;
-        if (IsHandleCreated)
-        {
-            _fitWindowToDisplay?.Invoke();
-        }
     }
 }

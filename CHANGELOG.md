@@ -8,3 +8,10 @@ Add a concise, single-line bullet for each notable user-facing change in the sam
 - Release notes retain commit history beneath the concise user-facing changelog.
 - The in-app changelog focuses on the current release or changes since the previous installed version, with commit history collapsed by default.
 - Capture status appears once, in a pill beside the page navigation and a Tracking banner; a closed game shows an amber "Waiting for Destiny 2" notice instead of red errors on every row, and the overlay shows "Waiting for game" instead of "Watching".
+- Tracking is decluttered: a segmented **Track: All · Grenade · Melee · Class** selector replaces the per-row "Track only" buttons, area setup moves into an **Areas ▾** menu, and **⋯** holds Move overlay, Copy all results and Troubleshooting.
+- A first-run card with **Auto-detect areas…** replaces the empty results table until ability areas are set.
+- Copy buttons beside Tracking results appear on hover or keyboard focus, and results get the space of the removed area-size column (area size is in the ability tooltip and Areas menu).
+- **Record HUD** and **Open recordings folder** move to Settings › Troubleshooting; while recording, Tracking shows a red recording chip with **Stop**.
+- Buttons use clear primary, secondary and link styles; menus use the dark theme; settings section headings are larger.
+- The header row is gone: **Pause detection** and a compact **Overlay** switch sit at the bottom of Tracking, and **History** is now a tab.
+- Update checks and the changelog move to Settings › About; the main screen only shows an **Update to v…** pill when an update is available, and failed checks no longer appear there.

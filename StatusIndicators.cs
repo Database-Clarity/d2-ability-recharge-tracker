@@ -109,3 +109,79 @@ internal sealed class StatusPill : Label
             TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
     }
 }
+
+/// <summary>Accent-filled rounded action used for the "Update to vX" prompt in the navigation row.</summary>
+internal sealed class PillButton : Button
+{
+    private bool _hovered;
+
+    public PillButton()
+    {
+        SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint |
+            ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
+        AutoSize = false;
+        Cursor = Cursors.Hand;
+        Padding = new Padding(12, 4, 12, 4);
+    }
+
+    protected override void OnTextChanged(EventArgs e)
+    {
+        base.OnTextChanged(e);
+        UpdateSize();
+    }
+
+    protected override void OnFontChanged(EventArgs e)
+    {
+        base.OnFontChanged(e);
+        UpdateSize();
+    }
+
+    private void UpdateSize()
+    {
+        using var bold = new Font(Font, FontStyle.Bold);
+        var text = TextRenderer.MeasureText(Text, bold);
+        Size = new Size(text.Width + Padding.Horizontal, text.Height + Padding.Vertical);
+    }
+
+    protected override void OnMouseEnter(EventArgs e)
+    {
+        base.OnMouseEnter(e);
+        _hovered = true;
+        Invalidate();
+    }
+
+    protected override void OnMouseLeave(EventArgs e)
+    {
+        base.OnMouseLeave(e);
+        _hovered = false;
+        Invalidate();
+    }
+
+    protected override void OnPaint(PaintEventArgs pevent)
+    {
+        var graphics = pevent.Graphics;
+        graphics.Clear(Parent?.BackColor ?? TrackerTheme.Background);
+        graphics.SmoothingMode = SmoothingMode.AntiAlias;
+        var bounds = new Rectangle(0, 0, Width - 1, Height - 1);
+        var diameter = bounds.Height;
+        var fill = !Enabled ? TrackerTheme.Selected : _hovered ? TrackerTheme.AccentHover : TrackerTheme.Accent;
+        using (var path = new GraphicsPath())
+        {
+            path.AddArc(bounds.Left, bounds.Top, diameter, diameter, 90, 180);
+            path.AddArc(bounds.Right - diameter, bounds.Top, diameter, diameter, 270, 180);
+            path.CloseFigure();
+            using var brush = new SolidBrush(fill);
+            graphics.FillPath(brush, path);
+        }
+
+        using var bold = new Font(Font, FontStyle.Bold);
+        TextRenderer.DrawText(graphics, Text, bold, ClientRectangle,
+            Enabled ? TrackerTheme.Background : TrackerTheme.Text,
+            TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine |
+            TextFormatFlags.NoPrefix);
+        if (Focused && ShowFocusCues)
+        {
+            ControlPaint.DrawFocusRectangle(graphics, Rectangle.Inflate(ClientRectangle, -3, -3));
+        }
+    }
+}

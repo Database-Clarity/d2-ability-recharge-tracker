@@ -4,6 +4,8 @@ internal sealed class CopyResultButton : Button
 {
     private readonly Func<string> _text;
     private bool _copied;
+    private bool _hovered;
+    private bool _revealed = true;
     internal string ResultText => _text();
 
     internal CopyResultButton(string name, Func<string> text)
@@ -30,13 +32,34 @@ internal sealed class CopyResultButton : Button
                     MessageBoxButtons.OK, MessageBoxIcon.Warning);
             }
         };
-        MouseLeave += (_, _) => { _copied = false; Invalidate(); };
+        MouseEnter += (_, _) => { _hovered = true; Invalidate(); };
+        MouseLeave += (_, _) => { _copied = false; _hovered = false; Invalidate(); };
+        GotFocus += (_, _) => Invalidate();
+        LostFocus += (_, _) => Invalidate();
     }
+
+    /// <summary>
+    /// When false, the icon is only drawn while hovered or focused; the button stays clickable and keyboard focusable.
+    /// </summary>
+    [System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
+    internal bool Revealed
+    {
+        get => _revealed;
+        set
+        {
+            if (_revealed == value) return;
+            _revealed = value;
+            Invalidate();
+        }
+    }
+
+    internal bool IconVisible => _revealed || _hovered || Focused || _copied;
 
     protected override void OnPaint(PaintEventArgs e)
     {
         base.OnPaint(e);
-        e.Graphics.Clear(BackColor);
+        e.Graphics.Clear(_hovered && !FlatAppearance.MouseOverBackColor.IsEmpty ? FlatAppearance.MouseOverBackColor : BackColor);
+        if (!IconVisible) return;
         var scale = DeviceDpi / 96f;
         var x = (Width - 16 * scale) / 2;
         var y = (Height - 16 * scale) / 2;

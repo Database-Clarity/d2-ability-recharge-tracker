@@ -5,7 +5,6 @@ internal sealed partial class MainForm
     private MeasurementHistoryStore? _measurementHistory;
     private Guid? _repeatHistorySessionId;
     private MeasurementHistoryView? _historyView;
-    private readonly Button _historyButton = new();
 
     private void InitializeMeasurementHistory()
     {
@@ -24,23 +23,27 @@ internal sealed partial class MainForm
             Visible = false,
             Width = GridWidth,
             Height = HistoryHeight,
-            Margin = new Padding(0, 8, 0, 0)
+            Margin = Padding.Empty
         };
-        _historyButton.Text = "History";
-        _historyButton.Click += (_, _) => SetHistoryVisible(!_historyView.Visible);
-        _toolTip.SetToolTip(_historyButton, "Show sessions, notes and custom columns below the current page.");
         return _historyView;
     }
 
-    internal bool HistoryVisible => _historyView?.Visible == true;
+    /// <summary>True while the History tab is the selected page.</summary>
+    internal bool HistoryVisible => _historyView is not null && _selectedPage == _historyView && _historyView.Visible;
 
+    /// <summary>Shows the History tab (reloading it), or returns to the last compact page.</summary>
     internal void SetHistoryVisible(bool visible)
     {
         if (_historyView is null) return;
-        if (visible) _historyView.Reload();
-        _historyView.Visible = visible;
-        _historyButton.Text = visible ? "Hide history" : "History";
-        _fitWindowToDisplay?.Invoke();
+        if (visible)
+        {
+            _historyView.Reload();
+            SelectPage(_historyView);
+        }
+        else if (_selectedPage == _historyView && _lastCompactPage is { } previous)
+        {
+            SelectPage(previous);
+        }
     }
 
     internal void UseMeasurementHistory(MeasurementHistoryStore history)

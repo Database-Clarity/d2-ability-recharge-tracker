@@ -31,13 +31,23 @@ if (args.Length == 2 && args[0] == "--ui-smoke")
                     Assert(WindowHitTest(form, new Point(180, 18)) == 2,
                         "The integrated title bar must retain native window dragging.");
                     var navigation = Descendants(form).Single(control => control.Name == "PageNavigation");
+                    var navigationRow = Descendants(form).Single(control => control.Name == "MainNavigation");
                     var pages = Descendants(form).Single(control => control.Name == "Pages");
                     var updateButton = Descendants(form).OfType<Button>().Single(button => button.Name == "CheckForUpdates");
-                    Assert(updateButton.Parent == navigation.Parent && updateButton.Parent is { Name: "MainNavigation" },
-                        "Update checks must sit alongside the page navigation, outside the Settings page.");
-                    Assert(pages.Top <= 80 * form.DeviceDpi / 96f,
-                        "The shared header and navigation should occupy no more than 80 logical pixels.");
-                    Assert(navigation.Controls.Count == 3, "The utility should have Tracking, Repeat test, and Settings pages.");
+                    var updatePill = Descendants(form).OfType<PillButton>().Single(button => button.Name == "UpdateAvailable");
+                    Assert(!Descendants(navigationRow).Contains(updateButton) && updatePill.Parent == navigationRow && !updatePill.Visible,
+                        "Manual update checks belong to Settings › About; the navigation row only shows an update pill when one is available.");
+                    Assert(Descendants(navigationRow).OfType<Button>().All(button => button is NavigationButton || button == updatePill),
+                        "The navigation row must not contain action buttons besides an available update.");
+                    Assert(pages.Top <= 56 * form.DeviceDpi / 96f,
+                        "Page navigation must be the only header row.");
+                    Assert(navigation.Controls.Cast<Control>().Select(link => link.Text)
+                            .SequenceEqual(["Tracking", "Repeat test", "History", "Settings"]),
+                        "The utility should have Tracking, Repeat test, History, and Settings tabs.");
+                    var settingsField = typeof(MainForm).GetField("_settings",
+                        System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
+                    var smokeSettings = (TrackerSettings)settingsField.GetValue(form)!;
+                    Size? compactSize = null;
                     Assert(!Descendants(form).OfType<LinkLabel>().Any(link => link.Visible),
                         "A new app launch must not show a previous recording path.");
                     Directory.CreateDirectory(args[1]);
@@ -45,48 +55,56 @@ if (args.Length == 2 && args[0] == "--ui-smoke")
                     {
                         link.PerformClick();
                         form.PerformLayout();
-                        Assert(updateButton.Visible && form.ClientRectangle.Contains(form.RectangleToClient(
-                            updateButton.RectangleToScreen(updateButton.ClientRectangle))),
-                            "The update action must remain visible and inside the window on every page.");
-                        var statusPill = Descendants(form).OfType<StatusPill>().Single();
+                        var statusPill = Descendants(form).OfType<StatusPill>().Single(pill => pill.Name == "CaptureStatus");
                         var lastLink = navigation.Controls.Cast<Control>().Last();
                         var linksRight = lastLink.RectangleToScreen(lastLink.ClientRectangle).Right;
-                        var updateLeft = updateButton.RectangleToScreen(updateButton.ClientRectangle).Left;
+                        var rowRight = navigationRow.RectangleToScreen(navigationRow.ClientRectangle).Right;
                         var pillBounds = statusPill.RectangleToScreen(statusPill.ClientRectangle);
                         Assert(statusPill.Parent is { Name: "MainNavigation" } && statusPill.Visible &&
                             !string.IsNullOrWhiteSpace(statusPill.Text) &&
-                            linksRight <= pillBounds.Left && pillBounds.Right <= updateLeft &&
+                            linksRight <= pillBounds.Left && pillBounds.Right <= rowRight &&
+                            rowRight - pillBounds.Right <= 8 * form.DeviceDpi / 96f &&
                             TextRenderer.MeasureText("Detecting · DXGI · 240/240 Hz", statusPill.Font).Width +
-                                statusPill.Padding.Horizontal <= updateLeft - linksRight,
-                            "The capture status pill must sit between page navigation and the update action without clipping on every page.");
+                                statusPill.Padding.Horizontal <= rowRight - linksRight,
+                            "The capture status pill must stay right-aligned beside the page tabs without clipping on every page.");
                         Assert(!Descendants(form).OfType<Label>().Any(label => label.Visible && label.Text.StartsWith("Detection enabled")),
                             "The footer capture status must be replaced by the banner and pill.");
                         var page = pages.Controls.Cast<Control>().Single(control => control.Visible);
                         if (link.Text == "Tracking")
                         {
-                            Assert(Descendants(page).OfType<Button>().Count(button => button.Text.StartsWith("Auto-detect")) == 1,
-                                "Tracking should expose one global auto-detect action.");
+                            CheckTrackingPage(form, page, smokeSettings, args[1]);
                             Assert(!Descendants(page).OfType<Button>().Any(button => button.Text == "Record…"),
                                 "Tracking must not repeat shortcut-recording buttons.");
-                            Assert(Descendants(page).OfType<Button>().Count(button => button.Text == "Open capture folder") == 1,
-                                "Tracking should expose one capture-folder action even before recording.");
+                            Assert(!Descendants(page).OfType<Button>().Any(button => button.Text.StartsWith("Open ") || button.Text == "Record HUD"),
+                                "HUD recording tools belong to Settings › Troubleshooting.");
                             Assert(Descendants(page).OfType<TwoLineStatusLabel>().Count() == 3,
                                 "Every ability should use the fixed two-line status renderer.");
                             Assert(Descendants(page).OfType<CopyResultButton>().Count() == 3 &&
                                 Descendants(page).OfType<CopyResultButton>().All(button => !string.IsNullOrWhiteSpace(button.ResultText)),
                                 "Each tracking result must have an accessible copy action with complete text.");
-                            Assert(Descendants(form).OfType<Button>().Any(button => button.Text.Contains("Pause detection (")),
-                                "The pause action should display its hotkey.");
+                            Assert(Descendants(page).OfType<Button>().Any(button => button.Text.Contains("Pause detection (")),
+                                "The pause action should display its hotkey on the Tracking page.");
                             const string longRecording = @"C:\Users\Somebody\Documents\D2AbilityTracker\HUD recordings\A very long directory for this measurement session\Another long directory\latest-hud-recording-2026-11-02.zip";
                             form.SetLastRecordingPath(longRecording);
                             Assert(!Descendants(page).OfType<PathLinkLabel>().Any(),
                                 "The folder action must replace the path link.");
                         }
+                        if (link.Text == "Settings")
+                        {
+                            var settingsButtons = Descendants(page).OfType<Button>().Where(button => button.Visible).ToArray();
+                            Assert(settingsButtons.Count(button => button.Text == "Record HUD") == 1 &&
+                                settingsButtons.Count(button => button.Text == "Open recordings folder") == 1 &&
+                                settingsButtons.Contains(updateButton) && updateButton.Text == "Check for updates" &&
+                                settingsButtons.Any(button => button.Text == "Changelog"),
+                                "Settings must group Troubleshooting (Record HUD, Open recordings folder) and About (updates, changelog).");
+                            Assert(Descendants(page).OfType<Label>().Where(label => label.Visible)
+                                    .Count(label => label.Text is "Capture" or "Overlay" or "Troubleshooting" or "About" &&
+                                        label.Font.Bold && label.Font.SizeInPoints >= 10 && label.ForeColor == TrackerTheme.Text) == 4,
+                                "Settings section headings must be 10 pt bold text.");
+                        }
                         if (link.Text == "Repeat test")
                         {
-                            var settingsField = typeof(MainForm).GetField("_settings",
-                                System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
-                            var repeatSettings = (TrackerSettings)settingsField.GetValue(form)!;
+                            var repeatSettings = smokeSettings;
                             var abilityPicker = Descendants(page).OfType<FlatComboBox>().Single(picker => picker.Items.Count == 3);
                             abilityPicker.SelectedItem = abilityPicker.Items.Cast<object>().Single(item => item.ToString() == "Grenade");
                             var grenadeInput = new InputBinding(InputDevice.Keyboard, 0x47, InputModifiers.None);
@@ -138,8 +156,20 @@ if (args.Length == 2 && args[0] == "--ui-smoke")
                             Assert(HasReadableText(disabledNumber), "Disabled numeric values must remain readable on dark inputs.");
                             number.Enabled = true;
                         }
-                        Assert(form.ClientSize.Height <= 500 * form.DeviceDpi / 96f,
-                            "Each page should fit a compact desktop window.");
+                        if (link.Text == "History")
+                        {
+                            Assert(form.HistoryVisible && page is MeasurementHistoryView &&
+                                page.Height >= 400 * form.DeviceDpi / 96f,
+                                "History must be a full tab with its own explicit height.");
+                        }
+                        else
+                        {
+                            Assert(form.ClientSize.Height <= 500 * form.DeviceDpi / 96f,
+                                "Each page should fit a compact desktop window.");
+                            Assert(compactSize is null || compactSize == form.Size,
+                                "Switching between compact pages must not resize the window.");
+                            compactSize ??= form.Size;
+                        }
                         Assert(form.ClientSize.Width <= 680 * form.DeviceDpi / 96f,
                             "The main window must stay narrow.");
                         foreach (var control in Descendants(page).Where(control => control.Visible && control is Button or ComboBox or NumericUpDown or LinkLabel))
@@ -215,27 +245,20 @@ if (args.Length == 2 && args[0] == "--ui-smoke")
                     smokeHistory.SaveNote(sampleMean.Id, "Grenade stat 5 · repeat test");
                     smokeHistory.SaveCustomValue(sampleMean.Id, "Grenade Stat", "5");
                     form.UseMeasurementHistory(smokeHistory);
-                    var historyToggle = Descendants(form).OfType<Button>().Single(button => button.Text == "History");
-                    foreach (Button link in navigation.Controls)
-                    {
-                        link.PerformClick();
-                        Assert(historyToggle.Visible && historyToggle.Parent == Descendants(form).OfType<Button>().Single(button => button.Text.Contains("overlay (")).Parent,
-                            "History and overlay actions must stay available on every page.");
-                    }
-                    navigation.Controls.OfType<Button>().Single(button => button.Text == "Tracking").PerformClick();
+                    var historyLink = navigation.Controls.OfType<Button>().Single(button => button.Text == "History");
+                    navigation.Controls.OfType<Button>().Single(button => button.Text == "Repeat test").PerformClick();
                     var collapsedSize = form.Size;
                     var openForms = Application.OpenForms.Count;
-                    historyToggle.PerformClick();
+                    historyLink.PerformClick();
                     form.PerformLayout();
                     var historyForm = Descendants(form).OfType<MeasurementHistoryView>().Single();
-                    Assert(form.HistoryVisible && historyForm.Visible && historyToggle.Text == "Hide history" && Application.OpenForms.Count == openForms,
-                        "History must expand inside the main window.");
+                    Assert(form.HistoryVisible && historyForm.Visible && historyForm.Parent == pages &&
+                        pages.Controls.Cast<Control>().Single(control => control.Visible) == historyForm &&
+                        Application.OpenForms.Count == openForms,
+                        "History must open as a tab inside the main window.");
                     var workHeight = Screen.FromControl(form).WorkingArea.Height;
-                    Assert((form.Height > collapsedSize.Height || form.Height >= workHeight - 48) &&
-                        historyForm.Parent == pages.Parent && historyForm.Top >= pages.Bottom,
-                        "History must extend the window downward below the current page.");
-                    Assert(pages.Controls.Cast<Control>().Single(control => control.Visible).Visible,
-                        "The current page must remain visible above history.");
+                    Assert(form.Height > collapsedSize.Height || form.Height >= workHeight - 48,
+                        "The History tab must get its own, taller explicit height.");
                     using (var image = new Bitmap(form.Width, form.Height))
                     {
                         form.DrawToBitmap(image, new Rectangle(Point.Empty, image.Size));
@@ -311,9 +334,12 @@ if (args.Length == 2 && args[0] == "--ui-smoke")
                     Assert(smokeHistory.ActiveSessionId is null &&
                         !Descendants(historyForm).OfType<Button>().Single(button => button.Text == "Use session").Enabled,
                         "Ending the selected session must clear activity and prevent reopening an ended session.");
-                    historyToggle.PerformClick();
-                    Assert(!historyForm.Visible && historyToggle.Text == "History" && form.Size == collapsedSize,
-                        "Hiding history must collapse the window back to the current page.");
+                    form.SetHistoryVisible(false);
+                    Assert(!historyForm.Visible && !form.HistoryVisible && form.Size == collapsedSize &&
+                        pages.Controls.Cast<Control>().Single(control => control.Visible) == testPage(),
+                        "Leaving history must return to the previous page at its compact size.");
+                    Control testPage() => pages.Controls.Cast<Control>().Single(page =>
+                        Descendants(page).OfType<CopyResultButton>().Any(button => button.AccessibleName == "Copy repeat-test result"));
                     using (var guide = new SelectionGuide())
                     {
                         guide.Show(form);
@@ -390,22 +416,38 @@ if (args.Length == 2 && args[0] == "--ui-smoke")
                         "Zoom must preserve original full-frame selection coordinates.");
                     var pendingCheck = new TaskCompletionSource<UpdateRelease?>();
                     var startupCheck = form.CheckForUpdateAsync(interactive: false, _ => pendingCheck.Task);
-                    Assert(!updateButton.Enabled && updateButton.Text == "Checking…",
-                        "Startup update checks must visibly report their pending state.");
+                    Assert(!updateButton.Enabled && updateButton.Text == "Checking…" && !updatePill.Visible,
+                        "Startup update checks must report their pending state in Settings without cluttering the main screen.");
                     pendingCheck.SetResult(new UpdateRelease(new Version(0, 1, 99), "v0.1.99", "setup.exe",
                         new Uri("https://github.com/example/setup.exe"), 1, null,
                         new Uri("https://github.com/example/releases")));
                     startupCheck.GetAwaiter().GetResult();
-                    Assert(updateButton.Visible && updateButton.Enabled && updateButton.Text == "Update to v0.1.99…" &&
-                        updateButton.ForeColor == TrackerTheme.Accent,
-                        "A background update discovery must highlight the globally visible update action.");
+                    Assert(updateButton.Enabled && updateButton.Text == "Update to v0.1.99…" &&
+                        updateButton.ForeColor == TrackerTheme.Accent && form.CurrentUpdatePhase == UpdatePhase.Available,
+                        "A background update discovery must highlight the Settings update action.");
+                    navigation.Controls.OfType<Button>().Single(button => button.Text == "Tracking").PerformClick();
+                    form.PerformLayout();
+                    var capturePill = Descendants(form).OfType<StatusPill>().Single(pill => pill.Name == "CaptureStatus");
+                    var updatePillBounds = updatePill.RectangleToScreen(updatePill.ClientRectangle);
+                    var capturePillBounds = capturePill.RectangleToScreen(capturePill.ClientRectangle);
+                    var lastTab = navigation.Controls.Cast<Control>().Last();
+                    Assert(updatePill.Visible && updatePill.Enabled && updatePill.Text == "Update to v0.1.99" &&
+                        lastTab.RectangleToScreen(lastTab.ClientRectangle).Right <= updatePillBounds.Left &&
+                        updatePillBounds.Right <= capturePillBounds.Left &&
+                        form.RectangleToScreen(form.ClientRectangle).Contains(capturePillBounds),
+                        "An available update must appear as an accent pill beside the capture status on every page.");
+                    using (var image = new Bitmap(form.Width, form.Height))
+                    {
+                        form.DrawToBitmap(image, new Rectangle(Point.Empty, image.Size));
+                        image.Save(Path.Combine(args[1], "ui-Update-available.png"));
+                    }
                     form.CheckForUpdateAsync(interactive: false,
                         _ => Task.FromException<UpdateRelease?>(new HttpRequestException("Test network failure"))).GetAwaiter().GetResult();
                     Assert(updateButton.Enabled && updateButton.Text == "Retry update check" &&
-                        updateButton.ForeColor == TrackerTheme.Orange,
-                        "Background update failures must not silently look like success or retain a stale available update.");
+                        updateButton.ForeColor == TrackerTheme.Orange && !updatePill.Visible,
+                        "Background update failures must stay in Settings, not look like success, and drop a stale update pill.");
                     form.CheckForUpdateAsync(interactive: false, _ => Task.FromResult<UpdateRelease?>(null)).GetAwaiter().GetResult();
-                    Assert(updateButton.Text == "Check for updates" && updateButton.ForeColor == TrackerTheme.Text,
+                    Assert(updateButton.Text == "Check for updates" && updateButton.ForeColor == TrackerTheme.Text && !updatePill.Visible,
                         "A successful retry with no newer release must clear the error indicator.");
                 }
                 catch (Exception exception)
@@ -817,9 +859,12 @@ Assert(pausedStatus.Banner is null && pausedStatus.Pill.Tone == StatusTone.Neutr
 Assert(MainForm.DescribeTrackingStatus(StatusSnapshot(healthy, inputError: "Hook failed")) is
 { Banner: { Tone: StatusTone.Warning } inputBanner, Pill.Tone: StatusTone.Good } && inputBanner.Text.Contains("Hook failed"),
     "Unavailable input hooks must be an amber one-line banner while detection continues.");
+Assert(MainForm.DescribeTrackingStatus(StatusSnapshot(healthy, hasRegions: false) with { AnyRegions = false }) is
+{ Banner: null, Pill: { Tone: StatusTone.Neutral, Text: "Areas not set" } },
+    "An unconfigured tracker must leave setup to the first-run card and not report a failure.");
 Assert(MainForm.DescribeTrackingStatus(StatusSnapshot(healthy, hasRegions: false)) is
 { Banner.Tone: StatusTone.Neutral, Pill.Tone: StatusTone.Neutral },
-    "An unconfigured tracker must not report a failure.");
+    "A tracked ability without an area must be explained neutrally.");
 
 var repeatShortcut = new InputBinding(InputDevice.Keyboard, 0x79, InputModifiers.Alt);
 var settings = new TrackerSettings
@@ -1463,10 +1508,11 @@ static void RenderCaptureStatusStates(MainForm form, Control navigation, string 
     var sync = Field<object>("_captureSync");
     var updateStatus = typeof(MainForm).GetMethod("UpdateStatus", flags)!;
     var banner = Descendants(form).OfType<StatusBanner>().Single();
-    var pill = Descendants(form).OfType<StatusPill>().Single();
+    var pill = Descendants(form).OfType<StatusPill>().Single(control => control.Name == "CaptureStatus");
     navigation.Controls.OfType<Button>().Single(button => button.Text == "Tracking").PerformClick();
     var savedRegions = settings.Slots.ToDictionary(slot => slot.Kind, slot => slot.Region);
     var savedSolo = settings.SoloAbility;
+    var restingSize = form.Size;
     Dictionary<AbilityKind, string> savedErrors;
     lock (sync)
     {
@@ -1510,8 +1556,10 @@ static void RenderCaptureStatusStates(MainForm form, Control navigation, string 
         Assert(form.ClientRectangle.Contains(form.RectangleToClient(banner.RectangleToScreen(banner.ClientRectangle))) &&
             TextRenderer.MeasureText(banner.Text, banner.Font).Width + banner.Padding.Horizontal <= banner.Width,
             "The waiting banner must fit inside the window without truncation.");
-        Assert(Descendants(form).OfType<Button>().Single(button => button.Text.Contains("Pause detection")).ForeColor == TrackerTheme.Text,
-            "Capture health must not be encoded in the pause button color.");
+        Assert(Descendants(form).OfType<Button>().Single(button => button.Name == "PauseDetection") is
+            { BackColor: var pauseBack, ForeColor: var pauseFore } && pauseBack == TrackerTheme.Accent && pauseFore == TrackerTheme.Background,
+            "Capture health must not be encoded in the pause button, which keeps its primary style.");
+        Assert(form.Size == restingSize, "Showing the status banner must not resize the window.");
         Save("ui-Tracking-waiting.png");
 
         const string slotError = "Ability area is outside the current display.";
@@ -1524,6 +1572,48 @@ static void RenderCaptureStatusStates(MainForm form, Control navigation, string 
             !(banner.Visible && banner.Text.Contains(slotError)),
             "A slot-specific failure must not be routed to the banner or other rows.");
         Save("ui-Tracking-row-error.png");
+
+        // A HUD recording shows a chip with Stop on Tracking instead of resizing the window.
+        var chip = Descendants(form).OfType<StatusPill>().Single(control => control.Name == "RecordingChip");
+        var stop = Descendants(form).OfType<Button>().Single(control => control.Name == "StopRecording");
+        var trackRow = Descendants(form).Single(control => control.Name == "TrackRow");
+        var selector = Descendants(form).OfType<SegmentedControl>().Single();
+        chip.Text = "Recording HUD · 00:42 · 2520 frames";
+        typeof(MainForm).GetMethod("ShowRecordingIndicator", flags)!.Invoke(form, [true]);
+        form.PerformLayout();
+        var rowBounds = trackRow.RectangleToScreen(trackRow.ClientRectangle);
+        var chipBounds = chip.RectangleToScreen(chip.ClientRectangle);
+        var stopBounds = stop.RectangleToScreen(stop.ClientRectangle);
+        Assert(chip.Visible && stop.Visible && chip.Tone == StatusTone.Error && form.Size == restingSize &&
+            rowBounds.Contains(chipBounds) && rowBounds.Contains(stopBounds) &&
+            selector.RectangleToScreen(selector.ClientRectangle).Right < chipBounds.Left &&
+            TextRenderer.MeasureText(chip.Text, chip.Font).Width + chip.Padding.Horizontal <= chip.Width,
+            $"The recording chip and its Stop action must fit beside the track selector without resizing the window: row {rowBounds}, chip {chipBounds} visible {chip.Visible}, stop {stopBounds}, size {form.Size} vs {restingSize}.");
+        Save("ui-Tracking-recording.png");
+        typeof(MainForm).GetMethod("ShowRecordingIndicator", flags)!.Invoke(form, [false]);
+
+        // First run: no areas at all shows the setup card instead of results, banner, or action bar.
+        lock (sync)
+        {
+            foreach (var slot in settings.Slots) slot.Region = null;
+        }
+        SetErrors([]);
+        var emptyState = Descendants(form).Single(control => control.Name == "EmptyState");
+        var emptyButtons = Descendants(emptyState).OfType<Button>().ToArray();
+        Assert(emptyState.Visible && !banner.Visible && pill.Text == "Areas not set" &&
+            !Descendants(form).Single(control => control.Name == "TrackingActions").Visible &&
+            !Descendants(form).Single(control => control.Name == "AbilityRows").Visible &&
+            form.Size == restingSize,
+            "Without any areas, Tracking must show only the first-run card, without resizing the window.");
+        Assert(emptyButtons.Select(button => button.Text).SequenceEqual(["Auto-detect areas…", "Select manually ▾", "Guide"]) &&
+            emptyButtons[0].BackColor == TrackerTheme.Accent && emptyButtons.Skip(1).All(link => link.FlatAppearance.BorderSize == 0) &&
+            emptyButtons.All(button => form.ClientRectangle.Contains(form.RectangleToClient(button.RectangleToScreen(button.ClientRectangle)))),
+            "The first-run card must offer a primary Auto-detect action plus manual-selection and guide links.");
+        Save("ui-Tracking-first-run.png");
+        Assert(Descendants(emptyState).OfType<Label>().All(label => label.PreferredWidth <= label.Width &&
+                emptyState.RectangleToScreen(emptyState.ClientRectangle).Contains(label.RectangleToScreen(label.ClientRectangle))),
+            "First-run instructions must not be clipped: " + string.Join("; ", Descendants(emptyState).OfType<Label>().Select(label =>
+                $"{label.Text} {TextRenderer.MeasureText(label.Text, label.Font).Width}/{label.Width}")));
     }
     finally
     {
@@ -1535,6 +1625,105 @@ static void RenderCaptureStatusStates(MainForm form, Control navigation, string 
         }
 
         SetErrors(savedErrors);
+    }
+}
+
+// Verifies the de-buttoned Tracking page: few visible actions, dark menus, the track selector and hover-only copy actions.
+static void CheckTrackingPage(MainForm form, Control page, TrackerSettings settings, string outputDirectory)
+{
+    const System.Reflection.BindingFlags flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+    var selector = Descendants(page).OfType<SegmentedControl>().Single(control => control.Name == "TrackSelector");
+    Assert(selector.Visible && selector.Segments.Select(segment => segment.Text).SequenceEqual(["All", "Grenade", "Melee", "Class"]) &&
+        selector.SelectedIndex == (settings.SoloAbility is { } solo ? 1 + (int)solo : 0),
+        "Tracking must offer one segmented All / Grenade / Melee / Class selector reflecting solo tracking.");
+    var actions = Descendants(page).Where(control => control.Visible &&
+        (control is SegmentedControl || control is ButtonBase and not CopyResultButton and not RadioButton)).ToArray();
+    Assert(actions.Length <= 5,
+        $"Tracking should show at most five actions at rest: {string.Join(", ", actions.Select(action => action.Text))}");
+    Assert(!Descendants(page).OfType<ButtonBase>().Any(button => button.Visible &&
+            (button.Text is "Guide" or "Reset areas" or "Select area…" or "Auto-detect areas…" || button.Text.StartsWith("Track only"))),
+        "Area setup actions must live in the Areas menu.");
+    Assert(!Descendants(page).OfType<Label>().Any(label => label.Visible &&
+            System.Text.RegularExpressions.Regex.IsMatch(label.Text, @"^\d+ × \d+$")),
+        "The area-size column must be removed from the main page.");
+    var copies = Descendants(page).OfType<CopyResultButton>().ToArray();
+    Assert(copies.All(copy => copy.Visible && copy.Enabled && copy.TabStop && !copy.IconVisible),
+        "Copy actions must stay hidden until hover or focus while remaining keyboard focusable.");
+    if (copies[0].Focus())
+    {
+        Assert(copies[0].IconVisible, "A focused copy action must be visible.");
+        page.Focus();
+    }
+
+    var pause = Descendants(page).OfType<Button>().Single(button => button.Name == "PauseDetection");
+    Assert(pause.Visible && pause.BackColor == TrackerTheme.Accent && pause.FlatAppearance.BorderSize == 0,
+        "Pause detection must be the filled primary action on Tracking.");
+    var overlayToggle = Descendants(page).OfType<ToggleSwitch>().Single(control => control.Name == "OverlayToggle");
+    var overlayVisible = settings.OverlayVisible;
+    Assert(overlayToggle.Visible && overlayToggle.Checked == overlayVisible && overlayToggle.Text == "Overlay",
+        "The compact overlay toggle must reflect the overlay setting.");
+    var onClick = typeof(Control).GetMethod("OnClick", flags)!;
+    onClick.Invoke(overlayToggle, [EventArgs.Empty]);
+    Assert(settings.OverlayVisible != overlayVisible && overlayToggle.Checked != overlayVisible,
+        "The overlay toggle must switch the overlay setting.");
+    onClick.Invoke(overlayToggle, [EventArgs.Empty]);
+    Assert(settings.OverlayVisible == overlayVisible && overlayToggle.Checked == overlayVisible,
+        "Toggling the overlay twice must restore it.");
+
+    var areasButton = Descendants(page).OfType<Button>().Single(button => button.Name == "AreasButton");
+    var areasMenu = areasButton.ContextMenuStrip!;
+    Assert(areasMenu.Items.OfType<ToolStripMenuItem>().Select(item => item.Text).SequenceEqual([
+            "Auto-detect areas…", "Select grenade area…", "Select melee area…", "Select class ability area…",
+            "Selection guide", "Reset areas…"]) &&
+        areasMenu.Items.OfType<ToolStripSeparator>().Count() == 2,
+        "The Areas menu must hold detection, manual selection, the guide and reset.");
+    var moreButton = Descendants(page).OfType<Button>().Single(button => button.Name == "MoreButton");
+    Assert(moreButton.AccessibleName == "More actions" &&
+        moreButton.ContextMenuStrip!.Items.OfType<ToolStripMenuItem>().Any(item => item.Text == "Move overlay"),
+        "The overflow menu must offer Move overlay.");
+    foreach (var (anchor, name) in new[] { (areasButton, "Areas"), (moreButton, "More") })
+    {
+        var menu = anchor.ContextMenuStrip!;
+        Assert(menu.BackColor == TrackerTheme.Surface && menu.Renderer is ToolStripProfessionalRenderer
+            { ColorTable.ToolStripDropDownBackground: var menuBack } && menuBack == TrackerTheme.Surface,
+            "Menus must use the dark theme renderer.");
+        menu.Show(anchor, new Point(0, anchor.Height + 2));
+        try
+        {
+            using var image = new Bitmap(menu.Width, menu.Height);
+            menu.DrawToBitmap(image, new Rectangle(Point.Empty, image.Size));
+            Assert(image.GetPixel(image.Width / 2, image.Height - 3).GetBrightness() < 0.3 && HasReadableText(image),
+                "Menus must render light text on a dark surface.");
+            image.Save(Path.Combine(outputDirectory, $"ui-Menu-{name}.png"));
+        }
+        finally
+        {
+            menu.Close();
+        }
+    }
+
+    var savedSolo = settings.SoloAbility;
+    var setSolo = typeof(MainForm).GetMethod("SetSolo", flags)!;
+    var statusLabels = (Dictionary<AbilityKind, Label>)typeof(MainForm).GetField("_statusLabels", flags)!.GetValue(form)!;
+    try
+    {
+        selector.Segments[1].PerformClick();
+        Assert(settings.SoloAbility == AbilityKind.Grenade && selector.SelectedIndex == 1 &&
+            statusLabels[AbilityKind.Melee].Text.StartsWith("Skipped", StringComparison.Ordinal) &&
+            statusLabels[AbilityKind.ClassAbility].ForeColor == TrackerTheme.Muted,
+            "Choosing one ability must track it alone and mark the others as skipped.");
+        using (var image = new Bitmap(form.Width, form.Height))
+        {
+            form.DrawToBitmap(image, new Rectangle(Point.Empty, image.Size));
+            image.Save(Path.Combine(outputDirectory, "ui-Tracking-solo.png"));
+        }
+        selector.Segments[0].PerformClick();
+        Assert(settings.SoloAbility is null && !statusLabels[AbilityKind.Melee].Text.StartsWith("Skipped", StringComparison.Ordinal),
+            "All must track every ability again.");
+    }
+    finally
+    {
+        setSolo.Invoke(form, [savedSolo]);
     }
 }
 
