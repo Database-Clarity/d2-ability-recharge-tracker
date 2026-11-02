@@ -10,6 +10,12 @@ HeadlessUi.Enabled = true;
 
 if (args.Length == 2 && args[0] == "--ui-smoke")
 {
+    // Run against fresh, isolated portable storage next to the test binary (like CI), never the user's AppData settings.
+    var portableFlag = Path.Combine(AppContext.BaseDirectory, "portable.flag");
+    File.WriteAllText(portableFlag, "");
+    foreach (var stale in new[] { "settings.json", "measurement-history.json", "update-source-version.txt" })
+        File.Delete(Path.Combine(AppContext.BaseDirectory, stale));
+    Assert(TrackerStoragePaths.Current.IsPortable, "The UI smoke test must use isolated portable storage.");
     Exception? failure = null;
     var thread = new Thread(() =>
     {
@@ -551,6 +557,7 @@ if (args.Length == 2 && args[0] == "--ui-smoke")
     thread.SetApartmentState(ApartmentState.STA);
     thread.Start();
     Assert(thread.Join(TimeSpan.FromSeconds(30)), "UI smoke check must finish within 30 seconds.");
+    File.Delete(portableFlag);
     if (failure is not null)
     {
         throw new InvalidOperationException("UI smoke check failed.", failure);
@@ -1710,7 +1717,29 @@ static void RenderCaptureStatusStates(MainForm form, Control navigation, string 
 }
 
 // Verifies the de-buttoned Tracking page: few visible actions, dark menus, the track selector and hover-only copy actions.
+// Seeds sample areas when the machine has none (e.g. CI), so the configured Tracking layout is checked, then restores them.
 static void CheckTrackingPage(MainForm form, Control page, TrackerSettings settings, string outputDirectory)
+{
+    const System.Reflection.BindingFlags flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+    var savedRegions = settings.Slots.ToDictionary(slot => slot.Kind, slot => slot.Region);
+    foreach (var slot in settings.Slots)
+        slot.Region ??= new Rectangle(100 + 90 * (int)slot.Kind, 900, 60, 64);
+    typeof(MainForm).GetMethod("UpdateStatus", flags)!.Invoke(form, null);
+    form.PerformLayout();
+    try
+    {
+        CheckConfiguredTrackingPage(form, page, settings, outputDirectory);
+    }
+    finally
+    {
+        foreach (var slot in settings.Slots)
+            slot.Region = savedRegions[slot.Kind];
+        typeof(MainForm).GetMethod("UpdateStatus", flags)!.Invoke(form, null);
+        form.PerformLayout();
+    }
+}
+
+static void CheckConfiguredTrackingPage(MainForm form, Control page, TrackerSettings settings, string outputDirectory)
 {
     const System.Reflection.BindingFlags flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
     var selector = Descendants(page).OfType<SegmentedControl>().Single(control => control.Name == "TrackSelector");
