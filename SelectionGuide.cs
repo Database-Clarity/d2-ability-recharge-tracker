@@ -65,7 +65,7 @@ internal sealed class SelectionGuide : AppWindow
         graphics.DrawString("Normal border", Font, muted, 25, 439);
         graphics.DrawString("Brief thickening", Font, good, 228, 439);
         graphics.DrawString("Start at this captured frame.\nThe moving line inside the square\nis NOT the start trigger.", Font, muted, 410, 357);
-        graphics.DrawString("3  Wheel / +/-: zoom   |   Right/middle-drag: pan\nDrag inside: move   |   Drag corners: resize   |   Use selection: save", Font, white, 22, 481);
+        graphics.DrawString("3  Wheel / +/-: zoom   |   Right/middle-drag: pan\nDrag inside: move   |   Drag corners: resize   |   Use all three / Use selection: confirm", Font, white, 22, 481);
         graphics.Restore(state);
     }
 

@@ -44,7 +44,7 @@ internal sealed partial class MainForm : AppWindow
     private readonly FlatNumericUpDown _testDelayPicker = new();
     private readonly Label _testStatus = new();
     private readonly Label _hudRecordingStatus = new();
-    private readonly PathLinkLabel _lastRecordingLink = new();
+    private readonly Button _captureFolderButton = new();
     private string? _lastRecordingPath;
     private readonly RepeatTestSession _repeatTest = new();
     private readonly Dictionary<AbilityKind, AbilitySlotTracker> _trackers = [];
@@ -61,6 +61,7 @@ internal sealed partial class MainForm : AppWindow
     private BindingCaptureTarget? _bindingCaptureTarget;
     private bool _inputListenerAvailable;
     private double _captureRate;
+    private long _lastCapturedFrame;
     private string? _captureLoopError;
     private volatile string _captureBackend = "GDI";
     private string? _inputListenerError;
@@ -86,7 +87,9 @@ internal sealed partial class MainForm : AppWindow
         _settings = LoadSettings();
         InitializeChangelogVersion();
         EnsureSlotSettings();
-        Text = $"D2 Ability Recharge Tracker v{UpdateChecker.CurrentVersion.ToString(3)}";
+        Text = UpdateChecker.IsReleaseBuild
+            ? $"D2 Ability Recharge Tracker v{UpdateChecker.CurrentVersion.ToString(3)}"
+            : "D2 Ability Recharge Tracker · development";
         _targetCaptureRate = Math.Clamp(_settings.CaptureRate, 30, 240);
         AutoSize = true;
         AutoSizeMode = AutoSizeMode.GrowAndShrink;
@@ -309,7 +312,7 @@ internal sealed partial class MainForm : AppWindow
         Place(detection, _pauseBindingButton, 1, 2);
         Place(header, _toggleButton, 0, 0);
 
-        var abilities = Grid(78, 480, 70, 130, 106);
+        var abilities = Grid(96, 450, 70, 130, 118);
         string[] headings = ["Ability", "Status", "Area", "", ""];
         for (var column = 0; column < headings.Length; column++)
         {
@@ -340,7 +343,7 @@ internal sealed partial class MainForm : AppWindow
             };
             var soloToggle = new CheckBox
             {
-                Text = "Solo",
+                Text = "Track only",
                 Appearance = Appearance.Button,
                 TextAlign = ContentAlignment.MiddleCenter,
                 Checked = _settings.SoloAbility == kind
@@ -504,14 +507,11 @@ internal sealed partial class MainForm : AppWindow
         _hudRecordingStatus.Visible = false;
         Place(recording, _recordHudButton, 0, 0);
         Place(recording, _hudRecordingStatus, 0, 1, 2);
-        _lastRecordingLink.AutoSize = false;
-        _lastRecordingLink.Height = TrackerTheme.ControlHeight;
-        _lastRecordingLink.LinkColor = TrackerTheme.Accent;
-        _lastRecordingLink.ActiveLinkColor = TrackerTheme.Text;
-        _lastRecordingLink.VisitedLinkColor = TrackerTheme.Accent;
-        _lastRecordingLink.Visible = false;
-        _lastRecordingLink.LinkClicked += (_, _) => OpenLastHudRecording();
-        Place(recording, _lastRecordingLink, 1, 0);
+        _captureFolderButton.Text = "Open capture folder";
+        _captureFolderButton.Width = 160;
+        _captureFolderButton.Click += (_, _) => OpenCaptureFolder();
+        _toolTip.SetToolTip(_captureFolderButton, Path.GetDirectoryName(AbilityHudRecorder.DefaultPath(DateTime.Now)));
+        Place(recording, _captureFolderButton, 1, 0, stretch: false);
 
         _stateStatus.AutoSize = false;
         _stateStatus.Height = 24;
@@ -624,7 +624,6 @@ internal sealed partial class MainForm : AppWindow
             ClientSize = new Size(width + Padding.Horizontal, height);
         }
         Shown += (_, _) => FitWindowToDisplay();
-        _lastRecordingLink.VisibleChanged += (_, _) => FitWindowToDisplay();
         _hudRecordingStatus.VisibleChanged += (_, _) => FitWindowToDisplay();
         DpiChanged += (_, _) => BeginInvoke((Action)FitWindowToDisplay);
         ClientSize = root.GetPreferredSize(Size.Empty) + Padding.Size;
@@ -733,23 +732,16 @@ internal sealed partial class MainForm : AppWindow
     internal void SetLastRecordingPath(string path)
     {
         _lastRecordingPath = path;
-        _lastRecordingLink.FullPath = path;
-        _lastRecordingLink.Visible = true;
-        _toolTip.SetToolTip(_lastRecordingLink, path);
-        _lastRecordingLink.Parent?.PerformLayout();
-        _lastRecordingLink.Parent?.Parent?.PerformLayout();
-        _fitWindowToDisplay?.Invoke();
+        _toolTip.SetToolTip(_captureFolderButton, $"Latest recording: {path}");
     }
 
-    private void OpenLastHudRecording()
+    private void OpenCaptureFolder()
     {
-        if (_lastRecordingPath is not { } path)
-        {
-            return;
-        }
+        var path = Path.GetDirectoryName(_lastRecordingPath ?? AbilityHudRecorder.DefaultPath(DateTime.Now))!;
         try
         {
-            Process.Start(new ProcessStartInfo("explorer.exe", $"/select,\"{path}\"") { UseShellExecute = true });
+            Directory.CreateDirectory(path);
+            Process.Start(new ProcessStartInfo(path) { UseShellExecute = true });
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or System.ComponentModel.Win32Exception)
         {
@@ -1053,6 +1045,7 @@ internal sealed partial class MainForm : AppWindow
                 if (CaptureFrame(desktop.DeviceContext, duplication))
                 {
                     capturedFrames++;
+                    Interlocked.Exchange(ref _lastCapturedFrame, Stopwatch.GetTimestamp());
                 }
 
                 now = Stopwatch.GetTimestamp();
@@ -1276,17 +1269,25 @@ internal sealed partial class MainForm : AppWindow
                 }
 
                 _soloToggles[kind].Checked = _settings.SoloAbility == kind;
+                _soloToggles[kind].Text = _settings.SoloAbility == kind ? "Only this ✓" : "Track only";
                 if (!IsTracked(kind))
                 {
-                    _statusLabels[kind].Text = $"Not tracked\nSolo: {KindName(_settings.SoloAbility!.Value)}";
+                    _statusLabels[kind].Text = $"Skipped (track only)\nTracking {KindName(_settings.SoloAbility!.Value)}";
                     _statusLabels[kind].ForeColor = TrackerTheme.Muted;
                     continue;
                 }
 
                 if (!_monitoring)
                 {
-                    _statusLabels[kind].Text = PausedMeasurementStatus(tracker);
+                    _statusLabels[kind].Text = "Paused · " + PausedMeasurementStatus(tracker);
                     _statusLabels[kind].ForeColor = TrackerTheme.Muted;
+                    continue;
+                }
+
+                if (slot.Region is not null && !HasRecentCapture())
+                {
+                    _statusLabels[kind].Text = UnavailableMeasurementStatus(tracker);
+                    _statusLabels[kind].ForeColor = TrackerTheme.Orange;
                     continue;
                 }
 
@@ -1314,6 +1315,7 @@ internal sealed partial class MainForm : AppWindow
             }
 
             _toggleButton.Text = WithShortcut(_monitoring ? "Pause detection" : "Resume detection", PauseBinding);
+            _toggleButton.ForeColor = !_monitoring ? TrackerTheme.Muted : HasRecentCapture() ? TrackerTheme.Green : TrackerTheme.Orange;
             _startTestButton.Text = WithShortcut("Start test", _settings.RepeatTestBinding);
             _stopTestButton.Text = WithShortcut("Stop test", _settings.RepeatTestBinding);
             UpdateOverlayToggleText();
@@ -1322,9 +1324,15 @@ internal sealed partial class MainForm : AppWindow
                 : _inputListenerError is { } inputListenerError
                 ? $"Input shortcuts unavailable: {inputListenerError}"
                 : _monitoring
-                ? $"{_captureBackend} · {_captureRate:F0}/{_targetCaptureRate} Hz"
+                ? !AbilityKinds.Any(kind => IsTracked(kind) && GetSlot(kind).Region is not null)
+                    ? "Select ability areas to begin"
+                    : !HasRecentCapture() ? "Detection enabled · waiting for capture frames"
+                    : _captureRate <= 0 ? $"Detecting · {_captureBackend} · starting"
+                    : $"Detecting · {_captureBackend} · {_captureRate:F0}/{_targetCaptureRate} Hz"
                 : PauseBinding is { } pause ? $"Paused · {pause} to resume" : "Paused";
-            _testStatus.Text = _repeatTest.Phase == RepeatTestPhase.Idle ? string.Empty : _repeatTest.Status(DateTime.UtcNow);
+            _testStatus.Text = _repeatTest.Phase == RepeatTestPhase.Idle
+                ? "Ready · start the test, then manually use the ability once. Cycle results appear here."
+                : _repeatTest.Status(DateTime.UtcNow);
             _testAbilityPicker.Enabled = !_repeatTest.IsActive;
             _testCyclesPicker.Enabled = !_repeatTest.IsActive;
             _testDelayPicker.Enabled = !_repeatTest.IsActive;
@@ -1337,7 +1345,14 @@ internal sealed partial class MainForm : AppWindow
                     _bindingCaptureTarget is null;
             _stopTestButton.Enabled = _repeatTest.IsActive;
         }
+
     }
+
+    private bool HasRecentCapture() => CaptureIsRecent(Stopwatch.GetTimestamp(),
+        Interlocked.Read(ref _lastCapturedFrame), Stopwatch.Frequency);
+
+    internal static bool CaptureIsRecent(long now, long lastFrame, long frequency) =>
+        lastFrame > 0 && now >= lastFrame && now - lastFrame < frequency * 2;
 
     private InputBinding? PauseBinding => _settings.PauseShortcutCleared ? null : _settings.PauseBinding ?? InputBinding.DefaultPause;
 
@@ -1876,6 +1891,7 @@ internal sealed partial class MainForm : AppWindow
             }
 
             _monitoring = enabled;
+            Interlocked.Exchange(ref _lastCapturedFrame, 0);
             if (!enabled)
             {
                 _repeatTest.Stop();
@@ -1900,6 +1916,11 @@ internal sealed partial class MainForm : AppWindow
 
     internal static string PausedMeasurementStatus(AbilitySlotTracker tracker)
         => MeasurementStatus(tracker, true, paused: true);
+
+    internal static string UnavailableMeasurementStatus(AbilitySlotTracker tracker) =>
+        tracker.LastDuration is { } duration
+            ? $"No capture frames · last {FormatDuration(duration)}{MeasurementSuffix(tracker)}\n{RegressionSuffix(tracker)}"
+            : "No capture frames\nWaiting for screen capture";
 
     internal static string WithShortcut(string text, InputBinding? binding) =>
         binding is null ? text : $"{text} ({binding})";
@@ -2248,7 +2269,7 @@ internal sealed partial class MainForm : AppWindow
     {
         AbilityKind.Grenade => "Grenade",
         AbilityKind.Melee => "Melee",
-        AbilityKind.ClassAbility => "Class",
+        AbilityKind.ClassAbility => "Class ability",
         _ => kind.ToString()
     };
 

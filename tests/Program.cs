@@ -45,20 +45,18 @@ if (args.Length == 2 && args[0] == "--ui-smoke")
                         {
                             Assert(Descendants(page).OfType<Button>().Count(button => button.Text.StartsWith("Auto-detect")) == 1,
                                 "Tracking should expose one global auto-detect action.");
-                            Assert(!Descendants(page).OfType<Button>().Any(button => button.Text == "Record…" || button.Text == "Open folder"),
-                                "Tracking must not repeat shortcut-recording or open-folder buttons.");
+                            Assert(!Descendants(page).OfType<Button>().Any(button => button.Text == "Record…"),
+                                "Tracking must not repeat shortcut-recording buttons.");
+                            Assert(Descendants(page).OfType<Button>().Count(button => button.Text == "Open capture folder") == 1,
+                                "Tracking should expose one capture-folder action even before recording.");
                             Assert(Descendants(page).OfType<TwoLineStatusLabel>().Count() == 3,
                                 "Every ability should use the fixed two-line status renderer.");
                             Assert(Descendants(form).OfType<Button>().Any(button => button.Text.Contains("Pause detection (")),
                                 "The pause action should display its hotkey.");
                             const string longRecording = @"C:\Users\Somebody\Documents\D2AbilityTracker\HUD recordings\A very long directory for this measurement session\Another long directory\latest-hud-recording-2026-11-02.zip";
                             form.SetLastRecordingPath(longRecording);
-                            var recordingLink = Descendants(page).OfType<PathLinkLabel>().Single();
-                            Assert(recordingLink.Visible && recordingLink.FullPath == longRecording &&
-                                recordingLink.Text.Contains('…') && recordingLink.Text.EndsWith(Path.GetFileName(longRecording)),
-                                "The current launch's last recording should appear as a link.");
-                            Assert(recordingLink.AccessibleName == longRecording && !recordingLink.UseMnemonic,
-                                "The full path should remain accessible and ampersands must display literally.");
+                            Assert(!Descendants(page).OfType<PathLinkLabel>().Any(),
+                                "The folder action must replace the path link.");
                         }
                         foreach (var picker in Descendants(page).OfType<ComboBox>())
                         {
@@ -139,6 +137,12 @@ if (args.Length == 2 && args[0] == "--ui-smoke")
                     Assert(historyGrid.Columns["Note"]!.MinimumWidth >= 120 &&
                         historyGrid.ScrollBars == ScrollBars.Both,
                         "A narrow history window must retain a readable note column with horizontal scrolling.");
+                    Assert(!historyGrid.Columns.Contains("Uncertainty") &&
+                        historyGrid.Columns["Measured"]!.HeaderText == "Measured ±" &&
+                        historyGrid.Columns["Regression"]!.HeaderText == "Regression ±",
+                        "Each duration must have its own clearly identified uncertainty.");
+                    Assert(historyGrid.ClientSize.Height >= historyGrid.ColumnHeadersHeight + 4 * historyGrid.RowTemplate.Height + SystemInformation.HorizontalScrollBarHeight,
+                        "Minimum-size history should reserve at least four measurement rows.");
                     foreach (var control in sessionActions.Controls.Cast<Control>())
                     {
                         Assert(historyForm.ClientRectangle.Contains(historyForm.RectangleToClient(
@@ -150,6 +154,18 @@ if (args.Length == 2 && args[0] == "--ui-smoke")
                         historyForm.DrawToBitmap(image, new Rectangle(Point.Empty, image.Size));
                         image.Save(Path.Combine(args[1], "ui-History-minimum.png"));
                     }
+                    var newSession = sessionActions.Controls.OfType<InputFrame>().Single().Controls.OfType<TextBox>().Single();
+                    newSession.Text = "Next stat test";
+                    sessionActions.Controls.OfType<Button>().Single(button => button.Text == "Start session").PerformClick();
+                    var sessionFilter = Descendants(historyForm).OfType<ComboBox>().Single(combo => combo.Items.Cast<object>()
+                        .Any(item => item.ToString() == "All sessions"));
+                    Assert(sessionFilter.Text.StartsWith("Next stat test") &&
+                        smokeHistory.Sessions.Single(session => session.Id == smokeHistory.ActiveSessionId).Name == "Next stat test",
+                        "Starting a session must activate it and select its history filter.");
+                    Descendants(historyForm).OfType<Button>().Single(button => button.Text == "End session").PerformClick();
+                    Assert(smokeHistory.ActiveSessionId is null &&
+                        !Descendants(historyForm).OfType<Button>().Single(button => button.Text == "Use session").Enabled,
+                        "Ending the selected session must clear activity and prevent reopening an ended session.");
                     Descendants(historyForm).OfType<Button>().Single(button => button.AccessibleName == "Close").PerformClick();
                     Assert(!historyForm.Visible, "The integrated close button must close its window.");
                     using (var guide = new SelectionGuide())
@@ -528,6 +544,16 @@ Assert(estimatingTracker.Observe(line with { ChargeProgress = 0.55f }, start.Add
 Assert(CaptureSchedule.NextFrame(0, 10, 120, 1000) == 40, "Slow capture must get three times its work duration as rest.");
 Assert(CaptureSchedule.NextFrame(100, 101, 120, 1000) == 108, "Fast captures should respect the configured target.");
 Assert(CaptureSchedule.NextFrame(100, 150, 240, 1000) == 300, "Overruns must not cause a burst of catch-up captures.");
+Assert(!MainForm.CaptureIsRecent(1000, 0, 1000) &&
+    MainForm.CaptureIsRecent(2999, 1000, 1000) &&
+    !MainForm.CaptureIsRecent(3000, 1000, 1000),
+    "Capture activity must expire after two seconds and never infer activity before the first frame.");
+Assert(MainForm.UnavailableMeasurementStatus(estimatingTracker) == "No capture frames\nWaiting for screen capture",
+    "Unavailable capture must not imply a live recharge or completed measurement.");
+Assert(MainForm.UnavailableMeasurementStatus(finalTracker).Contains("last 10.00") &&
+    MainForm.UnavailableMeasurementStatus(finalTracker).Contains("regression") &&
+    MainForm.UnavailableMeasurementStatus(finalTracker).Split('\n').Length == 2,
+    "Unavailable capture must retain the last completed result and regression in two rows.");
 
 var repeatShortcut = new InputBinding(InputDevice.Keyboard, 0x79, InputModifiers.Alt);
 var settings = new TrackerSettings

@@ -80,7 +80,7 @@ internal sealed class ChangelogView : UserControl
         {
             AutoSize = true,
             AutoSizeMode = AutoSizeMode.GrowAndShrink,
-            FlowDirection = FlowDirection.RightToLeft,
+            FlowDirection = FlowDirection.LeftToRight,
             Dock = DockStyle.Fill,
             Margin = new Padding(0, 8, 0, 0)
         };

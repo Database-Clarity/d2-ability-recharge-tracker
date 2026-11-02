@@ -63,7 +63,8 @@ internal sealed class RegionPicker : Form
         _sourceBounds = sourceBounds;
         _sourceDescription = sourceDescription;
         _sourceCenter = new PointF(snapshot.Width / 2f, snapshot.Height / 2f);
-        _viewport = new RectangleF(0, 86, monitorBounds.Width, Math.Max(1, monitorBounds.Height - 138));
+        var toolbarHeight = initialSelections is null ? 86 : 110;
+        _viewport = new RectangleF(0, toolbarHeight, monitorBounds.Width, Math.Max(1, monitorBounds.Height - toolbarHeight - 52));
 
         Bounds = monitorBounds;
         StartPosition = FormStartPosition.Manual;
@@ -78,7 +79,7 @@ internal sealed class RegionPicker : Form
 
         _toolbar.BackColor = Color.FromArgb(14, 17, 24);
         _toolbar.Dock = DockStyle.Top;
-        _toolbar.Height = 86;
+        _toolbar.Height = toolbarHeight;
         _toolbar.Padding = new Padding(18, 8, 18, 8);
         _instructions.Text = $"Select inside {_sourceDescription}. Drag to mark the ability slot; adjust it before applying.";
         _instructions.ForeColor = Color.White;
@@ -108,8 +109,9 @@ internal sealed class RegionPicker : Form
         _toolbar.Controls.AddRange([_instructions, hint, _zoomOutButton, _zoomLabel, _zoomInButton, _guideButton]);
         if (initialSelections is not null)
         {
-            _instructions.Text = "Confirm all three ability areas. Select a box or legend item to adjust it.";
-            hint.Visible = false;
+            _instructions.Text = "Include all three full borders and bottom lines. Select a box or legend to adjust it.";
+            hint.Text = "Drag boxes/corners to adjust · Scroll to zoom · Right/middle-drag to pan · Esc cancels";
+            hint.Top = 78;
             string[] names = ["Grenade", "Melee", "Class ability"];
             for (var index = 0; index < names.Length; index++)
             {
@@ -142,7 +144,7 @@ internal sealed class RegionPicker : Form
         {
             Text = initialSelections is null
                 ? "Include the full square border; the strip below it is sampled automatically."
-                : "Include each full border and bottom line. Drag boxes/corners to adjust; scroll to zoom. Esc cancels.",
+                : string.Empty,
             ForeColor = Color.FromArgb(205, 215, 225),
             AutoEllipsis = true
         };

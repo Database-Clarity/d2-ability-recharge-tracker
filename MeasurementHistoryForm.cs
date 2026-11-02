@@ -23,7 +23,7 @@ internal sealed class MeasurementHistoryForm : AppWindow
         Text = "Measurement history";
         StartPosition = FormStartPosition.CenterParent;
         MinimizeBox = false;
-        MinimumSize = new Size(800, 440);
+        MinimumSize = new Size(800, 500);
         Size = new Size(980, 560);
         BackColor = TrackerTheme.Background;
         ForeColor = TrackerTheme.Text;
@@ -43,8 +43,8 @@ internal sealed class MeasurementHistoryForm : AppWindow
         _sessionName.Width = 145;
         _sessionName.BackColor = TrackerTheme.Surface;
         _startSession.Text = "Start session";
-        _endSession.Text = "End active";
-        _setActiveSession.Text = "Set active";
+        _endSession.Text = "End session";
+        _setActiveSession.Text = "Use session";
 
         var filters = new FlowLayoutPanel
         {
@@ -61,13 +61,23 @@ internal sealed class MeasurementHistoryForm : AppWindow
             WrapContents = false,
             Margin = Padding.Empty
         };
-        sessionActions.Controls.AddRange([new InputFrame(_sessionName), _startSession, _setActiveSession, _endSession]);
-        filters.Controls.AddRange([Field("Ability", _abilityFilter), Field("Session view", _sessionFilter),
-            Field("Session", sessionActions)]);
+        sessionActions.Controls.AddRange([new InputFrame(_sessionName), _startSession]);
+        var sessionView = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Margin = Padding.Empty };
+        sessionView.Controls.AddRange([_sessionFilter, _setActiveSession]);
+        filters.Controls.AddRange([Field("Ability", _abilityFilter), Field("View saved session", sessionView),
+            Field("New session name", sessionActions)]);
 
         _activeSession.AutoSize = true;
         _activeSession.ForeColor = TrackerTheme.Text;
-        _activeSession.Margin = new Padding(4, 8, 0, 4);
+        _activeSession.Margin = new Padding(4, 8, 8, 4);
+        var activeSessionRow = new FlowLayoutPanel
+        {
+            AutoSize = true,
+            Dock = DockStyle.Fill,
+            WrapContents = true,
+            Margin = new Padding(0, 2, 0, 6)
+        };
+        activeSessionRow.Controls.AddRange([_activeSession, _endSession]);
         _measurements.Dock = DockStyle.Fill;
         _measurements.ReadOnly = true;
         _measurements.AllowUserToAddRows = false;
@@ -96,12 +106,13 @@ internal sealed class MeasurementHistoryForm : AppWindow
         _measurements.EnableHeadersVisualStyles = false;
         foreach (var bar in _measurements.Controls.OfType<ScrollBar>())
             _ = new ScrollBarSkin(bar);
-        AddTextColumn("Ability", "Ability", 86);
-        AddTextColumn("Measured", "Measured", 145);
-        AddTextColumn("Regression", "Regression", 205);
-        AddTextColumn("Uncertainty", "Uncertainty", 105);
-        AddTextColumn("Time", "Measured at", 150);
+        AddTextColumn("Ability", "Ability", 90);
+        AddTextColumn("Measured", "Measured ±", 190);
+        AddTextColumn("Regression", "Regression ±", 190);
+        AddTextColumn("Time", "Measured at", 120);
         AddTextColumn("Note", "Note", 200, fill: true);
+        _measurements.Columns["Measured"]!.ToolTipText = "Observed event-to-event duration ± measurement uncertainty, in seconds.";
+        _measurements.Columns["Regression"]!.ToolTipText = "Full duration fitted from 10–90% charge ± regression uncertainty, in seconds.";
 
         _note.Multiline = true;
         _note.ScrollBars = ScrollBars.None;
@@ -155,7 +166,7 @@ internal sealed class MeasurementHistoryForm : AppWindow
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.Controls.Add(filters, 0, 0);
-        root.Controls.Add(_activeSession, 0, 1);
+        root.Controls.Add(activeSessionRow, 0, 1);
         root.Controls.Add(_measurements, 0, 2);
         var footer = new TableLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, ColumnCount = 1 };
         footer.Controls.Add(noteRow, 0, 0);
@@ -278,7 +289,7 @@ internal sealed class MeasurementHistoryForm : AppWindow
     {
         var previousChoice = _sessionFilter.SelectedItem as SessionFilter;
         var previousId = preferredSessionId ?? previousChoice?.SessionId;
-        var previousKind = previousChoice?.Kind ?? SessionFilterKind.All;
+        var previousKind = preferredSessionId is not null ? SessionFilterKind.Session : previousChoice?.Kind ?? SessionFilterKind.All;
         var sessions = _history.Sessions.OrderByDescending(session => session.StartedAt).ToArray();
         _sessionFilter.BeginUpdate();
         _sessionFilter.Items.Clear();
@@ -338,9 +349,8 @@ internal sealed class MeasurementHistoryForm : AppWindow
                 : string.Empty;
             var index = _measurements.Rows.Add(
                 AbilityName(measurement.Ability),
-                DurationDisplay.Format(TimeSpan.FromSeconds(measurement.DurationSeconds)),
+                $"{DurationDisplay.Format(TimeSpan.FromSeconds(measurement.DurationSeconds))} ± {measurement.UncertaintySeconds:F3} s",
                 regression + regressionUncertainty,
-                $"± {measurement.UncertaintySeconds:F3} s",
                 measurement.MeasuredAt.ToLocalTime().ToString("g"),
                 measurement.Note ?? string.Empty);
             _measurements.Rows[index].Tag = measurement.Id;
@@ -392,6 +402,7 @@ internal sealed class MeasurementHistoryForm : AppWindow
         _endSession.Enabled = writable && _history.ActiveSessionId is not null;
         _setActiveSession.Enabled = writable &&
             _sessionFilter.SelectedItem is SessionFilter { Kind: SessionFilterKind.Session, SessionId: { } id } &&
+            id != _history.ActiveSessionId &&
             _history.Sessions.Any(session => session.Id == id && session.EndedAt is null);
         _saveNote.Enabled = writable && hasSelection;
         _note.ReadOnly = !writable || !hasSelection;
