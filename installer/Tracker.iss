@@ -55,7 +55,7 @@ var
 
 procedure RememberPreviousVersion;
 var
-  Major, Minor, Revision, Build: Cardinal;
+  Major, Minor, Revision, Build: Word;
   TrackerPath: String;
 begin
   PreviousAppVersion := '';
