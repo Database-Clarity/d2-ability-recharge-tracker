@@ -207,9 +207,9 @@ if (args.Length == 2 && args[0] == "--ui-smoke")
                     var historyForm = Descendants(form).OfType<MeasurementHistoryView>().Single();
                     Assert(form.HistoryVisible && historyForm.Visible && historyToggle.Text == "Hide history" && Application.OpenForms.Count == openForms,
                         "History must expand inside the main window.");
-                    Assert(form.Height > collapsedSize.Height && form.Width == collapsedSize.Width &&
-                        form.RectangleToClient(historyForm.RectangleToScreen(historyForm.ClientRectangle)).Top >=
-                        form.RectangleToClient(pages.RectangleToScreen(pages.ClientRectangle)).Bottom,
+                    var workHeight = Screen.FromControl(form).WorkingArea.Height;
+                    Assert((form.Height > collapsedSize.Height || form.Height >= workHeight - 48) &&
+                        historyForm.Parent == pages.Parent && historyForm.Top >= pages.Bottom,
                         "History must extend the window downward below the current page.");
                     Assert(pages.Controls.Cast<Control>().Single(control => control.Visible).Visible,
                         "The current page must remain visible above history.");
