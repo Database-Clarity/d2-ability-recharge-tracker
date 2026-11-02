@@ -395,6 +395,7 @@ var start = DateTime.UnixEpoch;
 ChangelogTests.Run();
 MeasurementHistoryTests.Run();
 RepeatSummaryTests.Run();
+TrackerStoragePathsTests.Run();
 using (var pathFont = new Font("Segoe UI", 9))
 {
     const string path = @"C:\Users\Somebody\Documents\D2AbilityTracker\HUD recordings\latest-hud.zip";

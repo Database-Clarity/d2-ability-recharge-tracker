@@ -9,7 +9,7 @@ internal sealed partial class MainForm
 
     private void InitializeMeasurementHistory()
     {
-        _measurementHistory = new MeasurementHistoryStore();
+        _measurementHistory = new MeasurementHistoryStore(_storagePaths.MeasurementHistoryPath);
         if (_measurementHistory.LoadError is { } error)
         {
             Shown += (_, _) => ReportMeasurementHistoryError($"Couldn't load measurement history; the file was left unchanged: {error}");
@@ -18,7 +18,8 @@ internal sealed partial class MainForm
 
     private MeasurementHistoryView CreateHistoryView()
     {
-        _historyView = new MeasurementHistoryView(_measurementHistory ??= new MeasurementHistoryStore())
+        _historyView = new MeasurementHistoryView(_measurementHistory ??=
+            new MeasurementHistoryStore(_storagePaths.MeasurementHistoryPath))
         {
             Visible = false,
             Width = GridWidth,
@@ -79,7 +80,7 @@ internal sealed partial class MainForm
         {
             try
             {
-                _measurementHistory ??= new MeasurementHistoryStore();
+                _measurementHistory ??= new MeasurementHistoryStore(_storagePaths.MeasurementHistoryPath);
                 if (_measurementHistory.CanWrite)
                 {
                     _measurementHistory.TryAddMeasurement(measurement, sessionId);

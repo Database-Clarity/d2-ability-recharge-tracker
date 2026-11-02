@@ -10,14 +10,9 @@ namespace D2AbilityTracker;
 internal sealed partial class MainForm : AppWindow
 {
     private static readonly AbilityKind[] AbilityKinds = Enum.GetValues<AbilityKind>();
-    private readonly string _settingsPath = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-        "D2AbilityTracker",
-        "settings.json");
-    private readonly string _updateSourceVersionPath = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-        "D2AbilityTracker",
-        "update-source-version.txt");
+    private readonly TrackerStoragePaths _storagePaths = TrackerStoragePaths.Current;
+    private readonly string _settingsPath = TrackerStoragePaths.Current.SettingsPath;
+    private readonly string _updateSourceVersionPath = TrackerStoragePaths.Current.UpdateSourceVersionPath;
     private readonly TrackerSettings _settings;
     private readonly OverlayWindow _overlay = new();
     private readonly CancellationTokenSource _captureCancellation = new();
@@ -131,7 +126,7 @@ internal sealed partial class MainForm : AppWindow
                 await OpenChangelogAsync(startup: true);
             }
 
-            if (UpdateChecker.IsReleaseBuild && _settings.CheckForUpdatesOnStartup)
+            if (!_storagePaths.IsPortable && UpdateChecker.IsReleaseBuild && _settings.CheckForUpdatesOnStartup)
             {
                 await CheckForUpdateAsync(interactive: false);
             }
@@ -299,8 +294,18 @@ internal sealed partial class MainForm : AppWindow
         _toolTip.ForeColor = TrackerTheme.Text;
 
         var header = Grid(214, 176, 120, GridWidth - 510);
-        _updateButton.Text = "Check for updates";
-        _updateButton.Click += (_, _) => CheckOrInstallUpdate();
+        _updateButton.Text = _storagePaths.IsPortable ? "Get updates" : "Check for updates";
+        _updateButton.Click += (_, _) =>
+        {
+            if (_storagePaths.IsPortable)
+            {
+                OpenPortableReleasePage();
+            }
+            else
+            {
+                CheckOrInstallUpdate();
+            }
+        };
         _changelogButton.Text = "Changelog";
         _changelogButton.Click += async (_, _) => await OpenChangelogAsync(startup: false);
 
@@ -1507,6 +1512,22 @@ internal sealed partial class MainForm : AppWindow
         await CheckAndOfferUpdateAsync(
             () => CheckForUpdateAsync(interactive: true),
             InstallUpdateAsync);
+    }
+
+    private void OpenPortableReleasePage()
+    {
+        try
+        {
+            Process.Start(new ProcessStartInfo($"https://github.com/{UpdateChecker.Repository}/releases/latest")
+            {
+                UseShellExecute = true
+            });
+        }
+        catch (System.ComponentModel.Win32Exception exception)
+        {
+            MessageBox.Show(this, $"Couldn't open the release page: {exception.Message}", Text,
+                MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
     }
 
     internal static async Task CheckAndOfferUpdateAsync(
