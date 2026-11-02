@@ -22,6 +22,7 @@ internal sealed class ChangelogView : UserControl
         var content = new RichTextBox
         {
             ReadOnly = true,
+            HideSelection = true,
             DetectUrls = true,
             WordWrap = true,
             ScrollBars = RichTextBoxScrollBars.Vertical,
@@ -73,6 +74,7 @@ internal sealed class ChangelogView : UserControl
             Anchor = AnchorStyles.Right
         };
         closeButton.Click += (_, _) => CloseRequested?.Invoke(this, EventArgs.Empty);
+        Load += (_, _) => closeButton.Select();
 
         var footer = new FlowLayoutPanel
         {

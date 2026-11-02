@@ -44,7 +44,7 @@ internal sealed partial class MainForm : Form
     private readonly NumericUpDown _testDelayPicker = new();
     private readonly Label _testStatus = new();
     private readonly Label _hudRecordingStatus = new();
-    private readonly LinkLabel _lastRecordingLink = new();
+    private readonly PathLinkLabel _lastRecordingLink = new();
     private string? _lastRecordingPath;
     private readonly RepeatTestSession _repeatTest = new();
     private readonly Dictionary<AbilityKind, AbilitySlotTracker> _trackers = [];
@@ -327,7 +327,7 @@ internal sealed partial class MainForm : Form
                 AutoEllipsis = true,
                 ForeColor = TrackerTheme.Muted,
                 TextAlign = ContentAlignment.MiddleLeft,
-                Height = 42
+                Height = 48
             };
             var soloToggle = new CheckBox
             {
@@ -343,6 +343,12 @@ internal sealed partial class MainForm : Form
             Place(abilities, regionLabel, 2, row, stretch: false);
             Place(abilities, selectButton, 3, row);
             Place(abilities, soloToggle, 4, row);
+            foreach (var control in new Control[] { name, regionLabel, selectButton, soloToggle })
+            {
+                control.Anchor = control is Label ? AnchorStyles.Top | AnchorStyles.Left
+                    : AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
+                control.Margin = control is Label ? new Padding(3, 9, 5, 3) : new Padding(3, 3, 5, 3);
+            }
             _selectButtons.Add(kind, selectButton);
             _regionLabels.Add(kind, regionLabel);
             _statusLabels.Add(kind, statusLabel);
@@ -483,7 +489,6 @@ internal sealed partial class MainForm : Form
         Place(recording, _hudRecordingStatus, 0, 1, 2);
         _lastRecordingLink.AutoSize = false;
         _lastRecordingLink.Height = 26;
-        _lastRecordingLink.AutoEllipsis = true;
         _lastRecordingLink.LinkColor = TrackerTheme.Accent;
         _lastRecordingLink.ActiveLinkColor = TrackerTheme.Text;
         _lastRecordingLink.VisitedLinkColor = TrackerTheme.Accent;
@@ -712,7 +717,7 @@ internal sealed partial class MainForm : Form
     internal void SetLastRecordingPath(string path)
     {
         _lastRecordingPath = path;
-        _lastRecordingLink.Text = path;
+        _lastRecordingLink.FullPath = path;
         _lastRecordingLink.Visible = true;
         _toolTip.SetToolTip(_lastRecordingLink, path);
         _lastRecordingLink.Parent?.PerformLayout();
@@ -1586,7 +1591,6 @@ internal sealed partial class MainForm : Form
             if (_mainViewport is not null) _mainViewport.Visible = true;
             _fitWindowToDisplay?.Invoke();
         };
-        view.Focus();
     }
 
     private void TogglePauseBindingCapture()

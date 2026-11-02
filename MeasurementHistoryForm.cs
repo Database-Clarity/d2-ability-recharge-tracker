@@ -53,14 +53,17 @@ internal sealed class MeasurementHistoryForm : Form
             WrapContents = true,
             Padding = new Padding(0, 0, 0, 4)
         };
-        filters.Controls.AddRange([
-            Field("Ability", _abilityFilter),
-            Field("Session view", _sessionFilter),
-            _sessionName,
-            _startSession,
-            _setActiveSession,
-            _endSession
-        ]);
+        var sessionActions = new FlowLayoutPanel
+        {
+            Name = "SessionActions",
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            WrapContents = false,
+            Margin = Padding.Empty
+        };
+        sessionActions.Controls.AddRange([_sessionName, _startSession, _setActiveSession, _endSession]);
+        filters.Controls.AddRange([Field("Ability", _abilityFilter), Field("Session view", _sessionFilter),
+            Field("Session", sessionActions)]);
 
         _activeSession.AutoSize = true;
         _activeSession.ForeColor = TrackerTheme.Muted;
@@ -83,6 +86,13 @@ internal sealed class MeasurementHistoryForm : Form
         _measurements.DefaultCellStyle.SelectionForeColor = TrackerTheme.Text;
         _measurements.ColumnHeadersDefaultCellStyle.BackColor = TrackerTheme.Background;
         _measurements.ColumnHeadersDefaultCellStyle.ForeColor = TrackerTheme.Text;
+        _measurements.ColumnHeadersDefaultCellStyle.SelectionBackColor = TrackerTheme.Background;
+        _measurements.ColumnHeadersDefaultCellStyle.SelectionForeColor = TrackerTheme.Text;
+        _measurements.ColumnHeadersBorderStyle = DataGridViewHeaderBorderStyle.Single;
+        _measurements.ColumnHeadersHeightSizeMode = DataGridViewColumnHeadersHeightSizeMode.DisableResizing;
+        _measurements.ColumnHeadersHeight = 28;
+        _measurements.CellBorderStyle = DataGridViewCellBorderStyle.SingleHorizontal;
+        _measurements.RowTemplate.Height = 28;
         _measurements.EnableHeadersVisualStyles = false;
         AddTextColumn("Ability", "Ability", 86);
         AddTextColumn("Measured", "Measured", 145);
@@ -398,6 +408,7 @@ internal sealed class MeasurementHistoryForm : Form
             Name = name,
             HeaderText = header,
             Width = width,
+            MinimumWidth = fill ? 120 : 5,
             AutoSizeMode = fill ? DataGridViewAutoSizeColumnMode.Fill : DataGridViewAutoSizeColumnMode.None,
             SortMode = DataGridViewColumnSortMode.NotSortable
         });

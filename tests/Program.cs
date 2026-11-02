@@ -44,9 +44,14 @@ if (args.Length == 2 && args[0] == "--ui-smoke")
                                 "Every ability should use the fixed two-line status renderer.");
                             Assert(Descendants(form).OfType<Button>().Any(button => button.Text.Contains("Pause detection (")),
                                 "The pause action should display its hotkey.");
-                            form.SetLastRecordingPath(@"C:\Recordings\latest-hud.zip");
-                            Assert(Descendants(page).OfType<LinkLabel>().Single().Visible,
+                            const string longRecording = @"C:\Users\Somebody\Documents\D2AbilityTracker\HUD recordings\A very long directory for this measurement session\Another long directory\latest-hud-recording-2026-11-02.zip";
+                            form.SetLastRecordingPath(longRecording);
+                            var recordingLink = Descendants(page).OfType<PathLinkLabel>().Single();
+                            Assert(recordingLink.Visible && recordingLink.FullPath == longRecording &&
+                                recordingLink.Text.Contains('…') && recordingLink.Text.EndsWith(Path.GetFileName(longRecording)),
                                 "The current launch's last recording should appear as a link.");
+                            Assert(recordingLink.AccessibleName == longRecording && !recordingLink.UseMnemonic,
+                                "The full path should remain accessible and ampersands must display literally.");
                         }
                         foreach (var picker in Descendants(page).OfType<ComboBox>())
                         {
@@ -84,6 +89,19 @@ if (args.Length == 2 && args[0] == "--ui-smoke")
                     }
                     historyForm.Size = historyForm.MinimumSize;
                     historyForm.PerformLayout();
+                    var sessionActions = Descendants(historyForm).Single(control => control.Name == "SessionActions");
+                    var actionTops = sessionActions.Controls.Cast<Control>().Select(control => control.Top).Distinct().Count();
+                    Assert(actionTops == 1, "Session controls must remain together without an orphaned action.");
+                    var historyGrid = Descendants(historyForm).OfType<DataGridView>().Single();
+                    Assert(historyGrid.Columns["Note"]!.MinimumWidth >= 120 &&
+                        historyGrid.ScrollBars == ScrollBars.Both,
+                        "A narrow history window must retain a readable note column with horizontal scrolling.");
+                    foreach (var control in sessionActions.Controls.Cast<Control>())
+                    {
+                        Assert(historyForm.ClientRectangle.Contains(historyForm.RectangleToClient(
+                            control.RectangleToScreen(control.ClientRectangle))),
+                            "Session actions must fit at the minimum window width.");
+                    }
                     using (var image = new Bitmap(historyForm.Width, historyForm.Height))
                     {
                         historyForm.DrawToBitmap(image, new Rectangle(Point.Empty, image.Size));
@@ -102,6 +120,7 @@ if (args.Length == 2 && args[0] == "--ui-smoke")
                     notes.Select(0, 1);
                     Assert(notes.SelectionFont is { Bold: true } releaseFont && releaseFont.Name == "Segoe UI",
                         "Release headings must retain the app's typography and emphasis.");
+                    notes.Select(0, 0);
                     using (var image = new Bitmap(form.Width, form.Height))
                     {
                         form.DrawToBitmap(image, new Rectangle(Point.Empty, image.Size));
@@ -165,6 +184,29 @@ if (args.Length > 0 && args[0] == "--replay")
 var start = DateTime.UnixEpoch;
 ChangelogTests.Run();
 MeasurementHistoryTests.Run();
+using (var pathFont = new Font("Segoe UI", 9))
+{
+    const string path = @"C:\Users\Somebody\Documents\D2AbilityTracker\HUD recordings\latest-hud.zip";
+    Assert(PathLinkLabel.CompactPath(path, pathFont, 2000) == path,
+        "Paths that fit should be displayed unchanged.");
+    foreach (var width in new[] { 0, 10, 30, 80, 120, 240, 400 })
+    {
+        var compact = PathLinkLabel.CompactPath(path, pathFont, width);
+        Assert(compact.Length == 0 || TextRenderer.MeasureText(compact, pathFont, Size.Empty,
+            TextFormatFlags.SingleLine | TextFormatFlags.NoPrefix).Width <= width,
+            "Compacted paths must fit their available pixel width.");
+        if (width >= 240) Assert(compact.EndsWith("latest-hud.zip"),
+            "Path compaction should preserve the filename whenever it fits.");
+    }
+    var longName = PathLinkLabel.CompactPath(@"C:\Recordings\a-recording-with-an-unusually-long-filename.zip", pathFont, 150);
+    Assert(longName.Contains('…') && longName.EndsWith(".zip"),
+        "A filename that is itself too long should retain its extension.");
+    using var pathLink = new PathLinkLabel { Width = 150, FullPath = path };
+    var narrowText = pathLink.Text;
+    pathLink.Width = 2000;
+    Assert(pathLink.Text == path && narrowText != path,
+        "Path truncation must recalculate when available width changes.");
+}
 var ability = AbilityKind.Grenade;
 var useBinding = new InputBinding(InputDevice.Keyboard, 0x47, InputModifiers.Control | InputModifiers.Shift);
 var session = new RepeatTestSession();
