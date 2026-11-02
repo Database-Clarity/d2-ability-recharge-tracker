@@ -485,6 +485,96 @@ using (var yellowFixture = new Bitmap(Path.Combine(AppContext.BaseDirectory, "fi
     }
 }
 
+using (var pickerFixture = new Bitmap(Path.Combine(AppContext.BaseDirectory, "fixtures", "hud-dim-picker.png")))
+{
+    var expected = new[]
+    {
+        new Rectangle(136, 131, 77, 80),
+        new Rectangle(219, 125, 77, 80),
+        new Rectangle(302, 119, 77, 80)
+    };
+    foreach (var fullFrame in new[] { false, true })
+    {
+        using var frame = new Bitmap(fullFrame ? 1920 : pickerFixture.Width, fullFrame ? 1080 : pickerFixture.Height);
+        var offset = fullFrame ? new Point(40, 750) : Point.Empty;
+        using (var graphics = Graphics.FromImage(frame))
+        {
+            graphics.Clear(Color.FromArgb(18, 19, 24));
+            graphics.DrawImageUnscaled(pickerFixture, offset);
+        }
+
+        var source = new Rectangle(500, 300, frame.Width, frame.Height);
+        var detected = AbilitySlotRegionFinder.Find(frame, source);
+        Console.WriteLine($"Picker screenshot (full frame: {fullFrame}): {string.Join("; ", detected)}");
+        Assert(detected.Length == 3, "The dim HUD screenshot must find all three abilities, not the weapon panel.");
+        for (var index = 0; index < expected.Length; index++)
+        {
+            var region = expected[index];
+            region.Offset(source.X + offset.X, source.Y + offset.Y);
+            var found = detected[index];
+            Assert(Math.Abs(found.X - region.X) <= 3 && Math.Abs(found.Y - region.Y) <= 3 &&
+                Math.Abs(found.Width - region.Width) <= 3 && Math.Abs(found.Height - region.Height) <= 3,
+                $"Picker screenshot slot {index} must cover its ability border; expected {region}, found {found}.");
+        }
+    }
+}
+
+using (var withoutStrips = new Bitmap(Path.Combine(AppContext.BaseDirectory, "fixtures", "hud-dim-picker.png")))
+{
+    using (var graphics = Graphics.FromImage(withoutStrips))
+    {
+        graphics.FillPolygon(Brushes.Black,
+            [new Point(0, 0), new Point(749, 0), new Point(749, 84), new Point(0, 136)]);
+    }
+
+    for (var y = 0; y < withoutStrips.Height; y++)
+    {
+        for (var x = 0; x < withoutStrips.Width; x++)
+        {
+            var pixel = withoutStrips.GetPixel(x, y);
+            var light = (pixel.R * 77 + pixel.G * 150 + pixel.B * 29) >> 8;
+            withoutStrips.SetPixel(x, y, Color.FromArgb(light, light, light));
+        }
+    }
+
+    var detected = AbilitySlotRegionFinder.Find(withoutStrips,
+        new Rectangle(0, 0, withoutStrips.Width, withoutStrips.Height));
+    Assert(detected.Length == 3, "The three-slot pattern must be detected without colored strips or element colors.");
+    Assert(Math.Abs(detected[0].X - 136) <= 3 && Math.Abs(detected[1].X - 219) <= 3 &&
+        Math.Abs(detected[2].X - 302) <= 3,
+        "Removing strip and element colors must not move detection onto the weapon panel.");
+}
+
+using (var pickerFixture = new Bitmap(Path.Combine(AppContext.BaseDirectory, "fixtures", "hud-dim-picker.png")))
+using (var weaponsOnly = pickerFixture.Clone(new Rectangle(385, 0, 364, 296), pickerFixture.PixelFormat))
+{
+    var detected = AbilitySlotRegionFinder.Find(weaponsOnly, new Rectangle(0, 0, weaponsOnly.Width, weaponsOnly.Height));
+    Assert(detected.Length == 0, "The weapon/ammo panel and colored strips alone must not count as an ability row.");
+}
+
+foreach (var slotCount in new[] { 0, 1, 2, 3 })
+{
+    using var pattern = new Bitmap(500, 220);
+    using (var graphics = Graphics.FromImage(pattern))
+    using (var border = new Pen(Color.LightGray, 2))
+    {
+        graphics.Clear(Color.FromArgb(25, 24, 32));
+        for (var index = 0; index < slotCount; index++)
+        {
+            var left = 60 + index * 75;
+            var top = 90 - index * 5;
+            graphics.DrawPolygon(border, [
+                new Point(left, top), new Point(left + 65, top - 4),
+                new Point(left + 65, top + 61), new Point(left, top + 65)
+            ]);
+        }
+    }
+
+    var detected = AbilitySlotRegionFinder.Find(pattern, new Rectangle(0, 0, pattern.Width, pattern.Height));
+    Assert(detected.Length == (slotCount == 3 ? 3 : 0),
+        $"A complete three-slot pattern is required; {slotCount} visible slots produced {detected.Length} regions.");
+}
+
 var scaleFixturePaths = new[] { "hud-2-5.png" };
 var resolutionScales = new[] { ("720p", 2f / 3), ("1080p", 1f), ("1440p", 4f / 3), ("4K", 2f) };
 foreach (var fixtureName in scaleFixturePaths)

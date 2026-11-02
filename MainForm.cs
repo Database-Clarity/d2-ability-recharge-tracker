@@ -866,6 +866,7 @@ internal sealed partial class MainForm : Form
             var slot = GetSlot(kind);
             Rectangle? initialSelection = null;
             if (slot.Region is { } savedRegion &&
+                (!slot.RegionAutoDetected || suggestions.Length != AbilityKinds.Length) &&
                 slot.MonitorBounds == display.Bounds &&
                 string.Equals(slot.MonitorDeviceName, display.DeviceName, StringComparison.OrdinalIgnoreCase))
             {
