@@ -24,8 +24,8 @@ internal sealed partial class MainForm : AppWindow
     private readonly Button _toggleButton = new();
     private readonly Button _pauseBindingButton = new();
     private readonly Button _abilityUseBindingButton = new();
-    private readonly Button _startTestButton = new();
-    private readonly Button _stopTestButton = new();
+    private readonly Button _testToggleButton = new();
+    private readonly Label _testBlockedReason = new();
     private readonly Button _repeatTestBindingButton = new();
     private readonly Button _recordHudButton = new();
     private readonly Button _overlayBindingButton = new();
@@ -35,7 +35,9 @@ internal sealed partial class MainForm : AppWindow
     private readonly Button _changelogButton = new();
     private readonly FlatNumericUpDown _captureRatePicker = new();
     private readonly FlatComboBox _anchorPicker = new();
-    private readonly FlatComboBox _monitorPicker = new();
+    private readonly Label _measuredCaptureRate = new();
+    private string? _lastDisplayDeviceName;
+    private AbilityKind? _soloBeforeTest;
     private readonly FlatComboBox _testAbilityPicker = new();
     private readonly FlatNumericUpDown _testCyclesPicker = new();
     private readonly FlatNumericUpDown _testDelayPicker = new();
@@ -307,8 +309,6 @@ internal sealed partial class MainForm : AppWindow
         _changelogButton.Click += async (_, _) => await OpenChangelogAsync(startup: false);
 
         var detection = Grid(112, 200);
-        _monitorPicker.DropDownStyle = ComboBoxStyle.DropDownList;
-        RefreshDisplays();
         _captureRatePicker.Minimum = 30;
         _captureRatePicker.Maximum = 240;
         _captureRatePicker.Value = _targetCaptureRate;
@@ -319,18 +319,50 @@ internal sealed partial class MainForm : AppWindow
             SaveSettings();
         };
         _toolTip.SetToolTip(_captureRatePicker, "Capture attempts per second. 60–120 Hz is plenty; lower it if capture affects gameplay.");
-        _pauseBindingButton.Text = PauseBinding?.ToString() ?? "Record input…";
-        _pauseBindingButton.Click += (_, _) => TogglePauseBindingCapture();
-        _toolTip.SetToolTip(_pauseBindingButton, "Global pause / resume shortcut. Press Esc while recording to clear it.");
-        Place(detection, GridLabel("Display"), 0, 0);
-        Place(detection, GridLabel("Capture rate (Hz)"), 0, 1);
-        Place(detection, GridLabel("Pause shortcut"), 0, 2);
-        Place(detection, _monitorPicker, 1, 0);
+        _measuredCaptureRate.Name = "MeasuredCaptureRate";
+        _measuredCaptureRate.AutoSize = false;
+        _measuredCaptureRate.AutoEllipsis = true;
+        _measuredCaptureRate.TextAlign = ContentAlignment.MiddleLeft;
+        _measuredCaptureRate.ForeColor = TrackerTheme.Muted;
+        _toolTip.SetToolTip(_measuredCaptureRate, "Frames actually captured per second and the capture backend in use.");
+        Place(detection, GridLabel("Capture rate (Hz)"), 0, 0);
         _captureRatePicker.Width = 96;
-        Place(detection, _captureRatePicker, 1, 1, stretch: false);
-        Place(detection, _pauseBindingButton, 1, 2);
+        Place(detection, _captureRatePicker, 1, 0, stretch: false);
+        Place(detection, GridLabel("Measured"), 0, 1);
+        Place(detection, _measuredCaptureRate, 1, 1);
 
-        var test = Grid(140, 200, 120, 180);
+        var shortcuts = Grid(130, 182);
+        _pauseBindingButton.Name = "PauseShortcut";
+        _pauseBindingButton.Click += (_, _) => TogglePauseBindingCapture();
+        _toolTip.SetToolTip(_pauseBindingButton, "Global pause / resume detection shortcut.");
+        _overlayBindingButton.Name = "OverlayShortcut";
+        _overlayBindingButton.Click += (_, _) => ToggleBindingCapture(BindingCaptureTarget.ToggleOverlay);
+        _toolTip.SetToolTip(_overlayBindingButton, "Global show / hide overlay shortcut.");
+        _repeatTestBindingButton.Name = "RepeatTestShortcut";
+        _repeatTestBindingButton.Click += (_, _) => ToggleBindingCapture(BindingCaptureTarget.RepeatTest);
+        _toolTip.SetToolTip(_repeatTestBindingButton, "Global start / stop repeat test shortcut.");
+        foreach (var target in new[] { BindingCaptureTarget.Pause, BindingCaptureTarget.ToggleOverlay, BindingCaptureTarget.RepeatTest })
+        {
+            UpdateBindingButtonText(target);
+        }
+        var shortcutHint = new Label
+        {
+            Name = "ShortcutHint",
+            Text = "Click a shortcut, then press a key. Esc clears it.",
+            AutoSize = false,
+            AutoEllipsis = true,
+            TextAlign = ContentAlignment.MiddleLeft,
+            ForeColor = TrackerTheme.Muted
+        };
+        Place(shortcuts, GridLabel("Pause / resume"), 0, 0);
+        Place(shortcuts, _pauseBindingButton, 1, 0);
+        Place(shortcuts, GridLabel("Show / hide overlay"), 0, 1);
+        Place(shortcuts, _overlayBindingButton, 1, 1);
+        Place(shortcuts, GridLabel("Start / stop test"), 0, 2);
+        Place(shortcuts, _repeatTestBindingButton, 1, 2);
+        Place(shortcuts, shortcutHint, 0, 3, 2);
+
+        var test = Grid(150, 190, 120, 180);
         _testAbilityPicker.DropDownStyle = ComboBoxStyle.DropDownList;
         var abilityChoices = AbilityKinds.Select(kind => new AbilityChoice(kind, KindName(kind) == "Class" ? "Class ability" : KindName(kind))).ToArray();
         _testAbilityPicker.Items.AddRange(abilityChoices);
@@ -377,32 +409,36 @@ internal sealed partial class MainForm : AppWindow
         };
         _toolTip.SetToolTip(_testHoldPicker, "How long to hold the ability key or mouse button. Wheel bindings are single impulses.");
         _abilityUseBindingButton.Click += (_, _) => ToggleBindingCapture(BindingCaptureTarget.AbilityUse);
-        _toolTip.SetToolTip(_abilityUseBindingButton, "The in-game key or mouse button that uses the ability; sent between cycles.");
-        _repeatTestBindingButton.Text = _settings.RepeatTestBinding?.ToString() ?? "Record shortcut…";
-        _repeatTestBindingButton.Click += (_, _) => ToggleBindingCapture(BindingCaptureTarget.RepeatTest);
-        _startTestButton.Text = "Start test";
-        _startTestButton.Click += (_, _) => StartRepeatabilityTest();
-        _stopTestButton.Text = "Stop test";
-        _stopTestButton.Click += (_, _) => StopRepeatabilityTest();
+        _toolTip.SetToolTip(_abilityUseBindingButton, "The in-game key or mouse button that uses the ability; sent between cycles. Esc clears it while recording.");
+        _testToggleButton.Name = "RepeatTestToggle";
+        _testToggleButton.Text = "Start test";
+        _testToggleButton.Click += (_, _) =>
+        {
+            if (_repeatTest.IsActive) StopRepeatabilityTest();
+            else StartRepeatabilityTest();
+        };
+        _testBlockedReason.Name = "RepeatTestBlockedReason";
+        _testBlockedReason.AutoSize = false;
+        _testBlockedReason.AutoEllipsis = true;
+        _testBlockedReason.TextAlign = ContentAlignment.MiddleRight;
+        _testBlockedReason.ForeColor = TrackerTheme.Muted;
         _testStatus.AutoSize = false;
-        _testStatus.AutoEllipsis = true;
+        _testStatus.AutoEllipsis = false;
         _testStatus.ForeColor = TrackerTheme.Muted;
-        _testStatus.Height = 64;
+        _testStatus.Height = 72;
         Place(test, GridLabel("Ability"), 0, 0);
         Place(test, _testAbilityPicker, 1, 0);
-        Place(test, GridLabel("Recharge cycles"), 2, 0);
+        Place(test, GridLabel("Cycles"), 2, 0);
         Place(test, _testCyclesPicker, 3, 0);
         Place(test, GridLabel("Ability use input"), 0, 1);
         Place(test, _abilityUseBindingButton, 1, 1);
-        Place(test, GridLabel("Reuse delay · s"), 2, 1);
-        Place(test, _testDelayPicker, 3, 1);
-        Place(test, GridLabel("Start / stop shortcut"), 0, 2);
-        Place(test, _repeatTestBindingButton, 1, 2);
-        Place(test, GridLabel("Hold time · s"), 2, 2);
-        Place(test, _testHoldPicker, 3, 2);
-        Place(test, _startTestButton, 2, 3);
-        Place(test, _stopTestButton, 3, 3);
-        var testResult = new Panel { Height = 64 };
+        Place(test, GridLabel("Hold input for (s)"), 2, 1);
+        Place(test, _testHoldPicker, 3, 1);
+        Place(test, GridLabel("Delay after recharge (s)"), 0, 2);
+        Place(test, _testDelayPicker, 1, 2);
+        Place(test, _testBlockedReason, 0, 3, 3);
+        Place(test, _testToggleButton, 3, 3);
+        var testResult = new Panel { Height = 72 };
         _testStatus.Dock = DockStyle.Fill;
         var copyTest = new CopyResultButton("Copy repeat-test result", () => $"{KindName(_repeatTest.Ability ?? _settings.TestAbility)}: {_testStatus.Text}")
         {
@@ -415,7 +451,7 @@ internal sealed partial class MainForm : AppWindow
         testResult.Controls.Add(_testStatus);
         testResult.Controls.Add(copyTestPanel);
         Place(test, testResult, 0, 4, 4);
-        foreach (var control in new Control[] { _testAbilityPicker, _abilityUseBindingButton, _repeatTestBindingButton })
+        foreach (var control in new Control[] { _testAbilityPicker, _abilityUseBindingButton })
         {
             control.Margin = new Padding(3, 3, 29, 3);
         }
@@ -435,9 +471,6 @@ internal sealed partial class MainForm : AppWindow
             UpdateOverlay();
             SaveSettings();
         };
-        _overlayBindingButton.Text = OverlayToggleBinding?.ToString() ?? "Record input…";
-        _overlayBindingButton.Click += (_, _) => ToggleBindingCapture(BindingCaptureTarget.ToggleOverlay);
-        _toolTip.SetToolTip(_overlayBindingButton, "Global show / hide overlay shortcut. Press Esc while recording to clear it.");
         var linePicker = new FlatComboBox();
         linePicker.Items.AddRange(["1 line per ability", "2 lines per ability"]);
         linePicker.SelectedIndex = _settings.OverlayTwoLines ? 1 : 0;
@@ -452,10 +485,8 @@ internal sealed partial class MainForm : AppWindow
         Place(overlay, _anchorPicker, 1, 0);
         Place(overlay, GridLabel("Lines per ability"), 0, 1);
         Place(overlay, linePicker, 1, 1);
-        Place(overlay, GridLabel("Show / hide shortcut"), 0, 2);
-        Place(overlay, _overlayBindingButton, 1, 2);
-        Place(overlay, GridLabel("Position"), 0, 3);
-        Place(overlay, _overlayMoveToggle, 1, 3);
+        Place(overlay, GridLabel("Position"), 0, 2);
+        Place(overlay, _overlayMoveToggle, 1, 2);
         var troubleshooting = Grid(150, 168);
         _recordHudButton.Text = "Record HUD";
         _recordHudButton.Click += (_, _) => ToggleHudRecording();
@@ -482,7 +513,7 @@ internal sealed partial class MainForm : AppWindow
         Place(about, _updateButton, 0, 0);
         Place(about, _changelogButton, 1, 0);
         Place(about, _updateStatus, 0, 1, 2);
-        foreach (var grid in new[] { detection, overlay, troubleshooting, about })
+        foreach (var grid in new[] { detection, shortcuts, overlay, troubleshooting, about })
         {
             for (var row = 0; row < 4; row++)
             {
@@ -571,17 +602,21 @@ internal sealed partial class MainForm : AppWindow
         var settingsPage = Grid(GridWidth);
         settingsPage.Dock = DockStyle.Top;
         var settingsColumns = Grid(318, GridWidth - 318);
-        var sections = new[]
+        Control[][] columns =
+        [
+            [Section("Capture", detection), Section("Shortcuts", shortcuts)],
+            [Section("Overlay", overlay), Section("Troubleshooting", troubleshooting), Section("About", about)]
+        ];
+        for (var column = 0; column < columns.Length; column++)
         {
-            Section("Capture", detection),
-            Section("Overlay", overlay),
-            Section("Troubleshooting", troubleshooting),
-            Section("About", about)
-        };
-        for (var index = 0; index < sections.Length; index++)
-        {
-            sections[index].Anchor = AnchorStyles.Top | AnchorStyles.Left;
-            settingsColumns.Controls.Add(sections[index], index % 2, index / 2);
+            var stack = Grid(column == 0 ? 318 : GridWidth - 318);
+            stack.Anchor = AnchorStyles.Top | AnchorStyles.Left;
+            for (var index = 0; index < columns[column].Length; index++)
+            {
+                columns[column][index].Anchor = AnchorStyles.Top | AnchorStyles.Left;
+                stack.Controls.Add(columns[column][index], 0, index);
+            }
+            settingsColumns.Controls.Add(stack, column, 0);
         }
         settingsPage.Controls.Add(settingsColumns);
         AddPage("Settings", settingsPage);
@@ -602,7 +637,7 @@ internal sealed partial class MainForm : AppWindow
             item.Button.SetSelected(item.Page == _selectedPage);
         }
         ApplyTrackingButtonTiers();
-        TrackerTheme.Primary(_startTestButton);
+        TrackerTheme.Primary(_testToggleButton);
         ShowUpdateState(UpdatePhase.Idle);
         UpdateOverlayToggleText();
         void FitWindowToDisplay()
@@ -928,16 +963,10 @@ internal sealed partial class MainForm : AppWindow
         UpdateOverlay();
     }
 
-    private void RefreshDisplays()
-    {
-        var displays = Screen.AllScreens.Select((screen, index) => new DisplayChoice(
-            screen.DeviceName,
-            screen.Bounds,
-            $"Display {index + 1}  ·  {screen.Bounds.Width} × {screen.Bounds.Height}  ·  {screen.DeviceName}")).ToArray();
-        _monitorPicker.Items.Clear();
-        _monitorPicker.Items.AddRange(displays);
-        _monitorPicker.SelectedIndex = Math.Clamp(_monitorPicker.SelectedIndex, 0, displays.Length - 1);
-    }
+    private static DisplayChoice[] DisplayChoices() => Screen.AllScreens.Select((screen, index) => new DisplayChoice(
+        screen.DeviceName,
+        screen.Bounds,
+        $"Display {index + 1}  ·  {screen.Bounds.Width} × {screen.Bounds.Height}{(screen.Primary ? "  ·  primary" : string.Empty)}")).ToArray();
 
     private void SelectRegion(AbilityKind kind)
     {
@@ -946,7 +975,6 @@ internal sealed partial class MainForm : AppWindow
             return;
         }
 
-        RefreshDisplays();
         var target = ScreenCapture.FindDestiny2Window();
         DisplayChoice? display;
         Rectangle sourceBounds;
@@ -962,22 +990,18 @@ internal sealed partial class MainForm : AppWindow
             sourceDescription = "the Destiny 2 window";
             if (display is not null)
             {
-                _monitorPicker.SelectedItem = _monitorPicker.Items.Cast<DisplayChoice>()
-                    .FirstOrDefault(choice => choice.DeviceName.Equals(display.DeviceName, StringComparison.OrdinalIgnoreCase));
+                _lastDisplayDeviceName = display.DeviceName;
             }
         }
         else
         {
-            var result = MessageBox.Show(
-                this,
-                "Destiny 2's window wasn't found. Show the selected display's frozen preview instead?",
-                Text,
-                MessageBoxButtons.YesNo,
-                MessageBoxIcon.Information);
-            if (result != DialogResult.Yes || _monitorPicker.SelectedItem is not DisplayChoice fallbackDisplay)
+            using var picker = new DisplayPickerDialog(DisplayChoices(), _lastDisplayDeviceName);
+            if (picker.ShowDialog(this) != DialogResult.OK || picker.SelectedDisplay is not { } fallbackDisplay)
             {
                 return;
             }
+
+            _lastDisplayDeviceName = fallbackDisplay.DeviceName;
 
             display = fallbackDisplay;
             sourceBounds = fallbackDisplay.Bounds;
@@ -1039,7 +1063,7 @@ internal sealed partial class MainForm : AppWindow
         {
             _selectingRegion = false;
             Show();
-            Activate();
+            if (!HeadlessUi.Enabled) Activate();
             ShowOverlayIfEnabled();
             UpdateOverlay();
             if (wasMonitoring)
@@ -1412,8 +1436,8 @@ internal sealed partial class MainForm : AppWindow
             }
 
             _toggleButton.Text = WithShortcut(_monitoring ? "Pause detection" : "Resume detection", PauseBinding);
-            _startTestButton.Text = WithShortcut("Start test", _settings.RepeatTestBinding);
-            _stopTestButton.Text = WithShortcut("Stop test", _settings.RepeatTestBinding);
+            _testToggleButton.Text = WithShortcut(_repeatTest.IsActive ? "Stop test" : "Start test", _settings.RepeatTestBinding);
+            _measuredCaptureRate.Text = DescribeMeasuredCapture();
             UpdateOverlayToggleText();
             ShowTrackingStatus(DescribeTrackingStatus(new TrackingStatusSnapshot(
                 _monitoring,
@@ -1427,23 +1451,51 @@ internal sealed partial class MainForm : AppWindow
                 _captureRate,
                 _targetCaptureRate,
                 anyRegions)));
+            if (_soloBeforeTest is { } previousSolo && !_repeatTest.IsActive)
+            {
+                // Restore the user's Track choice once the test that narrowed it ends.
+                _soloBeforeTest = null;
+                if (_settings.SoloAbility == _repeatTest.Ability && IsHandleCreated)
+                    BeginInvoke(() => SetSolo(previousSolo));
+            }
+            var soloNote = _repeatTest.IsActive && _soloBeforeTest is not null && _repeatTest.Ability is { } soloTest
+                ? $"Tracking {KindName(soloTest)} only during the test · "
+                : string.Empty;
             _testStatus.Text = _repeatTest.Phase == RepeatTestPhase.Idle
                 ? "Ready · start the test, then manually use the ability once. Cycle results appear here."
-                : _repeatTest.Status(DateTime.UtcNow);
+                : soloNote + _repeatTest.Status(DateTime.UtcNow);
             _testAbilityPicker.Enabled = !_repeatTest.IsActive && _bindingCaptureTarget != BindingCaptureTarget.AbilityUse;
             _testCyclesPicker.Enabled = !_repeatTest.IsActive;
             _testDelayPicker.Enabled = !_repeatTest.IsActive;
             _testHoldPicker.Enabled = !_repeatTest.IsActive;
             _abilityUseBindingButton.Enabled = !_repeatTest.IsActive;
             _repeatTestBindingButton.Enabled = !_repeatTest.IsActive;
-            _startTestButton.Enabled = !_repeatTest.IsActive &&
-                _inputListenerAvailable &&
-                GetAbilityUseBinding(_settings.TestAbility) is not null &&
-                    GetSlot(_settings.TestAbility).Region is not null &&
-                    _bindingCaptureTarget is null;
-            _stopTestButton.Enabled = _repeatTest.IsActive;
+            var blockedReason = StartTestBlockedReason();
+            _testToggleButton.Enabled = blockedReason is null;
+            _testBlockedReason.Text = blockedReason ?? string.Empty;
+            if (_toolTip.GetToolTip(_testBlockedReason) != (blockedReason ?? string.Empty))
+                _toolTip.SetToolTip(_testBlockedReason, blockedReason ?? string.Empty);
         }
 
+    }
+
+    /// <summary>Why the repeat test can't start right now, or null when it can (or is already running).</summary>
+    private string? StartTestBlockedReason()
+    {
+        if (_repeatTest.IsActive) return null;
+        if (!_inputListenerAvailable) return "Keyboard and mouse hooks are unavailable.";
+        if (_bindingCaptureTarget is not null) return "Finish recording the input first.";
+        var ability = GetSelectedTestAbility();
+        if (GetSlot(ability).Region is null) return $"Select the {KindName(ability)} area on Tracking first.";
+        if (GetAbilityUseBinding(ability) is null) return $"Record the {KindName(ability)} ability-use input first.";
+        return null;
+    }
+
+    private string DescribeMeasuredCapture()
+    {
+        if (!_monitoring) return "Paused";
+        if (!HasRecentCapture()) return $"Waiting for frames · {_captureBackend}";
+        return $"{_captureRate:F0} Hz · {_captureBackend}";
     }
 
     private bool HasRecentCapture() => CaptureIsRecent(Stopwatch.GetTimestamp(),
@@ -1781,7 +1833,7 @@ internal sealed partial class MainForm : AppWindow
 
         _bindingCaptureTarget = target;
         var allowMouse = target == BindingCaptureTarget.AbilityUse;
-        GetBindingButton(target).Text = allowMouse ? "Press a key/button… (Esc clears)" : "Press a key… (Esc clears)";
+        GetBindingButton(target).Text = allowMouse ? "Press a key or button…" : "Press a key…";
         UpdateStatus();
         _inputListener.BeginCapture(binding =>
         {
@@ -1939,6 +1991,7 @@ internal sealed partial class MainForm : AppWindow
 
         if (_settings.SoloAbility is { } solo && solo != _settings.TestAbility)
         {
+            _soloBeforeTest = solo;
             SetSolo(_settings.TestAbility);
         }
 

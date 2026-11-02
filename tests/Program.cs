@@ -5,6 +5,9 @@ using System.Diagnostics;
 using System.IO.Compression;
 using D2AbilityTracker;
 
+// Keep every window the tests open off-screen, transparent and inactive; screenshots use DrawToBitmap.
+HeadlessUi.Enabled = true;
+
 if (args.Length == 2 && args[0] == "--ui-smoke")
 {
     Exception? failure = null;
@@ -98,9 +101,19 @@ if (args.Length == 2 && args[0] == "--ui-smoke")
                                 settingsButtons.Any(button => button.Text == "Changelog"),
                                 "Settings must group Troubleshooting (Record HUD, Open recordings folder) and About (updates, changelog).");
                             Assert(Descendants(page).OfType<Label>().Where(label => label.Visible)
-                                    .Count(label => label.Text is "Capture" or "Overlay" or "Troubleshooting" or "About" &&
-                                        label.Font.Bold && label.Font.SizeInPoints >= 10 && label.ForeColor == TrackerTheme.Text) == 4,
+                                    .Count(label => label.Text is "Capture" or "Shortcuts" or "Overlay" or "Troubleshooting" or "About" &&
+                                        label.Font.Bold && label.Font.SizeInPoints >= 10 && label.ForeColor == TrackerTheme.Text) == 5,
                                 "Settings section headings must be 10 pt bold text.");
+                            var shortcutNames = new[] { "PauseShortcut", "OverlayShortcut", "RepeatTestShortcut" };
+                            Assert(shortcutNames.All(name => settingsButtons.Count(button => button.Name == name) == 1) &&
+                                settingsButtons.Where(button => shortcutNames.Contains(button.Name)).All(button => !string.IsNullOrWhiteSpace(button.Text)) &&
+                                Descendants(page).OfType<Label>().Any(label => label.Visible && label.Name == "ShortcutHint" && label.Text.Contains("Esc")),
+                                "Settings › Shortcuts must hold the pause, overlay and repeat-test shortcuts with an Esc-clears hint.");
+                            Assert(Descendants(page).OfType<Label>().Any(label => label.Visible && label.Name == "MeasuredCaptureRate" &&
+                                    !string.IsNullOrWhiteSpace(label.Text)),
+                                "Settings › Capture must show the live measured capture rate and backend.");
+                            Assert(!Descendants(page).OfType<Label>().Any(label => label.Visible && label.Text == "Display"),
+                                "The display picker belongs to the area-selection fallback, not Settings.");
                         }
                         if (link.Text == "Repeat test")
                         {
@@ -125,6 +138,27 @@ if (args.Length == 2 && args[0] == "--ui-smoke")
                                 inputButton.AccessibleName == "Ability-use input for Melee",
                                 "Changing repeat ability must select and label its own saved input.");
                             abilityPicker.SelectedItem = abilityPicker.Items.Cast<object>().Single(item => item.ToString() == "Grenade");
+                            typeof(MainForm).GetMethod("UpdateStatus", System.Reflection.BindingFlags.Instance |
+                                System.Reflection.BindingFlags.NonPublic)!.Invoke(form, null);
+                            var testToggles = Descendants(page).OfType<Button>().Where(button => button.Name == "RepeatTestToggle").ToArray();
+                            Assert(testToggles.Length == 1 && testToggles[0].Text.StartsWith("Start test", StringComparison.Ordinal) &&
+                                    !Descendants(page).OfType<Button>().Any(button => button != testToggles[0] && button.Text.Contains(" test")),
+                                "Start and stop must be one repeat-test toggle button.");
+                            Assert(!Descendants(page).OfType<Button>().Any(button => button.Name == "RepeatTestShortcut"),
+                                "The start / stop shortcut belongs to Settings › Shortcuts.");
+                            var blockedReason = Descendants(page).OfType<Label>().Single(label => label.Name == "RepeatTestBlockedReason");
+                            Assert(testToggles[0].Enabled == string.IsNullOrEmpty(blockedReason.Text),
+                                "A disabled Start test must explain why inline, and an enabled one must not.");
+                            var grenadeSlot = smokeSettings.Slots.Single(slot => slot.Kind == AbilityKind.Grenade);
+                            var savedRegion = grenadeSlot.Region;
+                            grenadeSlot.Region = null;
+                            typeof(MainForm).GetMethod("UpdateStatus", System.Reflection.BindingFlags.Instance |
+                                System.Reflection.BindingFlags.NonPublic)!.Invoke(form, null);
+                            Assert(!testToggles[0].Enabled && blockedReason.Text.Contains("Grenade area"),
+                                "Without an area, Start test must be disabled with the reason inline.");
+                            grenadeSlot.Region = savedRegion;
+                            typeof(MainForm).GetMethod("UpdateStatus", System.Reflection.BindingFlags.Instance |
+                                System.Reflection.BindingFlags.NonPublic)!.Invoke(form, null);
                         }
                         foreach (var picker in Descendants(page).OfType<ComboBox>())
                         {
@@ -1687,6 +1721,7 @@ static void CheckTrackingPage(MainForm form, Control page, TrackerSettings setti
         Assert(menu.BackColor == TrackerTheme.Surface && menu.Renderer is ToolStripProfessionalRenderer
             { ColorTable.ToolStripDropDownBackground: var menuBack } && menuBack == TrackerTheme.Surface,
             "Menus must use the dark theme renderer.");
+        menu.Opacity = 0; // Drop-downs are clamped onto a visible screen; keep them invisible.
         menu.Show(anchor, new Point(0, anchor.Height + 2));
         try
         {

@@ -22,6 +22,20 @@ internal class AppWindow : Form
     }
 
     protected virtual bool ResizeWindow => false;
+
+    protected override bool ShowWithoutActivation => HeadlessUi.Enabled || base.ShowWithoutActivation;
+
+    protected override CreateParams CreateParams => HeadlessUi.Apply(base.CreateParams);
+
+    protected override void SetVisibleCore(bool value)
+    {
+        if (value && HeadlessUi.Enabled)
+        {
+            StartPosition = FormStartPosition.Manual;
+            Location = HeadlessUi.OffscreenLocation;
+        }
+        base.SetVisibleCore(value);
+    }
     protected int CaptionHeight => (int)Math.Round(36 * DeviceDpi / 96f);
 
     protected override void OnShown(EventArgs e)

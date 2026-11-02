@@ -74,7 +74,7 @@ internal sealed class OverlayWindow : Form
         TopMost = true;
         StartPosition = FormStartPosition.Manual;
         BackColor = Background;
-        Opacity = NormalOpacity;
+        Opacity = HeadlessUi.Enabled ? 0 : NormalOpacity;
         DoubleBuffered = true;
         SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
         CreateFonts();
@@ -103,7 +103,7 @@ internal sealed class OverlayWindow : Form
         }
     }
 
-    protected override bool ShowWithoutActivation => !_moveMode;
+    protected override bool ShowWithoutActivation => HeadlessUi.Enabled || !_moveMode;
 
     protected override CreateParams CreateParams
     {
@@ -116,7 +116,7 @@ internal sealed class OverlayWindow : Form
                 parameters.ExStyle |= WsExTransparent | WsExNoActivate;
             }
 
-            return parameters;
+            return HeadlessUi.Apply(parameters);
         }
     }
 
@@ -169,7 +169,7 @@ internal sealed class OverlayWindow : Form
             SetWindowLongPtr(Handle, GwlExStyle, new IntPtr(exStyle));
         }
 
-        Opacity = enabled ? MoveOpacity : NormalOpacity;
+        Opacity = HeadlessUi.Enabled ? 0 : enabled ? MoveOpacity : NormalOpacity;
         UpdateCopyButtons();
         if (!enabled)
         {
@@ -180,7 +180,7 @@ internal sealed class OverlayWindow : Form
 
             Reposition();
         }
-        else if (Visible)
+        else if (Visible && !HeadlessUi.Enabled)
         {
             Activate();
         }

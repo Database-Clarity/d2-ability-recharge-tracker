@@ -65,7 +65,7 @@ internal sealed partial class MainForm
         {
             _selectingRegion = false;
             Show();
-            Activate();
+            if (!HeadlessUi.Enabled) Activate();
             ShowOverlayIfEnabled();
             UpdateOverlay();
             if (wasMonitoring)

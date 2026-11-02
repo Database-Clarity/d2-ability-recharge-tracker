@@ -15,3 +15,6 @@ Add a concise, single-line bullet for each notable user-facing change in the sam
 - Buttons use clear primary, secondary and link styles; menus use the dark theme; settings section headings are larger.
 - The header row is gone: **Pause detection** and a compact **Overlay** switch sit at the bottom of Tracking, and **History** is now a tab.
 - Update checks and the changelog move to Settings › About; the main screen only shows an **Update to v…** pill when an update is available, and failed checks no longer appear there.
+- Repeat test has a single **Start test** / **Stop test** button that explains inline why it can't start, clearer **Cycles**, **Delay after recharge (s)** and **Hold input for (s)** labels, wrapping status, and a note when the test switches solo tracking (restored afterwards).
+- Settings gains a **Shortcuts** section for pause / resume, show / hide overlay and start / stop test, and Capture shows the live measured rate and backend.
+- The Display picker leaves Settings; when Destiny 2 isn't found, area selection asks which display to preview in a small dialog.

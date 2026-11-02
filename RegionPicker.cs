@@ -71,6 +71,7 @@ internal sealed class RegionPicker : Form
         FormBorderStyle = FormBorderStyle.None;
         ShowInTaskbar = false;
         TopMost = true;
+        if (HeadlessUi.Enabled) Opacity = 0;
         Cursor = Cursors.Cross;
         BackColor = Color.FromArgb(14, 17, 24);
         DoubleBuffered = true;
@@ -215,9 +216,14 @@ internal sealed class RegionPicker : Form
         };
     }
 
+    protected override bool ShowWithoutActivation => HeadlessUi.Enabled;
+
+    protected override CreateParams CreateParams => HeadlessUi.Apply(base.CreateParams);
+
     protected override void OnShown(EventArgs e)
     {
         base.OnShown(e);
+        if (HeadlessUi.Enabled) return;
         SetWindowPos(Handle, HwndTopmost, Left, Top, Width, Height, SwpShowWindow);
         SetForegroundWindow(Handle);
         Activate();
