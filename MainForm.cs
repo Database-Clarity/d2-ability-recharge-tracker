@@ -1674,15 +1674,16 @@ internal sealed partial class MainForm : AppWindow
             {
                 releases = await UpdateChecker.GetRecentChangelogAsync(
                     UpdateChecker.CurrentVersion,
-                    maximumReleases: 10,
+                    maximumReleases: 1,
                     timeout.Token);
+                releases = releases.Where(release => release.Version == UpdateChecker.CurrentVersion).ToArray();
             }
 
             if (releases.Count > 0)
             {
                 var summary = hasUnseenVersions
                     ? $"Changes since v{_lastChangelogVersion.ToString(3)} · {releases.Count} release{(releases.Count == 1 ? string.Empty : "s")}"
-                    : $"Recent releases · {releases.Count} release{(releases.Count == 1 ? string.Empty : "s")}";
+                    : $"Changes in v{UpdateChecker.CurrentVersion.ToString(3)}";
                 ShowChangelog(summary, releases);
             }
 

@@ -72,4 +72,6 @@ Releases use semantic version tags such as `v0.1.0`; installer filenames include
 
 For notable user-facing changes, add a concise, single-line bullet to `CHANGELOG.md` in the same commit. Releases lead with only bullets added since the previous release tag; remove an entry if its change is reverted before release. Releases without user-facing changes say so. All release notes retain a separate commit-history section and comparison link at the bottom.
 
+The in-app changelog shows changes since the previous installed version after an update; subsequent opens show only the current release. Commit history and comparison links are hidden until **Show commit history** is selected. Older releases remain available on GitHub.
+
 Pull requests produce downloadable workflow artifacts but never releases. You can also run **Build and release** manually from the Actions tab; only runs on `main` publish a release. Repository Actions must be enabled.

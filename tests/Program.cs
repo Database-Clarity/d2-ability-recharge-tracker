@@ -310,11 +310,21 @@ if (args.Length == 2 && args[0] == "--ui-smoke")
                     }
                     form.ShowChangelog("Changes since v0.1.15",
                         [new ChangelogRelease(new Version(0, 1, 16), "v0.1.16",
-                            "## Changes\n- **Compact** utility layout.\n- `F8` pauses tracking.\n[Full changelog](https://github.com/Database-Clarity/d2-ability-recharge-tracker/compare/v0.1.15...v0.1.16)",
+                            "## Changes\n- **Compact** utility layout.\n- `F8` pauses tracking.\n## Commit history\n- Internal commit detail.\n[Full changelog](https://github.com/Database-Clarity/d2-ability-recharge-tracker/compare/v0.1.15...v0.1.16)",
                             new Uri("https://github.com/Database-Clarity/d2-ability-recharge-tracker/releases/tag/v0.1.16"))]);
                     var changelog = Descendants(form).OfType<ChangelogView>().Single();
                     Assert(changelog.FindForm() == form, "Changelog must be hosted inside the main app.");
                     var notes = Descendants(changelog).OfType<RichTextBox>().Single();
+                    var commitHistoryToggle = Descendants(changelog).OfType<Button>().Single(button => button.Name == "ToggleCommitHistory");
+                    Assert(notes.Text.Contains("Compact") && !notes.Text.Contains("Internal commit detail") &&
+                        !notes.Text.Contains("Full changelog"),
+                        "The changelog must show user-facing changes with commit details collapsed by default.");
+                    commitHistoryToggle.PerformClick();
+                    Assert(notes.Text.Contains("Internal commit detail") && commitHistoryToggle.Text == "Hide commit history",
+                        "Commit history must remain available when explicitly expanded.");
+                    commitHistoryToggle.PerformClick();
+                    Assert(!notes.Text.Contains("Internal commit detail") && commitHistoryToggle.Text == "Show commit history",
+                        "Commit history must collapse again without hiding user-facing changes.");
                     Assert(!notes.Text.Contains("**") && !notes.Text.Contains("##") && !notes.Text.Contains("]("),
                         "Release headings, emphasis, and links must not display raw Markdown syntax.");
                     notes.Select(0, 1);

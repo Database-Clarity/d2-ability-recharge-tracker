@@ -6,3 +6,4 @@ Add a concise, single-line bullet for each notable user-facing change in the sam
 - Update checks stay visible beside the page navigation, including startup-check results and retry indicators for network errors.
 - The main header is more compact, with capture status moved below the current page.
 - Release notes retain commit history beneath the concise user-facing changelog.
+- The in-app changelog focuses on the current release or changes since the previous installed version, with commit history collapsed by default.

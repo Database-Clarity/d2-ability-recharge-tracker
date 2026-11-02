@@ -33,23 +33,29 @@ internal sealed class ChangelogView : UserControl
             Dock = DockStyle.Fill,
             Name = "ReleaseNotes"
         };
-        foreach (var release in releases)
+        void RenderNotes(bool includeHistory)
         {
-            Append(content, release.Tag + "\n\n", 14, FontStyle.Bold);
-            var body = string.IsNullOrWhiteSpace(release.Body) ? "No release notes were provided." : release.Body;
-            foreach (var rawLine in body.ReplaceLineEndings("\n").Split('\n'))
+            content.Clear();
+            foreach (var release in releases)
             {
-                var line = rawLine.Trim();
-                var isHeading = line.StartsWith('#');
-                if (isHeading) line = line.TrimStart('#', ' ');
-                if (line.StartsWith("- ") || line.StartsWith("* ")) line = "•  " + line[2..];
-                AppendMarkdown(content, line + (isHeading ? "\n\n" : "\n"), isHeading);
+                Append(content, release.Tag + "\n\n", 14, FontStyle.Bold);
+                var body = string.IsNullOrWhiteSpace(release.Body) ? "No release notes were provided." : release.Body;
+                foreach (var rawLine in body.ReplaceLineEndings("\n").Split('\n'))
+                {
+                    var line = rawLine.Trim();
+                    if (!includeHistory && IsHistoryLine(line)) break;
+                    var isHeading = line.StartsWith('#');
+                    if (isHeading) line = line.TrimStart('#', ' ');
+                    if (line.StartsWith("- ") || line.StartsWith("* ")) line = "•  " + line[2..];
+                    AppendMarkdown(content, line + (isHeading ? "\n\n" : "\n"), isHeading);
+                }
+                Append(content, "\n", 9, FontStyle.Regular);
             }
-            Append(content, "\n", 9, FontStyle.Regular);
+            content.SelectionStart = 0;
+            content.SelectionLength = 0;
+            content.ScrollToCaret();
         }
-        content.SelectionStart = 0;
-        content.SelectionLength = 0;
-        content.ScrollToCaret();
+        RenderNotes(includeHistory: false);
         var bodyPanel = new Panel { Dock = DockStyle.Fill, Padding = new Padding(4, 8, 4, 8) };
         bodyPanel.Controls.Add(content);
         content.LinkClicked += (_, args) =>
@@ -85,6 +91,23 @@ internal sealed class ChangelogView : UserControl
             Margin = new Padding(0, 8, 0, 0)
         };
         footer.Controls.Add(closeButton);
+        if (releases.Any(release => release.Body.ReplaceLineEndings("\n").Split('\n').Any(IsHistoryLine)))
+        {
+            var historyToggle = new Button
+            {
+                Text = "Show commit history",
+                AutoSize = true,
+                Name = "ToggleCommitHistory"
+            };
+            var expanded = false;
+            historyToggle.Click += (_, _) =>
+            {
+                expanded = !expanded;
+                RenderNotes(expanded);
+                historyToggle.Text = expanded ? "Hide commit history" : "Show commit history";
+            };
+            footer.Controls.Add(historyToggle);
+        }
 
         var layout = new TableLayoutPanel
         {
@@ -109,6 +132,15 @@ internal sealed class ChangelogView : UserControl
         if (keyData != Keys.Escape) return base.ProcessCmdKey(ref msg, keyData);
         CloseRequested?.Invoke(this, EventArgs.Empty);
         return true;
+    }
+
+    private static bool IsHistoryLine(string line)
+    {
+        var text = line.Trim().TrimStart('#', ' ');
+        return text.Equals("Commit history", StringComparison.OrdinalIgnoreCase) ||
+            text.StartsWith("[Full comparison]", StringComparison.OrdinalIgnoreCase) ||
+            text.StartsWith("[Full changelog]", StringComparison.OrdinalIgnoreCase) ||
+            text.StartsWith("**Full Changelog**:", StringComparison.OrdinalIgnoreCase);
     }
 
     private static void AppendMarkdown(RichTextBox content, string line, bool heading)
