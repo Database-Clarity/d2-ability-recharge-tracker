@@ -201,6 +201,7 @@ internal sealed partial class MainForm : AppWindow
     private readonly CheckBox _overlayMoveToggle = new();
     private const int GridWidth = 640;
     private const int HistoryHeight = 500;
+    private const int HistoryMinimumHeight = 460;
 
     private static Label GridLabel(string text) => new()
     {
@@ -679,7 +680,7 @@ internal sealed partial class MainForm : AppWindow
                 historyView.Height = (int)(HistoryHeight * scale);
                 var overflow = root.GetPreferredSize(Size.Empty).Height + Padding.Vertical - available.Height;
                 if (overflow > 0)
-                    historyView.Height = Math.Max((int)(300 * scale), historyView.Height - overflow);
+                    historyView.Height = Math.Max((int)(HistoryMinimumHeight * scale), historyView.Height - overflow);
             }
             var desired = root.GetPreferredSize(Size.Empty);
             var height = Math.Min(desired.Height + Padding.Vertical, available.Height);
