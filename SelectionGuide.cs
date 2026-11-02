@@ -50,7 +50,7 @@ internal sealed class SelectionGuide : AppWindow
         DrawSlot(graphics, 65, 65, true);
         graphics.DrawRectangle(selection, 63, 63, 144, 144);
         graphics.DrawString(
-            "•  Line the box up with the square's outer border.\n\n" +
+            "•  Line the box up with the square's outer border;\n    a pixel or two of slack on each side is fine.\n\n" +
             "•  Auto-detect places all three boxes for you; adjust\n    only a box that looks off.\n\n" +
             "•  A thin margin above and below the box is added\n    automatically, so you don't need to include it.\n\n" +
             "•  Any subclass or element works.",

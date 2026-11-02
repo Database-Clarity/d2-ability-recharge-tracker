@@ -1638,7 +1638,7 @@ static void RenderCaptureStatusStates(MainForm form, Control navigation, string 
             TextRenderer.MeasureText(banner.Text, banner.Font).Width + banner.Padding.Horizontal <= banner.Width,
             "The waiting banner must fit inside the window without truncation.");
         Assert(Descendants(form).OfType<Button>().Single(button => button.Name == "PauseDetection") is
-            { BackColor: var pauseBack, ForeColor: var pauseFore } && pauseBack == TrackerTheme.Accent && pauseFore == TrackerTheme.Background,
+        { BackColor: var pauseBack, ForeColor: var pauseFore } && pauseBack == TrackerTheme.Accent && pauseFore == TrackerTheme.Background,
             "Capture health must not be encoded in the pause button, which keeps its primary style.");
         Assert(form.Size == restingSize, "Showing the status banner must not resize the window.");
         Save("ui-Tracking-waiting.png");
@@ -1766,7 +1766,7 @@ static void CheckTrackingPage(MainForm form, Control page, TrackerSettings setti
     {
         var menu = anchor.ContextMenuStrip!;
         Assert(menu.BackColor == TrackerTheme.Surface && menu.Renderer is ToolStripProfessionalRenderer
-            { ColorTable.ToolStripDropDownBackground: var menuBack } && menuBack == TrackerTheme.Surface,
+        { ColorTable.ToolStripDropDownBackground: var menuBack } && menuBack == TrackerTheme.Surface,
             "Menus must use the dark theme renderer.");
         menu.Opacity = 0; // Drop-downs are clamped onto a visible screen; keep them invisible.
         menu.Show(anchor, new Point(0, anchor.Height + 2));
