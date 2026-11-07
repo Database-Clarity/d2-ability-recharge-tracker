@@ -89,32 +89,27 @@ internal sealed partial class MainForm
 
     private void UpdateOverlay()
     {
+        OverlayRow[] rows;
+        Color accent;
+        string title;
+        var twoLines = _settings.OverlayTwoLines;
         lock (_captureSync)
         {
-            var twoLines = _settings.OverlayTwoLines;
-            var rows = AbilityKinds
-                .Where(IsTracked)
-                .Select(kind => BuildOverlayRow(kind, twoLines))
-                .ToArray();
-
+            rows = AbilityKinds.Where(IsTracked).Select(kind => BuildOverlayRow(kind, twoLines)).ToArray();
             var capturedKinds = CapturedKinds();
-            var accent = !_monitoring
-                ? Color.Gray
+            accent = !_monitoring ? Color.Gray
                 : capturedKinds.Any(_captureErrors.ContainsKey) || CaptureStalled(capturedKinds.Length > 0)
-                    ? OverlayWarningColor
-                    : _trackers.Values.Any(tracker => tracker.State == AbilityState.Recharging)
-                        ? OverlayRechargingColor
-                        : OverlayReadyColor;
+                    ? OverlayWarningColor : _trackers.Values.Any(t => t.State == AbilityState.Recharging)
+                        ? OverlayRechargingColor : OverlayReadyColor;
+            title = !_monitoring ? PauseBinding is { } pause ? $"PAUSED · {pause} TO RESUME".ToUpperInvariant() : "PAUSED"
+                : _repeatTest.CompactStatus(DateTime.UtcNow) is { } progress ? $"TEST · {progress}".ToUpperInvariant() : "ABILITY RECHARGE";
+        }
+        {
             var savedMonitor = _settings.Slots.FirstOrDefault(slot => slot.Region is not null);
             var monitor = savedMonitor?.MonitorDeviceName is { } deviceName
                 ? Screen.AllScreens.FirstOrDefault(screen => screen.DeviceName.Equals(deviceName, StringComparison.OrdinalIgnoreCase))?.Bounds
                     ?? savedMonitor.MonitorBounds
                 : savedMonitor?.MonitorBounds;
-            var title = !_monitoring
-                ? PauseBinding is { } pause ? $"PAUSED · {pause} TO RESUME".ToUpperInvariant() : "PAUSED"
-                : _repeatTest.CompactStatus(DateTime.UtcNow) is { } testProgress
-                    ? $"TEST · {testProgress}".ToUpperInvariant()
-                    : "ABILITY RECHARGE";
             _overlay.SetContent(title, rows, twoLines, accent, monitor, _settings.OverlayAnchor);
         }
     }

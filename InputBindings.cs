@@ -36,6 +36,8 @@ internal static class MouseInputCode
 
 internal readonly record struct InputBinding(InputDevice Device, int Code, InputModifiers Modifiers)
 {
+    public static InputBinding DefaultMarkCharged => new(InputDevice.Keyboard, (int)Keys.F9, InputModifiers.None);
+
     public static InputBinding DefaultPause => new(InputDevice.Keyboard, (int)Keys.F8, InputModifiers.None);
 
     /// <summary>Plain Escape clears a shortcut while recording one.</summary>

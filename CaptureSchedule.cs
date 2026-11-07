@@ -7,9 +7,33 @@ internal static class CaptureSchedule
 {
     public static long NextFrame(long started, long finished, int targetRate, long frequency)
     {
-        var targetInterval = frequency / targetRate;
-        var restInterval = Math.Max(frequency / 1000, (finished - started) * 3);
-        return Math.Max(started + targetInterval, finished + restInterval);
+        var interval = Math.Max(1, frequency / targetRate);
+        var next = started + interval;
+        return next > finished ? next : next + ((finished - next) / interval + 1) * interval;
+    }
+}
+
+internal sealed class CaptureOverloadBackoff
+{
+    private int _overruns;
+    public long Delay(long work, long interval)
+    {
+        _overruns = work >= interval ? Math.Min(32, _overruns + 1) : Math.Max(0, _overruns - 2);
+        return _overruns < 8 ? 0 : Math.Min(interval / 2, interval * (_overruns - 7) / 16);
+    }
+}
+
+/// <summary>Deadline pacing: rejected inputs do not move the next deadline.</summary>
+internal sealed class FramePacer(long interval)
+{
+    private long? _next;
+    public long Skipped { get; private set; }
+    public bool IsDue(long now)
+    {
+        if (_next is { } deadline && now < deadline) { Skipped++; return false; }
+        var next = _next ?? now;
+        _next = next + ((now - next) / interval + 1) * interval;
+        return true;
     }
 }
 

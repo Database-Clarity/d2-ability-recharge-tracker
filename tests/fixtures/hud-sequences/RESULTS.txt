@@ -1,71 +1,67 @@
-Recharge refinement results
+Recharge accuracy results (2026-11-07). Errors are in seconds of capture time from frames.csv (the recordings
+average about 45 FPS with gaps up to 0.1 s), with frame counts of the recording's own index in brackets.
 
-Implementation relative to the pre-existing uncommitted tree:
-- AbilityState.cs: prefer sustained luminance disappearance over an earlier tint onset;
-  tint is now only a fallback. Remove unused PendingRecast.Baseline. Clarify pulse guard margin.
-- tests/HudReplay.cs: add streaming fixture generation alongside the existing replay harness.
-- tests/HudSequences.cs: compressed signal replay, strict annotated endpoint/count tests,
-  six real pixel crop checks, region snapshots, and diagnostic signal replay.
-- tests/Program.cs: dispatch generator/diagnostic modes and run fixtures in the existing suite.
-- tests/fixtures/hud-sequences/: traces, six PNG crops and metadata, source annotation copies,
-  minimal region snapshots and regeneration/limitations documentation.
-- AbilitySignalDetector.cs: preserved previous agent's mean-fill saturation work (no new rule).
-- tools/: preserved previous agent's work unchanged.
+Full pixel replays (--replay-hud), start / completion mean/max absolute error
+Recording  before                                  after
+123051     starts 2.9/26 fr, ends 1.3/6 fr         starts 0.000/0.000 s, ends 0.022/0.099 s (sword end +6 fr; class1 -2 fr)
+124028     starts 1.7/8 fr,  ends 0/0              all 0.000 s
+153154     starts 6.8/52 fr, ends 0/0              all 0.000 s
+162021     starts 0.8/9 fr,  ends 0/0              all 0.000 s
+No false or missed starts or completions. Every endpoint is within 0.1 s; all but the sword end within ±2 frames.
 
-Before -> after, absolute errors in frames (mean/max):
-123051 starts 2.9/26 -> 2.9/26; completions 2.0/8 -> 1.3/6.
-124028 starts 1.7/8 -> 1.7/8; completions 1.0/4 -> 0.0/0.
-Both: zero false starts, missed starts or missed completions before and after.
-Changed rows only:
-123051 melee2 completion: annotation 5204; 5196 (-8) -> 5210 (+6).
-123051 class1 completion: annotation 4495; 4491 (-4) -> 4493 (-2).
-124028 grenade1 completion: annotation 3942; 3938 (-4) -> 3942 (0).
+Startup sweep (--sweep-hud: a session every 300 frames, clean and after 10 garbage frames; 204 sessions)
+                 false/missed sessions                 sessions with an endpoint over 0.1 s
+Recording  first  mid-round  now                       now
+123051     24+    6          0                         18 (melee 7618 start +202 fr in 12; class 9137 -81 fr in 4; class 345 -25 fr in 2)
+124028     16     1          0                          2
+153154     0      0          7 (grenade 10354 missed     0
+                               in 6: the estimated 224 s
+                               grenade never ended)
+162021     3      3          1 (melee 2702: use one      1 (melee 4980 -10 fr)
+                               frame before startup)
+A cycle whose start bar comes within 3 s of a mid-recording startup may have been used before it; not measuring it
+is scored as correct ("SKIPPED"), never as a false start.
 
-Robustness and threshold margins:
-The simplification follows the user's disappearance definition: tint can start during the gray
-bar's fade, so it should not override a directly observed luminance drop. No thresholds added.
-The same priority change improves the non-sword endpoints in both clips independently; no
-threshold was chosen from the sword cycle. It does not fix invisible or sustained start flashes.
+Mid-recharge estimates (tracking picked up a running recharge; marked Estimated, never saved to history)
+|estimated total - annotated total| by share of the cycle observed, mean/max seconds (n):
+Recording  10-25%            25-50%             50-75%             75-100%
+123051     -                 0.428/1.160 (24)   0.348/0.887 (27)   0.355/0.934 (25)
+124028     0.881 (2)         0.420/2.038 (16)   0.136/0.351 (14)   0.072/0.139 (18)
+153154     0.661/0.686 (2)   0.488/4.330 (26)   0.026/0.066 (25)   0.096/0.287 (20)
+162021     0.270/0.339 (2)   0.145/0.423 (32)   0.031/0.087 (40)   0.036/0.087 (26)
+All 299: median 0.068 s, mean 0.214 s, 90th percentile 0.63 s, max 4.33 s. Estimates are dropped (nothing reported)
+when under 10% of the bar was seen or the start's uncertainty exceeds 5% of the cycle.
+Linearity: across 25 fully observed cycles, calibrated progress tracks elapsed share within about 0.01 at every
+decile (raw progress = elapsed share - 0.026 ... -0.013), so a straight line is the right model. Offline on the same
+fixtures, the best estimator (observed end minus the fitted line's zero) gives 0.07 s mean at 50-75% observed.
 
-Leave-one-recording-out sanity check: replayed fixed signals with pulse dip windows .22, .24,
-.26 and .28 seconds. Clip 123051 is unchanged at all four. Clip 124028 loses the melee2 pulse
-correction at .22 (start 2594 instead of 2607); .24/.26/.28 match .25. Thus choosing .22 on the
-first recording alone fails the second. This is a sensitivity sanity check, not a claim of
-statistically independent validation or threshold training. The supplied measured pulse/real-bar
-separation (.17-.22 vs >=.27 seconds) gives only ~20-30 ms margin at .25. Retain .25; do not
-broaden it based on the two clips. Sustained class pulses remain unresolved.
+Root causes
+- Start bar against bright scenes (153154 class2 -52 fr, 162021 grenade3 +9 fr): a fixed 0.15 contrast test. Now bar
+  opacity relative to the slot just above it: (peak - background) / (0.9 - background), row medians, narrow shape.
+- Use pulses before the real bar (124028 class1/2, 153154 class3): one re-arm after a 0.25 s dip. Now every
+  threshold crossing or clear step up (0.12) in bar opacity within 1.5 s is a candidate, and the fitted progress
+  line's zero chooses; the 0.25 s dip rule is no longer used for real pixel signals.
+- 123051 melee3 +26 fr: a use flash was ignored after a bright scene washed out the ready look.
+- Startup: colours learned from scenery let blank frames or white scenery read as uses, long before any bar, and
+  completed recharges early. Uses expire after 4 s; use flashes longer than 0.45 s (or flickering) are scenery;
+  blank-as-use needs a ready colour a use confirmed; charged looks cannot complete a recharge while the fitted line
+  says the bar is far from full, nor within 3 s of a start; at the line's full time any charged colour is accepted
+  (and the gray-bar end is then required).
+- Mid-recharge borders: the gray bar's boundary is read as the bottom border early in a recharge, biasing progress
+  by about 0.1. Borders are now the densest 1-px cluster of the last ~30 s of readings, and an estimated cycle is
+  refitted from its raw boundary rows with the final borders.
+- 162021 frames 1-20: 19 byte-identical frames about 34 ms apart, then about 17 ms apart: the GDI fallback returns a
+  stale image until desktop duplication delivers its first frame. The recorder now skips frames until the first
+  newly presented one (2 s limit for GDI-only capture).
 
-Other sensitivity checks, one parameter at a time on complete signal histories of both clips:
-- GrayBarDropThreshold .09: unchanged at .07 and .11 (tested +/- .02 luminance margin).
-- GrayBarFadeFraction .7: .6 and .8 leave all non-sword endpoints unchanged; sword completion
-  moves to 5208 and 5212 respectively. Tested +/- .1; sword remains intrinsically fragile.
-- RecastConfirmation 1 second: .75 and 1.25 preserve all endpoints/counts (tested +/- .25 s).
-These tests freeze detector inputs; final full PNG replays verify the selected production rule.
-
-Remaining heuristic constants without a measured generalization margin:
-EndLookback 1.5 s; fade plateau lookback 8 captured frames; tint onset .03 and step .02;
-minimum recharge 1 s; recast border step .025 and near-end gate 80%; pulse window 1.5 s,
-pulse rise/drop .012, thin border .02 and bar border .028; charged confirmation 150 ms.
-The 8-frame fade window is capture-rate dependent. Border measures are normalized by slot
-height, but brightness/contrast thresholds and scene contamination are still heuristic.
-Pre-existing pixel thresholds (including saturation .32 and charged-patch coverage .65), model
-calibration and start-shift logic were not retuned. No measured cross-recording safety margin
-is claimed for them. Recast still relies on lack of confirmed charge, not positive new-cycle
-progress, so a long completion flash/occlusion can fool it. Only one true quick recast is available.
-
-Known residuals: 123051 melee3 start +26, sword completion +6; 124028 class starts -8/-4.
-No special cases were added to reduce these. Gray disappearance can be hidden by scene light,
-and tint fallback can still fire early. Annotations can themselves lag a few frames.
-Best additional footage: repeated quick recasts vs long completion flashes, uses with no recharge,
-sustained class use pulses, bright/white scenes obscuring starts, dark scenes and red damage
-flashes at completion, several HUD scales and capture rates, and sword swaps during recharge.
-
-Validation completed:
-- dotnet format D2AbilityTracker.csproj, then --verify-no-changes: passed.
-- dotnet format tests/D2AbilityTracker.Tests.csproj, then --verify-no-changes: passed.
-- dotnet build tests/D2AbilityTracker.Tests.csproj (includes app): 0 warnings, 0 errors.
-- dotnet run --project tests/D2AbilityTracker.Tests.csproj: existing suite and new HUD tests pass.
-- Final full streamed PNG replays and generator runs with saved regions reproduce the after results.
-- git diff --check: passed.
-Fixture directory: approximately 1.49 MB (1.42 MiB), including documentation and source copies.
-No app launch, visible UI, commits, pushes, recording extraction or source annotation edits.
+Thresholds: values and margins across all four recordings
+- Bar opacity on/off 0.5/0.4: annotated start frames 0.52-0.65; thin border 0.13-0.22; use-pulse decay up to 0.49.
+  With step candidates, full replays are exact for any threshold in 0.45-0.50 (0.40 and 0.55 fail); the sweep
+  prefers 0.50 (0.47 lets one scenery edge in 124028 start a recharge).
+- Bar luminance 0.9, measured on dark backgrounds. Bar width at most max(4, 8% of height) rows: bars 2-4, flashes 14-15.
+- Use flash at most 0.45 s: real use flashes 0.03-0.31 s; a white scene lasted 0.6 s.
+- Use-to-bar limit 4 s: real delays 0.24-2.58 s (per recording max 2.58/1.89/1.44/1.45); stale uses were 8 and 18 s old.
+- Charged run before a use flash 0.3 s (0.1 s added 11 failing sessions). Minimum recharge 3 s (shortest real 27 s).
+Leave-one-recording-out: bar opacity - the range allowed by any three recordings (0.45-0.50) contains a value that
+passes the fourth (all four pass at 0.45 and 0.50). Use-to-bar limit - twice the maximum of any three (>= 3.8 s)
+covers the fourth. Use flash - 1.5x the maximum of any three (>= 0.42 s) covers 0.31 s.

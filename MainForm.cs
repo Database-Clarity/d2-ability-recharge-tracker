@@ -332,6 +332,8 @@ internal sealed partial class MainForm : AppWindow
         Place(detection, _measuredCaptureRate, 1, 1);
 
         var shortcuts = Grid(130, 182);
+        _markChargedBindingButton.Name = "MarkChargedShortcut";
+        _markChargedBindingButton.Click += (_, _) => ToggleBindingCapture(BindingCaptureTarget.MarkCharged);
         _pauseBindingButton.Name = "PauseShortcut";
         _pauseBindingButton.Click += (_, _) => TogglePauseBindingCapture();
         _toolTip.SetToolTip(_pauseBindingButton, "Global pause / resume detection shortcut.");
@@ -341,7 +343,7 @@ internal sealed partial class MainForm : AppWindow
         _repeatTestBindingButton.Name = "RepeatTestShortcut";
         _repeatTestBindingButton.Click += (_, _) => ToggleBindingCapture(BindingCaptureTarget.RepeatTest);
         _toolTip.SetToolTip(_repeatTestBindingButton, "Global start / stop repeat test shortcut.");
-        foreach (var target in new[] { BindingCaptureTarget.Pause, BindingCaptureTarget.ToggleOverlay, BindingCaptureTarget.RepeatTest })
+        foreach (var target in new[] { BindingCaptureTarget.MarkCharged, BindingCaptureTarget.Pause, BindingCaptureTarget.ToggleOverlay, BindingCaptureTarget.RepeatTest })
         {
             UpdateBindingButtonText(target);
         }
@@ -354,13 +356,15 @@ internal sealed partial class MainForm : AppWindow
             TextAlign = ContentAlignment.MiddleLeft,
             ForeColor = TrackerTheme.Muted
         };
+        Place(shortcuts, GridLabel("Mark charged"), 0, 3);
+        Place(shortcuts, _markChargedBindingButton, 1, 3);
         Place(shortcuts, GridLabel("Pause / resume"), 0, 0);
         Place(shortcuts, _pauseBindingButton, 1, 0);
         Place(shortcuts, GridLabel("Show / hide overlay"), 0, 1);
         Place(shortcuts, _overlayBindingButton, 1, 1);
         Place(shortcuts, GridLabel("Start / stop test"), 0, 2);
         Place(shortcuts, _repeatTestBindingButton, 1, 2);
-        Place(shortcuts, shortcutHint, 0, 3, 2);
+        Place(shortcuts, shortcutHint, 0, 4, 2);
 
         var test = Grid(150, 190, 120, 180);
         _testAbilityPicker.DropDownStyle = ComboBoxStyle.DropDownList;
@@ -721,25 +725,26 @@ internal sealed partial class MainForm : AppWindow
         try
         {
             Rectangle bounds;
+            AbilityHudRecordingSlot[] recordedSlots;
             lock (_captureSync)
             {
                 var areas = AbilityKinds
                     .Where(IsTracked)
-                    .Select(GetSlot)
-                    .Where(slot => slot.Region is not null)
-                    .Select(slot =>
+                    .Where(kind => GetSlot(kind).Region is not null)
+                    .Select(kind =>
                     {
-                        var region = ResolveCaptureRegion(slot, slot.Region!.Value);
-                        return (region, Screen.FromRectangle(region).Bounds);
+                        var region = ResolveCaptureRegion(GetSlot(kind), GetSlot(kind).Region!.Value);
+                        return (Kind: kind, Region: region, Monitor: Screen.FromRectangle(region).Bounds);
                     })
                     .ToArray();
-                bounds = AbilityHudRecorder.GetCaptureBounds(areas);
+                bounds = AbilityHudRecorder.GetCaptureBounds(areas.Select(area => (area.Region, area.Monitor)));
+                recordedSlots = areas.Select(area => AbilityHudRecordingSlot.For(area.Kind, area.Region, area.Monitor)).ToArray();
             }
 
             Task<AbilityHudRecordingResult>? recordingTask = null;
             recorder = new AbilityHudRecorder(bounds, Screen.FromRectangle(bounds).DeviceName,
                 AbilityHudRecorder.DefaultPath(DateTime.Now),
-                progress => QueueHudRecordingProgress(progress, recordingTask));
+                progress => QueueHudRecordingProgress(progress, recordingTask), recordedSlots);
             recordingTask = recorder.Completion;
         }
         catch (Exception exception) when (exception is InvalidOperationException or IOException or UnauthorizedAccessException or ArgumentException)
@@ -884,7 +889,7 @@ internal sealed partial class MainForm : AppWindow
     private void CaptureHudRecordingFrame(IntPtr desktopDeviceContext, DesktopDuplicationCapture duplication, DateTime tickTimestamp)
     {
         var recorder = _hudRecorder;
-        if (recorder is null || !recorder.IsDue(tickTimestamp))
+        if (recorder is null || !recorder.IsDue())
         {
             if (recorder is null && _hudRecordingSurface is not null)
             {
@@ -905,13 +910,19 @@ internal sealed partial class MainForm : AppWindow
                 _hudRecordingSurface = surface;
             }
 
-            if (!duplication.TryCapture(recorder.DeviceName, bounds, surface, out var timestamp))
+            // A GDI copy or an unchanged staged copy is not fresh: right after capture starts it can be a stale image.
+            var fresh = false;
+            if (duplication.TryCapture(recorder.DeviceName, bounds, surface, out var timestamp))
+            {
+                fresh = duplication.LastCaptureWasNewFrame;
+            }
+            else
             {
                 surface.Capture(desktopDeviceContext, bounds);
                 timestamp = DateTime.UtcNow;
             }
 
-            recorder.Submit(surface.Pixels, surface.Stride, timestamp, RecordingTrackerState());
+            recorder.Submit(surface.Pixels, surface.Stride, timestamp, RecordingTrackerState(), fresh);
         }
         catch (Exception exception) when (exception is InvalidOperationException or ArgumentException)
         {
@@ -952,12 +963,9 @@ internal sealed partial class MainForm : AppWindow
             _settings.RegionMonitorBounds = null;
             _settings.RegionMonitorDeviceName = null;
             _currentGameWindow = null;
-            if (_monitoring)
-            {
-                RefreshCaptureRegions();
-            }
         }
 
+        if (_monitoring) RefreshCaptureRegions();
         SaveSettings();
         UpdateStatus();
         UpdateOverlay();
@@ -1087,11 +1095,13 @@ internal sealed partial class MainForm : AppWindow
         var lastUiUpdate = rateWindowStart;
         var capturedFrames = 0;
         var nextFrame = Stopwatch.GetTimestamp();
+        var overload = new CaptureOverloadBackoff();
         try
         {
             using var desktop = ScreenCapture.OpenDesktop();
             using var duplication = new DesktopDuplicationCapture();
             using var wait = new PrecisionWait();
+            _highResolutionCaptureTimer = wait.IsHighResolution;
             while (!cancellationToken.IsCancellationRequested)
             {
                 DisposeRetiredCaptureBatches();
@@ -1112,7 +1122,7 @@ internal sealed partial class MainForm : AppWindow
                     continue;
                 }
 
-                var captureStarted = Stopwatch.GetTimestamp();
+                var workStarted = Stopwatch.GetTimestamp();
                 if (CaptureFrame(desktop.DeviceContext, duplication))
                 {
                     capturedFrames++;
@@ -1120,8 +1130,9 @@ internal sealed partial class MainForm : AppWindow
                 }
 
                 now = Stopwatch.GetTimestamp();
-                // Never catch up missed captures in bursts. Limit capture work to 25% duty under load.
-                nextFrame = CaptureSchedule.NextFrame(captureStarted, now, Volatile.Read(ref _targetCaptureRate), Stopwatch.Frequency);
+                // Keep the deadline phase and skip missed deadlines without catch-up bursts.
+                nextFrame = CaptureSchedule.NextFrame(nextFrame, now, Volatile.Read(ref _targetCaptureRate), Stopwatch.Frequency);
+                nextFrame = Math.Max(nextFrame, now + overload.Delay(now - workStarted, Stopwatch.Frequency / Volatile.Read(ref _targetCaptureRate)));
 
                 if (now - rateWindowStart >= Stopwatch.Frequency)
                 {
@@ -1175,10 +1186,15 @@ internal sealed partial class MainForm : AppWindow
         }
     }
 
+    private bool _highResolutionCaptureTimer;
+
     private bool CaptureFrame(IntPtr desktopDeviceContext, DesktopDuplicationCapture duplication)
     {
         var capturedAny = false;
         var duplicatedAll = true;
+        double captureMs = 0, detectionMs = 0;
+        string? fallbackReason = null;
+        var recorderForDiagnostics = _hudRecorder;
         duplication.BeginTick();
         var testAbilityCaptured = false;
         var timestamp = DateTime.UtcNow;
@@ -1202,13 +1218,19 @@ internal sealed partial class MainForm : AppWindow
                         batch.Surface = surface;
                     }
 
-                    if (!duplication.TryCapture(batch.DeviceName, bounds, surface, out timestamp))
+                    var captureClock = Stopwatch.GetTimestamp();
+                    var duplicated = duplication.TryCapture(batch.DeviceName, bounds, surface, out timestamp);
+                    if (!duplicated)
                     {
                         duplicatedAll = false;
+                        fallbackReason ??= duplication.LastError ?? "No staged pixels available";
                         surface.Capture(desktopDeviceContext, bounds);
                         timestamp = DateTime.UtcNow;
                     }
 
+                    captureMs += Stopwatch.GetElapsedTime(captureClock).TotalMilliseconds;
+                    if (duplicated && !duplication.LastCaptureWasNewFrame) continue;
+                    var detectionClock = Stopwatch.GetTimestamp();
                     capturedAny = true;
                     foreach (var slot in batch.Slots)
                     {
@@ -1246,6 +1268,7 @@ internal sealed partial class MainForm : AppWindow
 
                         _captureErrors.Remove(slot.Kind);
                     }
+                    detectionMs += Stopwatch.GetElapsedTime(detectionClock).TotalMilliseconds;
                 }
                 catch (Exception exception)
                 {
@@ -1258,7 +1281,10 @@ internal sealed partial class MainForm : AppWindow
 
             }
 
+            var submitClock = Stopwatch.GetTimestamp();
             CaptureHudRecordingFrame(desktopDeviceContext, duplication, timestamp);
+            recorderForDiagnostics?.RecordDiagnostics(duplicatedAll ? "DXGI" : "GDI", fallbackReason,
+                _highResolutionCaptureTimer, captureMs, detectionMs, Stopwatch.GetElapsedTime(submitClock).TotalMilliseconds);
 
             if (testAbilityCaptured &&
                 _repeatInputTask.IsCompleted &&
@@ -1323,13 +1349,7 @@ internal sealed partial class MainForm : AppWindow
                     if (_refreshCaptureRegionsRequested)
                     {
                         _refreshCaptureRegionsRequested = false;
-                        lock (_captureSync)
-                        {
-                            if (_monitoring)
-                            {
-                                RefreshCaptureRegions();
-                            }
-                        }
+                        if (_monitoring) RefreshCaptureRegions();
                     }
 
                     UpdateStatus();
@@ -1345,10 +1365,25 @@ internal sealed partial class MainForm : AppWindow
 
     private void UpdateStatus()
     {
+        Dictionary<AbilityKind, AbilitySlotTracker> trackers;
+        Dictionary<AbilityKind, string> captureErrors;
+        AbilityKind[] capturedKinds;
+        bool testActive;
+        AbilityKind? testAbility;
+        RepeatTestPhase testPhase;
+        string testStatus;
         lock (_captureSync)
         {
-            var capturedKinds = CapturedKinds();
-            var errors = RouteCaptureErrors(_captureErrors, capturedKinds);
+            trackers = _trackers.ToDictionary(p => p.Key, p => p.Value.DisplaySnapshot());
+            captureErrors = new(_captureErrors);
+            capturedKinds = CapturedKinds();
+            testActive = _repeatTest.IsActive;
+            testAbility = _repeatTest.Ability;
+            testPhase = _repeatTest.Phase;
+            testStatus = _repeatTest.Status(DateTime.UtcNow);
+        }
+        {
+            var errors = RouteCaptureErrors(captureErrors, capturedKinds);
             var stalled = CaptureStalled(capturedKinds.Length > 0);
             var anyRegions = _settings.Slots.Any(slot => slot.Region is not null);
             UpdateTrackingLayout(anyRegions);
@@ -1356,7 +1391,7 @@ internal sealed partial class MainForm : AppWindow
             foreach (var kind in AbilityKinds)
             {
                 var slot = GetSlot(kind);
-                var tracker = _trackers[kind];
+                var tracker = trackers[kind];
                 var statusLabel = _statusLabels[kind];
                 var areaTip = slot.Region is { } region
                     ? $"{KindName(kind)} area · {region.Width} × {region.Height} px"
@@ -1394,7 +1429,7 @@ internal sealed partial class MainForm : AppWindow
                     continue;
                 }
 
-                if (_captureErrors.TryGetValue(kind, out var sharedError))
+                if (captureErrors.TryGetValue(kind, out var sharedError))
                 {
                     // Global failures are explained once by the banner; rows keep their last result.
                     statusLabel.Text = UnavailableMeasurementStatus(tracker,
@@ -1422,7 +1457,7 @@ internal sealed partial class MainForm : AppWindow
                 };
                 if (tracker.TrackingWarning is { } warning)
                 {
-                    statusLabel.Text = $"{FormatDuration(tracker.CurrentDuration)}\n{warning.ReplaceLineEndings(" ")}";
+                    statusLabel.Text = $"{FormatDuration(tracker.CurrentDuration)}\n{warning.Replace("Mark charged", WithShortcut("Mark charged", MarkChargedBinding)).ReplaceLineEndings(" ")}";
                     statusLabel.ForeColor = TrackerTheme.Orange;
                 }
                 else if (tracker.State == AbilityState.Recharging && tracker.DisplayProgress is { } progress)
@@ -1435,8 +1470,9 @@ internal sealed partial class MainForm : AppWindow
                 }
             }
 
+            _markChargedButton.Text = WithShortcut("Mark charged", MarkChargedBinding);
             _toggleButton.Text = WithShortcut(_monitoring ? "Pause detection" : "Resume detection", PauseBinding);
-            _testToggleButton.Text = WithShortcut(_repeatTest.IsActive ? "Stop test" : "Start test", _settings.RepeatTestBinding);
+            _testToggleButton.Text = WithShortcut(testActive ? "Stop test" : "Start test", _settings.RepeatTestBinding);
             _measuredCaptureRate.Text = DescribeMeasuredCapture();
             UpdateOverlayToggleText();
             ShowTrackingStatus(DescribeTrackingStatus(new TrackingStatusSnapshot(
@@ -1451,25 +1487,25 @@ internal sealed partial class MainForm : AppWindow
                 _captureRate,
                 _targetCaptureRate,
                 anyRegions)));
-            if (_soloBeforeTest is { } previousSolo && !_repeatTest.IsActive)
+            if (_soloBeforeTest is { } previousSolo && !testActive)
             {
                 // Restore the user's Track choice once the test that narrowed it ends.
                 _soloBeforeTest = null;
-                if (_settings.SoloAbility == _repeatTest.Ability && IsHandleCreated)
+                if (_settings.SoloAbility == testAbility && IsHandleCreated)
                     BeginInvoke(() => SetSolo(previousSolo));
             }
-            var soloNote = _repeatTest.IsActive && _soloBeforeTest is not null && _repeatTest.Ability is { } soloTest
+            var soloNote = testActive && _soloBeforeTest is not null && testAbility is { } soloTest
                 ? $"Tracking {KindName(soloTest)} only during the test · "
                 : string.Empty;
-            _testStatus.Text = _repeatTest.Phase == RepeatTestPhase.Idle
+            _testStatus.Text = testPhase == RepeatTestPhase.Idle
                 ? "Ready · start the test, then manually use the ability once. Cycle results appear here."
-                : soloNote + _repeatTest.Status(DateTime.UtcNow);
-            _testAbilityPicker.Enabled = !_repeatTest.IsActive && _bindingCaptureTarget != BindingCaptureTarget.AbilityUse;
-            _testCyclesPicker.Enabled = !_repeatTest.IsActive;
-            _testDelayPicker.Enabled = !_repeatTest.IsActive;
-            _testHoldPicker.Enabled = !_repeatTest.IsActive;
-            _abilityUseBindingButton.Enabled = !_repeatTest.IsActive;
-            _repeatTestBindingButton.Enabled = !_repeatTest.IsActive;
+                : soloNote + testStatus;
+            _testAbilityPicker.Enabled = !testActive && _bindingCaptureTarget != BindingCaptureTarget.AbilityUse;
+            _testCyclesPicker.Enabled = !testActive;
+            _testDelayPicker.Enabled = !testActive;
+            _testHoldPicker.Enabled = !testActive;
+            _abilityUseBindingButton.Enabled = !testActive;
+            _repeatTestBindingButton.Enabled = !testActive;
             var blockedReason = StartTestBlockedReason();
             _testToggleButton.Enabled = blockedReason is null;
             _testBlockedReason.Text = blockedReason ?? string.Empty;
@@ -1503,6 +1539,20 @@ internal sealed partial class MainForm : AppWindow
 
     internal static bool CaptureIsRecent(long now, long lastFrame, long frequency) =>
         lastFrame > 0 && now >= lastFrame && now - lastFrame < frequency * 2;
+
+    private readonly Button _markChargedButton = new();
+    private readonly Button _markChargedBindingButton = new();
+    private InputBinding? MarkChargedBinding => _settings.MarkChargedShortcutCleared ? null : _settings.MarkChargedBinding ?? InputBinding.DefaultMarkCharged;
+
+    private void MarkTrackedCharged()
+    {
+        lock (_captureSync)
+        {
+            foreach (var kind in AbilityKinds.Where(IsTracked)) _trackers[kind].MarkCharged();
+        }
+        UpdateStatus();
+        UpdateOverlay();
+    }
 
     private InputBinding? PauseBinding => _settings.PauseShortcutCleared ? null : _settings.PauseBinding ?? InputBinding.DefaultPause;
 
@@ -1874,6 +1924,11 @@ internal sealed partial class MainForm : AppWindow
                             ? ((Keys)binding.Code).ToString()
                             : binding.ToString();
                     }
+                    else if (target == BindingCaptureTarget.MarkCharged)
+                    {
+                        _settings.MarkChargedBinding = binding;
+                        _settings.MarkChargedShortcutCleared = false;
+                    }
                     else if (target == BindingCaptureTarget.AbilityUse)
                     {
                         _settings.AbilityUseBindings[GetSelectedTestAbility()] = binding;
@@ -1903,6 +1958,10 @@ internal sealed partial class MainForm : AppWindow
     {
         switch (target)
         {
+            case BindingCaptureTarget.MarkCharged:
+                _settings.MarkChargedBinding = null;
+                _settings.MarkChargedShortcutCleared = true;
+                break;
             case BindingCaptureTarget.Pause:
                 _settings.PauseBinding = null;
                 _settings.PauseShortcutCleared = true;
@@ -1922,6 +1981,7 @@ internal sealed partial class MainForm : AppWindow
 
     private Button GetBindingButton(BindingCaptureTarget target) => target switch
     {
+        BindingCaptureTarget.MarkCharged => _markChargedBindingButton,
         BindingCaptureTarget.Pause => _pauseBindingButton,
         BindingCaptureTarget.AbilityUse => _abilityUseBindingButton,
         BindingCaptureTarget.RepeatTest => _repeatTestBindingButton,
@@ -1941,6 +2001,7 @@ internal sealed partial class MainForm : AppWindow
 
     private InputBinding? GetConfiguredBinding(BindingCaptureTarget target) => target switch
     {
+        BindingCaptureTarget.MarkCharged => MarkChargedBinding,
         BindingCaptureTarget.Pause => PauseBinding,
         BindingCaptureTarget.AbilityUse => GetAbilityUseBinding(GetSelectedTestAbility()),
         BindingCaptureTarget.RepeatTest => _settings.RepeatTestBinding,
@@ -2060,6 +2121,9 @@ internal sealed partial class MainForm : AppWindow
 
         switch (action.Value)
         {
+            case BindingCaptureTarget.MarkCharged:
+                MarkTrackedCharged();
+                break;
             case BindingCaptureTarget.Pause:
                 SetMonitoring(!_monitoring);
                 break;
@@ -2075,14 +2139,14 @@ internal sealed partial class MainForm : AppWindow
 
     private void SetMonitoring(bool enabled)
     {
+        if (_monitoring == enabled)
+        {
+            UpdateStatus();
+            UpdateOverlay();
+            return;
+        }
         lock (_captureSync)
         {
-            if (_monitoring == enabled)
-            {
-                UpdateStatus();
-                UpdateOverlay();
-                return;
-            }
 
             _monitoring = enabled;
             Interlocked.Exchange(ref _lastCapturedFrame, 0);
@@ -2096,13 +2160,13 @@ internal sealed partial class MainForm : AppWindow
             {
                 foreach (var tracker in _trackers.Values)
                 {
-                    tracker.ResetCycle();
+                    if (!tracker.LearningChargedReference) tracker.ResetCycle();
                 }
 
-                RefreshCaptureRegions();
             }
         }
 
+        if (enabled) RefreshCaptureRegions();
         UpdateStatus();
         UpdateOverlay();
     }
@@ -2163,9 +2227,9 @@ internal sealed partial class MainForm : AppWindow
                 }
             }
 
-            RefreshCaptureRegions();
         }
 
+        RefreshCaptureRegions();
         SaveSettings();
         UpdateStatus();
         UpdateOverlay();
@@ -2173,6 +2237,7 @@ internal sealed partial class MainForm : AppWindow
 
     private void RefreshCaptureRegions()
     {
+        var regionErrors = new Dictionary<AbilityKind, string>();
         _currentGameWindow = _settings.Slots.Any(slot => slot.GameWindowBounds is not null)
             ? ScreenCapture.FindDestiny2Window()
             : null;
@@ -2183,7 +2248,7 @@ internal sealed partial class MainForm : AppWindow
             var slot = GetSlot(kind);
             if (!IsTracked(kind))
             {
-                _captureErrors.Remove(kind);
+                regionErrors.Remove(kind);
                 continue;
             }
 
@@ -2207,12 +2272,11 @@ internal sealed partial class MainForm : AppWindow
                     regions.Add(new CaptureSlot(kind, resolvedRegion, Math.Max(0, bottomPadding), Math.Max(0, topPadding)));
                 }
 
-                _captureErrors.Remove(kind);
+                regionErrors.Remove(kind);
             }
             catch (Exception exception)
             {
-                _captureErrors[kind] = exception.Message;
-                _trackers[kind].MarkSignalLost(DateTime.UtcNow);
+                regionErrors[kind] = exception.Message;
             }
         }
 
@@ -2252,25 +2316,37 @@ internal sealed partial class MainForm : AppWindow
 
             return batchesForDisplay;
         }).ToArray();
-        var unchanged = _captureBatches.Length == batches.Length &&
-            _captureBatches.Zip(batches).All(pair =>
-                pair.First.Bounds == pair.Second.Bounds &&
-                pair.First.DeviceName == pair.Second.DeviceName &&
-                pair.First.Slots.SequenceEqual(pair.Second.Slots));
-        if (unchanged)
+        lock (_captureSync)
         {
-            return;
-        }
-
-        foreach (var batch in _captureBatches)
-        {
-            if (batch.Surface is not null)
+            foreach (var kind in AbilityKinds)
             {
-                _retiredCaptureBatches.Enqueue(batch);
+                if (regionErrors.TryGetValue(kind, out var error))
+                {
+                    _captureErrors[kind] = error;
+                    _trackers[kind].MarkSignalLost(DateTime.UtcNow);
+                }
+                else _captureErrors.Remove(kind);
             }
-        }
+            var unchanged = _captureBatches.Length == batches.Length &&
+                _captureBatches.Zip(batches).All(pair =>
+                    pair.First.Bounds == pair.Second.Bounds &&
+                    pair.First.DeviceName == pair.Second.DeviceName &&
+                    pair.First.Slots.SequenceEqual(pair.Second.Slots));
+            if (unchanged)
+            {
+                return;
+            }
 
-        _captureBatches = batches;
+            foreach (var batch in _captureBatches)
+            {
+                if (batch.Surface is not null)
+                {
+                    _retiredCaptureBatches.Enqueue(batch);
+                }
+            }
+
+            _captureBatches = batches;
+        }
     }
 
     private void DisposeRetiredCaptureBatches()
@@ -2495,6 +2571,7 @@ internal sealed partial class MainForm : AppWindow
             ({ } spread, MeasurementSource.Event) => $" ± {spread.TotalSeconds:F3} s",
             ({ } spread, MeasurementSource.EventRefinedByModel) => $" ± {spread.TotalSeconds:F3} s (refined)",
             ({ } spread, MeasurementSource.Model) => $" ± {spread.TotalSeconds:F2} s (endpoint inferred)",
+            ({ } spread, MeasurementSource.Estimated) => $" ± {spread.TotalSeconds:F2} s (estimated: tracking began mid-recharge)",
             _ => string.Empty
         };
 
@@ -2513,6 +2590,7 @@ internal sealed partial class MainForm : AppWindow
 
     private enum BindingCaptureTarget
     {
+        MarkCharged,
         Pause,
         AbilityUse,
         RepeatTest,

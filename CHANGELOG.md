@@ -27,3 +27,7 @@ Add a concise, single-line bullet for each notable user-facing change in the sam
 - Deleting a session keeps its measurements as Unsorted, and **Make active** can reopen an ended session.
 - Recharge completions are timed from the frame the gray recharge bar disappears, fixing durations that ran up to about 0.7 s long, and quick recasts or use animations no longer drop or shift cycles.
 - A recording annotator (`tools/recording-annotator.html`) marks recharge start and end frames in HUD recordings for accuracy checks.
+- Recharge starts are found from the start bar itself, even through bright effects or scenery and after use animations; tracking that begins mid-recharge no longer invents or skips cycles and instead shows that cycle as an estimate (marked "estimated", not saved to history); HUD recordings now save their slot areas and skip frozen startup frames.
+- **Mark charged** beside Track (global **F9**, rebindable in Settings › Shortcuts) resets tracked abilities and learns their current charged appearance.
+- Capture runs at a higher, steadier rate with deadline pacing, accurate presentation timestamps, and recording performance diagnostics.
+- The recording annotator is now online at https://database-clarity.github.io/d2-ability-recharge-tracker/annotator/ with editable markers (select, nudge, drag or type a frame) and undo/redo.

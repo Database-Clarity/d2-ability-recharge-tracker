@@ -110,7 +110,7 @@ if (args.Length == 2 && args[0] == "--ui-smoke")
                                     .Count(label => label.Text is "Capture" or "Shortcuts" or "Overlay" or "Troubleshooting" or "About" &&
                                         label.Font.Bold && label.Font.SizeInPoints >= 10 && label.ForeColor == TrackerTheme.Text) == 5,
                                 "Settings section headings must be 10 pt bold text.");
-                            var shortcutNames = new[] { "PauseShortcut", "OverlayShortcut", "RepeatTestShortcut" };
+                            var shortcutNames = new[] { "PauseShortcut", "MarkChargedShortcut", "OverlayShortcut", "RepeatTestShortcut" };
                             Assert(shortcutNames.All(name => settingsButtons.Count(button => button.Name == name) == 1) &&
                                 settingsButtons.Where(button => shortcutNames.Contains(button.Name)).All(button => !string.IsNullOrWhiteSpace(button.Text)) &&
                                 Descendants(page).OfType<Label>().Any(label => label.Visible && label.Name == "ShortcutHint" && label.Text.Contains("Esc")),
@@ -651,6 +651,12 @@ if (args.Length > 0 && args[0] is "--replay-hud" or "--extract-hud-fixtures")
     return;
 }
 
+if (args.Length > 0 && args[0] == "--sweep-hud")
+{
+    Environment.ExitCode = HudReplay.Sweep(args);
+    return;
+}
+
 if (args.Length > 0 && args[0] == "--replay")
 {
     FootageReplay.Run(args);
@@ -957,9 +963,55 @@ Assert(estimatingTracker.EstimatedDuration is not null && estimatingTracker.Curr
 Assert(estimatingTracker.Observe(line with { ChargeProgress = 0.55f }, start.AddSeconds(6.5)) == false &&
     estimatingTracker.TrackingWarning is null,
     "A single consistent progress sample should end recovery.");
-Assert(CaptureSchedule.NextFrame(0, 10, 120, 1000) == 40, "Slow capture must get three times its work duration as rest.");
+Assert(CaptureSchedule.NextFrame(0, 10, 120, 1000) == 16, "A missed deadline must skip to the next interval.");
 Assert(CaptureSchedule.NextFrame(100, 101, 120, 1000) == 108, "Fast captures should respect the configured target.");
-Assert(CaptureSchedule.NextFrame(100, 150, 240, 1000) == 300, "Overruns must not cause a burst of catch-up captures.");
+Assert(CaptureSchedule.NextFrame(100, 150, 240, 1000) == 152, "Overruns must not cause a burst of catch-up captures.");
+var unsettledEstimate = new AbilitySlotTracker(AbilityKind.Grenade);
+for (var i = 0; i <= 40; i++)
+    unsettledEstimate.Observe(line with
+    {
+        PixelEvidence = true,
+        ChargeProgress = 0.2f + i * 0.002f,
+        FillLuminance = 0.5f,
+        FillSaturation = 0,
+        Twin = new TwinReading(new(0, 100, 80 - i * 0.2f, 1), new(0, 100, 80 - i * 0.2f, 1))
+    }, start.AddSeconds(i * 0.1));
+Assert(unsettledEstimate.Estimating, "A rising line at startup should enter an estimated cycle.");
+for (var i = 0; i <= 30; i++)
+    unsettledEstimate.Observe(greenReady, start.AddSeconds(8 + i * 0.1));
+Assert(!unsettledEstimate.Estimating && unsettledEstimate.CurrentStartedAt is null,
+    "An estimate whose line never settles must release tracking when the HUD stays charged.");
+unsettledEstimate.Observe(empty with { UseFlash = true, PixelEvidence = true }, start.AddSeconds(12));
+unsettledEstimate.Observe(empty with { Blank = true, PixelEvidence = true, BottomBorderThickness = 0.01f }, start.AddSeconds(12.1));
+unsettledEstimate.Observe(empty with { Blank = true, PixelEvidence = true, BottomBorderThickness = 0.04f }, start.AddSeconds(12.5));
+Assert(unsettledEstimate.CurrentStartedAt is not null && !unsettledEstimate.Estimating,
+    "The next real recharge must start after abandoning an unsettled estimate.");
+var backoff = new CaptureOverloadBackoff();
+Assert(Enumerable.Range(0, 7).All(_ => backoff.Delay(20, 10) == 0) && backoff.Delay(20, 10) <= 5,
+    "Only sustained overload should enable bounded backoff.");
+for (var i = 0; i < 100; i++) Assert(backoff.Delay(50, 10) <= 5, "Overload backoff must remain bounded.");
+for (var i = 0; i < 20; i++) backoff.Delay(1, 10);
+Assert(backoff.Delay(1, 10) == 0, "Backoff should recover when work fits the budget.");
+var pacer = new FramePacer(300);
+var accepted = Enumerable.Range(0, 900).Count(i => pacer.IsDue(i * 200));
+Assert(accepted == 600 && pacer.Skipped == 300, "90 Hz input should pace at 60 Hz and count every skipped input.");
+Assert(pacer.IsDue(900000) && !pacer.IsDue(900001), "A stall must not cause catch-up bursts.");
+var manualTracker = new AbilitySlotTracker(AbilityKind.Grenade);
+manualTracker.Observe(line, start);
+manualTracker.MarkCharged();
+manualTracker.Observe(line, start.AddSeconds(60), fresh: false);
+Assert(manualTracker.State == AbilityState.Ready && manualTracker.IsCharged && manualTracker.CurrentStartedAt is null &&
+    manualTracker.EstimatedDuration is null && manualTracker.LastDuration is null, "Mark charged must reset cycle, use state and estimates.");
+for (var i = 0; i <= 19; i++)
+    manualTracker.Observe(line with { FillHue = i == 5 ? 240 : 15, FillColor = i == 5 ? Color.Blue : Color.Red }, start.AddSeconds(i * 0.016));
+Assert(manualTracker.State == AbilityState.Ready && manualTracker.IsCharged, "Manual charged learning must ignore raw cooldown evidence during its brief learning window.");
+manualTracker.Observe(line with { Charged = true, CooldownLine = false, ChargeProgress = null, FillHue = 15, FillColor = Color.Red }, start.AddSeconds(0.5));
+Assert(manualTracker.IsCharged, "The median manually learned reference must accept the charged appearance.");
+manualTracker.MarkCharged();
+for (var i = 0; i <= 19; i++)
+    manualTracker.Observe(line with { FillHue = 240, FillColor = Color.Blue }, start.AddSeconds(1 + i * 0.016));
+manualTracker.Observe(line with { Charged = true, CooldownLine = false, ChargeProgress = null, FillHue = 15, FillColor = Color.Red }, start.AddSeconds(1.5));
+Assert(!manualTracker.IsCharged, "Mark charged must forget the old ready colour and hue.");
 Assert(!MainForm.CaptureIsRecent(1000, 0, 1000) &&
     MainForm.CaptureIsRecent(2999, 1000, 1000) &&
     !MainForm.CaptureIsRecent(3000, 1000, 1000),
@@ -1839,8 +1891,11 @@ static void CheckConfiguredTrackingPage(MainForm form, Control page, TrackerSett
         "Tracking must offer one segmented All / Grenade / Melee / Class selector reflecting solo tracking.");
     var actions = Descendants(page).Where(control => control.Visible &&
         (control is SegmentedControl || control is ButtonBase and not CopyResultButton and not RadioButton)).ToArray();
-    Assert(actions.Length <= 5,
-        $"Tracking should show at most five actions at rest: {string.Join(", ", actions.Select(action => action.Text))}");
+    Assert(actions.Length <= 6,
+        $"Tracking should show at most six actions at rest: {string.Join(", ", actions.Select(action => action.Text))}");
+    var markCharged = Descendants(page).OfType<Button>().Single(button => button.Name == "MarkCharged");
+    Assert(markCharged.Visible && markCharged.Enabled && markCharged.Parent == selector.Parent,
+        "Mark charged must be a visible action beside the Track selector.");
     Assert(!Descendants(page).OfType<ButtonBase>().Any(button => button.Visible &&
             (button.Text is "Guide" or "Reset areas" or "Select area…" or "Auto-detect areas…" || button.Text.StartsWith("Track only"))),
         "Area setup actions must live in the Areas menu.");

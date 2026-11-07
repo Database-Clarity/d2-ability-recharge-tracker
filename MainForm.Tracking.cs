@@ -92,6 +92,14 @@ internal sealed partial class MainForm
         _toolTip.SetToolTip(_trackSelector.Segments[0], "Track all three abilities.");
         selector.Controls.Add(label);
         selector.Controls.Add(_trackSelector);
+        var markCharged = _markChargedButton;
+        markCharged.Name = "MarkCharged";
+        markCharged.Text = WithShortcut("Mark charged", MarkChargedBinding);
+        markCharged.AutoSize = true;
+        markCharged.Margin = new Padding(12, 4, 3, 4);
+        markCharged.Click += (_, _) => MarkTrackedCharged();
+        _toolTip.SetToolTip(markCharged, "Mark all tracked abilities charged and learn their current appearance (F9 by default).");
+        selector.Controls.Add(markCharged);
 
         _recordingChip.Name = "RecordingChip";
         _recordingChip.Tone = StatusTone.Error;

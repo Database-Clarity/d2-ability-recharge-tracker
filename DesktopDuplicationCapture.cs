@@ -20,6 +20,8 @@ internal sealed class DesktopDuplicationCapture : IDisposable
     private long _tick;
 
     public string? LastError { get; private set; }
+    /// <summary>Whether the last successful capture copied a newly presented frame (not a staged earlier copy).</summary>
+    public bool LastCaptureWasNewFrame { get; private set; }
 
     /// <summary>Starts a capture tick; each output acquires at most one new frame per tick.</summary>
     public void BeginTick() => _tick++;
@@ -40,8 +42,9 @@ internal sealed class DesktopDuplicationCapture : IDisposable
                 _outputs.Add(deviceName, output);
             }
 
-            if (output.TryCapture(_tick, bounds, surface, out timestamp))
+            if (output.TryCapture(_tick, bounds, surface, out timestamp, out var newFrame))
             {
+                LastCaptureWasNewFrame = newFrame;
                 LastError = null;
                 return true;
             }
@@ -143,9 +146,10 @@ internal sealed class DesktopDuplicationCapture : IDisposable
             throw new InvalidOperationException($"Display {deviceName} was not found for desktop duplication.");
         }
 
-        public bool TryCapture(long tick, Rectangle bounds, ScreenCaptureSurface surface, out DateTime timestamp)
+        public bool TryCapture(long tick, Rectangle bounds, ScreenCaptureSurface surface, out DateTime timestamp, out bool newFrame)
         {
             timestamp = DateTime.UtcNow;
+            newFrame = _frame is not null;
             if (!_desktopBounds.Contains(bounds))
             {
                 return false;
@@ -158,6 +162,7 @@ internal sealed class DesktopDuplicationCapture : IDisposable
             }
 
             var staging = Staging(bounds);
+            newFrame = _frame is not null;
             if (_frame is not null)
             {
                 // Copy only this region straight out of the held desktop frame; no full-frame GPU copy.
@@ -166,6 +171,7 @@ internal sealed class DesktopDuplicationCapture : IDisposable
                 _context.CopySubresourceRegion(staging.Texture, 0, 0, 0, 0, _frame, 0,
                     new Vortice.Mathematics.Box(left, top, 0, left + bounds.Width, top + bounds.Height, 1));
                 staging.HasData = true;
+                staging.Timestamp = _tickTimestamp;
             }
             else if (!staging.HasData)
             {
@@ -183,7 +189,7 @@ internal sealed class DesktopDuplicationCapture : IDisposable
                 _context.Unmap(staging.Texture, 0);
             }
 
-            timestamp = _tickTimestamp;
+            timestamp = staging.Timestamp;
             return true;
         }
 
@@ -191,8 +197,7 @@ internal sealed class DesktopDuplicationCapture : IDisposable
         {
             ReleaseHeldFrame();
             var timestamp = AcquireFrame();
-            // Keep timestamps strictly monotonic even if present times arrive slightly out of order.
-            _tickTimestamp = timestamp > _tickTimestamp ? timestamp : _tickTimestamp.AddTicks(1);
+            if (_frame is not null) _tickTimestamp = timestamp;
         }
 
         private DateTime AcquireFrame()
@@ -235,6 +240,9 @@ internal sealed class DesktopDuplicationCapture : IDisposable
                 _duplication.ReleaseFrame();
             }
         }
+        private static readonly long ClockQpc = Stopwatch.GetTimestamp();
+        private static readonly DateTime ClockUtc = DateTime.UtcNow;
+
         private static DateTime PresentTimestamp(long presentQpc)
         {
             var now = DateTime.UtcNow;
@@ -243,8 +251,7 @@ internal sealed class DesktopDuplicationCapture : IDisposable
                 return now;
             }
 
-            var age = (Stopwatch.GetTimestamp() - presentQpc) / (double)Stopwatch.Frequency;
-            return now - TimeSpan.FromSeconds(Math.Clamp(age, 0, 0.1));
+            return ClockUtc + TimeSpan.FromSeconds((presentQpc - ClockQpc) / (double)Stopwatch.Frequency);
         }
 
         private StagedRegion Staging(Rectangle bounds)
@@ -305,6 +312,7 @@ internal sealed class DesktopDuplicationCapture : IDisposable
         {
             public ID3D11Texture2D Texture { get; } = texture;
             public bool HasData { get; set; }
+            public DateTime Timestamp { get; set; }
         }
     }
 }

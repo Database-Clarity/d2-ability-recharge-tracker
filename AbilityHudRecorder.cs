@@ -7,6 +7,7 @@ using System.Globalization;
 using System.IO.Compression;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Text.Json;
 
 namespace D2AbilityTracker;
 
@@ -20,7 +21,12 @@ internal sealed class AbilityHudRecorder : IDisposable
     public const long MinimumFreeDiskBytes = 1_000_000_000;
     private const int CaptureMargin = 16;
     private const int QueueCapacity = 240;
-    private static readonly TimeSpan MinimumFrameSpacing = TimeSpan.FromSeconds(0.75 / FramesPerSecond);
+    private readonly FramePacer _pacer = new(Stopwatch.Frequency / FramesPerSecond);
+    private readonly FramePacer _testPacer = new(TimeSpan.TicksPerSecond / FramesPerSecond);
+    // GDI-only captures never report a fresh frame; stop waiting for one after this long.
+    private static readonly TimeSpan FreshFrameWait = TimeSpan.FromSeconds(2);
+    private readonly IReadOnlyList<AbilityHudRecordingSlot> _slots;
+    private int _skippedStartupFrames;
     private readonly BlockingCollection<PendingFrame> _queue = new(QueueCapacity);
     private readonly Action<AbilityHudRecordingProgress>? _reportProgress;
     private readonly string _path;
@@ -29,16 +35,16 @@ internal sealed class AbilityHudRecorder : IDisposable
     private readonly TaskCompletionSource<AbilityHudRecordingResult> _completion =
         new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly Stopwatch _stopwatch = new();
-    private DateTime _lastFrame = DateTime.MinValue;
     private DateTime? _firstFrame;
     private int _droppedFrames;
     private volatile string? _stopReason;
 
     public AbilityHudRecorder(Rectangle bounds, string deviceName, string path,
-        Action<AbilityHudRecordingProgress>? reportProgress = null)
+        Action<AbilityHudRecordingProgress>? reportProgress = null, IReadOnlyList<AbilityHudRecordingSlot>? slots = null)
     {
         ScreenCapture.ValidateBounds(bounds);
         Bounds = bounds;
+        _slots = slots ?? [];
         DeviceName = deviceName;
         _path = Path.GetFullPath(path);
         Directory.CreateDirectory(Path.GetDirectoryName(_path)!);
@@ -47,6 +53,45 @@ internal sealed class AbilityHudRecorder : IDisposable
         _encoder = new Thread(EncodeFrames) { IsBackground = true, Name = "HUD recording encoder", Priority = ThreadPriority.BelowNormal };
         _stopwatch.Start();
         _encoder.Start();
+    }
+
+    private readonly object _diagnosticsSync = new();
+    private readonly Queue<(double Capture, double Detection, double Submit)> _timings = new();
+    private readonly HashSet<string> _backends = [];
+    private readonly HashSet<string> _fallbackReasons = [];
+    private bool _highResolution;
+
+    public void RecordDiagnostics(string backend, string? fallbackReason, bool highResolution,
+        double captureMs, double detectionMs, double submitMs)
+    {
+        lock (_diagnosticsSync)
+        {
+            _backends.Add(backend);
+            if (fallbackReason is not null) _fallbackReasons.Add(fallbackReason);
+            _highResolution = highResolution;
+            if (_timings.Count == 4096) _timings.Dequeue();
+            _timings.Enqueue((captureMs, detectionMs, submitMs));
+        }
+    }
+
+    private string Diagnostics
+    {
+        get
+        {
+            lock (_diagnosticsSync)
+            {
+                static string Percentiles(IEnumerable<double> values)
+                {
+                    var sorted = values.Order().ToArray();
+                    return sorted.Length == 0 ? "no samples" : string.Join("/", new[] { 0.5, 0.95, 0.99 }
+                        .Select(p => sorted[(int)((sorted.Length - 1) * p)].ToString("F3", CultureInfo.InvariantCulture)));
+                }
+                return $"Backends: {string.Join(", ", _backends)}; fallback reasons: {string.Join("; ", _fallbackReasons)}; " +
+                    $"high-resolution timer: {_highResolution}; stage ms p50/p95/p99 (last 4096 ticks): " +
+                    $"capture {Percentiles(_timings.Select(t => t.Capture))}, detection {Percentiles(_timings.Select(t => t.Detection))}, " +
+                    $"submit {Percentiles(_timings.Select(t => t.Submit))}";
+            }
+        }
     }
 
     public Rectangle Bounds { get; }
@@ -90,17 +135,28 @@ internal sealed class AbilityHudRecorder : IDisposable
     }
 
     /// <summary>True when a frame captured at <paramref name="timestamp"/> keeps the recording at about 60 FPS.</summary>
-    public bool IsDue(DateTime timestamp) => IsAccepting && timestamp - _lastFrame >= MinimumFrameSpacing;
+    public bool IsDue(DateTime timestamp) => IsAccepting && _testPacer.IsDue(timestamp.Ticks);
+    public bool IsDue() => IsAccepting && _pacer.IsDue(Stopwatch.GetTimestamp());
 
-    /// <summary>Copies a captured frame and queues it for encoding; never blocks the capture loop.</summary>
-    public unsafe void Submit(IntPtr pixels, int stride, DateTime timestamp, string trackerState)
+    /// <summary>
+    /// Copies a captured frame and queues it for encoding; never blocks the capture loop. Until the first
+    /// <paramref name="fresh"/> frame (a newly presented desktop frame), frames are skipped: a capture that just
+    /// started can return a stale image (for example, a GDI copy of a game's flip-model swap chain), which would
+    /// otherwise start the recording with frozen, invalid frames.
+    /// </summary>
+    public unsafe void Submit(IntPtr pixels, int stride, DateTime timestamp, string trackerState, bool fresh = true)
     {
         if (!IsAccepting)
         {
             return;
         }
 
-        _lastFrame = timestamp;
+        if (_firstFrame is null && !fresh && _stopwatch.Elapsed < FreshFrameWait)
+        {
+            _skippedStartupFrames++;
+            return;
+        }
+
         _firstFrame ??= timestamp;
         var rowBytes = Bounds.Width * 4;
         var buffer = ArrayPool<byte>.Shared.Rent(rowBytes * Bounds.Height);
@@ -184,8 +240,27 @@ internal sealed class AbilityHudRecorder : IDisposable
                     writer.WriteLine($"Target frame rate: {FramesPerSecond} FPS");
                     writer.WriteLine($"Frames: {frameCount}");
                     writer.WriteLine($"Frames dropped (encoder busy): {Volatile.Read(ref _droppedFrames)}");
+                    writer.WriteLine($"Recorder pacing skips: {_pacer.Skipped + _testPacer.Skipped}");
+                    writer.WriteLine($"Capture diagnostics: {Diagnostics}");
+                    writer.WriteLine($"Stale startup frames skipped: {_skippedStartupFrames}");
                     writer.WriteLine($"App version: {UpdateChecker.CurrentVersion}");
                     writer.WriteLine("frames.csv lists each frame's capture time and the tracker's live state and progress.");
+                    writer.WriteLine("regions.json lists each tracked slot's screen region and the padding the detector used.");
+                }
+
+                var regions = archive.CreateEntry("regions.json", CompressionLevel.Fastest);
+                using (var stream = regions.Open())
+                {
+                    JsonSerializer.Serialize(stream, new
+                    {
+                        Slots = _slots.Select(slot => new
+                        {
+                            Kind = (int)slot.Kind,
+                            Region = new { slot.Region.X, slot.Region.Y, slot.Region.Width, slot.Region.Height },
+                            slot.TopPadding,
+                            slot.BottomPadding,
+                        }),
+                    });
                 }
 
                 var indexEntry = archive.CreateEntry("frames.csv", CompressionLevel.Fastest);
@@ -251,6 +326,15 @@ internal sealed class AbilityHudRecorder : IDisposable
     }
 
     private readonly record struct PendingFrame(byte[] Pixels, DateTime Timestamp, TimeSpan Elapsed, string TrackerState);
+}
+
+/// <summary>A tracked slot's screen region and the padding the detector reads around it.</summary>
+internal readonly record struct AbilityHudRecordingSlot(AbilityKind Kind, Rectangle Region, int TopPadding, int BottomPadding)
+{
+    /// <summary>The padding the live detector uses for <paramref name="region"/>, limited by its monitor.</summary>
+    public static AbilityHudRecordingSlot For(AbilityKind kind, Rectangle region, Rectangle monitor) => new(kind, region,
+        Math.Max(0, Math.Min(AbilitySignalDetector.TopPadding(region.Height), region.Top - monitor.Top)),
+        Math.Max(0, Math.Min(AbilitySignalDetector.BottomPadding(region.Height), monitor.Bottom - region.Bottom)));
 }
 
 internal readonly record struct AbilityHudRecordingProgress(int Frames, TimeSpan Elapsed, long BytesWritten, int DroppedFrames);

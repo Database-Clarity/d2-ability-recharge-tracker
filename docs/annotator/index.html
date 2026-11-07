@@ -18,8 +18,10 @@ button:hover,.btn:hover{border-color:#566070}
 button:disabled{opacity:.4;cursor:default}
 button.sel{outline:2px solid var(--accent);outline-offset:1px}
 button.link{background:none;border:none;color:var(--accent);padding:0;text-decoration:underline}
+button.mk.picked{background:var(--accent);border-color:var(--accent);color:#04111f;font-weight:600;text-decoration:none;padding:1px 6px}
 .muted{color:var(--muted)}
-.help{color:var(--muted);padding:7px 14px;font-size:12px;border-bottom:1px solid var(--line)}
+.note{margin-left:auto;font-size:12px}
+.help{color:var(--muted);padding:7px 14px;font-size:12px;line-height:1.8;border-bottom:1px solid var(--line)}
 kbd{background:#2a3038;border:1px solid #3a424d;border-bottom-width:2px;border-radius:4px;padding:0 5px;font:12px ui-monospace,Consolas,monospace;color:var(--text)}
 #empty{margin:40px auto;max-width:560px;padding:60px 20px;text-align:center;color:var(--muted);border:2px dashed var(--btn-line);border-radius:12px}
 #main{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:14px;padding:14px}
@@ -31,8 +33,9 @@ kbd{background:#2a3038;border:1px solid #3a424d;border-bottom-width:2px;border-r
 .scrub{margin-top:10px}
 #slider{width:100%;margin:0}
 .ticks{position:relative;height:14px;margin-top:2px}
-.tick{position:absolute;top:0;bottom:0;width:3px;margin-left:-1px;background:var(--c);border-radius:1px;cursor:pointer}
+.tick{position:absolute;top:0;bottom:0;width:3px;margin-left:-1px;background:var(--c);border-radius:1px;cursor:grab;touch-action:none}
 .tick.end{width:2px;opacity:.55}
+.tick.picked{width:5px;margin-left:-2px;top:-3px;bottom:-3px;background:#fff;box-shadow:0 0 0 2px var(--c);z-index:2;opacity:1;border-radius:2px}
 .cursor{position:absolute;top:-3px;bottom:-3px;width:2px;margin-left:-1px;background:#fff;pointer-events:none}
 .status{min-height:1.4em;color:var(--muted);margin-top:10px}
 .status.err{color:var(--err)}
@@ -40,9 +43,12 @@ kbd{background:#2a3038;border:1px solid #3a424d;border-bottom-width:2px;border-r
 .side h2{font-size:13px;margin:0 0 8px;font-weight:600;display:flex;justify-content:space-between}
 .slots{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-bottom:10px}
 .slots button{border-left:4px solid var(--c);text-align:left}
+#picker #pickInfo{margin-bottom:8px}
 ul.cycles{list-style:none;margin:0;padding:0}
 ul.cycles li{padding:7px 0;border-top:1px solid var(--line)}
 ul.cycles li:first-child{border-top:none}
+ul.cycles li.hasPick{background:rgba(74,163,255,.08);border-radius:6px;padding-left:6px;padding-right:6px}
+.frameedit{width:6.5em;background:#0d1014;color:var(--text);border:1px solid var(--accent);border-radius:4px;padding:1px 5px;font:inherit;font-variant-numeric:tabular-nums}
 .row{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
 .num{font-variant-numeric:tabular-nums}
 .idx{color:var(--muted);min-width:1.4em}
@@ -56,14 +62,21 @@ ul.cycles li:first-child{border-top:none}
   <input type="file" id="zipInput" accept=".zip,application/zip" hidden>
   <button id="importBtn" disabled>Import JSON</button>
   <button id="exportBtn" disabled>Export JSON</button>
+  <button id="undoBtn" disabled title="Undo (Ctrl+Z)">Undo</button>
+  <button id="redoBtn" disabled title="Redo (Ctrl+Y)">Redo</button>
   <input type="file" id="jsonInput" accept=".json,application/json" hidden>
   <span id="recName" class="muted"></span>
+  <span class="muted note">Files are processed locally in your browser and never uploaded.</span>
 </header>
 <div class="help">
   <kbd>1</kbd><kbd>2</kbd><kbd>3</kbd> select Grenade / Melee / Class &middot;
   <kbd>I</kbd> mark recharge start &middot; <kbd>O</kbd> mark recharge complete &middot;
   <kbd>&larr;</kbd><kbd>&rarr;</kbd> 1 frame &middot; <kbd>Shift</kbd>+<kbd>&larr;</kbd><kbd>&rarr;</kbd> 60 frames &middot;
-  <kbd>Home</kbd>/<kbd>End</kbd> first/last &middot; marks autosave per recording
+  <kbd>Home</kbd>/<kbd>End</kbd> first/last &middot; marks autosave per recording<br>
+  Click a frame number or a tick to select a marker &middot;
+  <kbd>,</kbd><kbd>.</kbd> nudge 1 frame (<kbd>Shift</kbd> for 10, or <kbd>Alt</kbd>+<kbd>&larr;</kbd><kbd>&rarr;</kbd>) &middot;
+  <kbd>M</kbd> set here &middot; <kbd>I</kbd>/<kbd>O</kbd> move selected start/end to this frame &middot; <kbd>Esc</kbd> deselect &middot;
+  <kbd>Ctrl</kbd>+<kbd>Z</kbd> undo &middot; <kbd>Ctrl</kbd>+<kbd>Y</kbd> redo
 </div>
 
 <div id="empty">Drop a recording .zip here, or use Open .zip. Nothing is uploaded; the file stays on this computer.</div>
@@ -79,9 +92,9 @@ ul.cycles li:first-child{border-top:none}
     <div class="stage"><img id="frameImg" alt="Current recording frame"></div>
     <div class="scrub">
       <input type="range" id="slider" min="1" max="1" value="1" aria-label="Frame position">
-      <div id="ticks" class="ticks" title="Marks: solid = start, faded = complete"></div>
+      <div id="ticks" class="ticks" title="Marks: solid = start, faded = complete. Click to select, drag to move."></div>
     </div>
-    <div id="status" class="status"></div>
+    <div id="status" class="status" role="status"></div>
   </section>
 
   <aside class="side">
@@ -90,6 +103,17 @@ ul.cycles li:first-child{border-top:none}
       <button data-slot="melee" style="--c:var(--melee)">2 Melee</button>
       <button data-slot="class" style="--c:var(--class)">3 Class</button>
     </div>
+    <section id="picker">
+      <div id="pickInfo" class="muted"></div>
+      <div class="row">
+        <button class="small" data-nudge="-10" title="Back 10 frames (Shift+,)">-10</button>
+        <button class="small" data-nudge="-1" title="Back 1 frame (,)">-1</button>
+        <button class="small" data-nudge="1" title="Forward 1 frame (.)">+1</button>
+        <button class="small" data-nudge="10" title="Forward 10 frames (Shift+.)">+10</button>
+        <button id="setHere" class="small" title="Move the selected marker to the current frame (M)">Set here (M)</button>
+        <button id="deselect" class="small" title="Deselect (Esc)">Deselect (Esc)</button>
+      </div>
+    </section>
     <section style="--c:var(--grenade)"><h2><span>Grenade cycles</span><span id="count-grenade">0</span></h2><ul class="cycles" id="list-grenade"></ul></section>
     <section style="--c:var(--melee)"><h2><span>Melee cycles</span><span id="count-melee">0</span></h2><ul class="cycles" id="list-melee"></ul></section>
     <section style="--c:var(--class)"><h2><span>Class cycles</span><span id="count-class">0</span></h2><ul class="cycles" id="list-class"></ul></section>
@@ -103,10 +127,13 @@ ul.cycles li:first-child{border-top:none}
 
   var SLOTS = ['grenade', 'melee', 'class'];
   var LABEL = { grenade: 'Grenade', melee: 'Melee', class: 'Class' };
-  var KEEP_BEHIND = 20, KEEP_AHEAD = 40, PREFETCH = 8;
+  var KEEP_BEHIND = 20, KEEP_AHEAD = 40, PREFETCH = 8, HISTORY_LIMIT = 200;
 
   var zip = null, zipName = '', total = 0, times = [], utcs = [];
   var cur = 1, sel = 'grenade', marks = emptyMarks();
+  var picked = null;   // selected marker: { slot, i, part: 'start' | 'end' }
+  var editing = false; // true while the picked marker's frame number is being typed in the list
+  var past = [], future = []; // undo / redo snapshots of marks
   var cache = new Map(); // frame number -> { promise: Promise<objectURL> }
 
   function $(id) { return document.getElementById(id); }
@@ -174,6 +201,8 @@ ul.cycles li:first-child{border-top:none}
     times = parsed.times;
     utcs = parsed.utcs;
     marks = emptyMarks();
+    past = []; future = [];
+    picked = null; editing = false;
 
     var saved = readSaved();
     var restored = 0;
@@ -191,7 +220,7 @@ ul.cycles li:first-child{border-top:none}
     $('exportBtn').disabled = false;
     $('importBtn').disabled = false;
     $('recName').textContent = zipName;
-    renderAll();
+    refresh();
     showFrame();
     setStatus(restored ? 'Opened ' + total + ' frames. Restored ' + restored + ' saved cycle(s).' : 'Opened ' + total + ' frames.');
   }
@@ -254,51 +283,192 @@ ul.cycles li:first-child{border-top:none}
     showFrame();
   }
 
+  // ---- undo / redo ---------------------------------------------------------
+  function snap() { return JSON.parse(JSON.stringify(marks)); }
+
+  function pushUndo(before) {
+    past.push(before);
+    if (past.length > HISTORY_LIMIT) past.shift();
+    future = [];
+  }
+
+  // Records one undo step if the marks actually changed, then re-renders.
+  function commit(before, msg) {
+    if (JSON.stringify(before) !== JSON.stringify(marks)) pushUndo(before);
+    afterChange(msg);
+  }
+
+  function undo() {
+    if (!past.length) { setStatus('Nothing to undo.'); return; }
+    future.push(snap());
+    marks = past.pop();
+    picked = null; editing = false;
+    afterChange('Undid the last change.');
+  }
+
+  function redo() {
+    if (!future.length) { setStatus('Nothing to redo.'); return; }
+    past.push(snap());
+    marks = future.pop();
+    picked = null; editing = false;
+    afterChange('Redid the change.');
+  }
+
   // ---- marks ---------------------------------------------------------------
+  function markOf(p) { return p ? marks[p.slot][p.i] : null; }
+  function frameOf(p) { var c = markOf(p); return p.part === 'start' ? c.startFrame : c.endFrame; }
+  function isPicked(s, i, part) { return !!picked && picked.slot === s && picked.i === i && picked.part === part; }
+
+  // With a marker selected, I and O move that cycle's start or end to the current frame.
+  function moveSelectedCycle(part) {
+    if (part === 'end' && markOf({ slot: picked.slot, i: picked.i, part: 'end' }).endFrame == null) {
+      setStatus('That cycle is open and has no end to move. Press O on a later frame to set one.', true);
+      return;
+    }
+    moveMarker({ slot: picked.slot, i: picked.i, part: part }, cur, { clamp: false });
+  }
+
   function markStart() {
     if (!zip) return;
+    if (picked) { moveSelectedCycle('start'); return; }
     var list = marks[sel];
     var last = list[list.length - 1];
+    var before = snap();
     if (last && last.endFrame == null) {
       var prev = list[list.length - 2];
       if (prev && cur <= prev.endFrame) { setStatus(LABEL[sel] + ' start must be after frame ' + prev.endFrame + '.', true); return; }
+      var replaced = last.startFrame;
       last.startFrame = cur; // re-mark the open start
+      commit(before, LABEL[sel] + ' open start moved from frame ' + replaced + ' to ' + cur + ' (Ctrl+Z to undo).');
+      return;
     } else {
       if (last && cur <= last.endFrame) { setStatus(LABEL[sel] + ' start must be after frame ' + last.endFrame + '.', true); return; }
       list.push({ startFrame: cur, endFrame: null });
     }
-    afterChange(LABEL[sel] + ' recharge start marked at frame ' + cur + '.');
+    commit(before, LABEL[sel] + ' recharge start marked at frame ' + cur + '.');
   }
 
   function markEnd() {
     if (!zip) return;
+    if (picked) { moveSelectedCycle('end'); return; }
     var list = marks[sel];
     var last = list[list.length - 1];
-    if (!last || last.endFrame != null) { setStatus('No open ' + LABEL[sel] + ' start. Press S on the start frame first.', true); return; }
+    if (!last || last.endFrame != null) { setStatus('No open ' + LABEL[sel] + ' start. Press I on the start frame first.', true); return; }
     if (cur <= last.startFrame) { setStatus('End must be after the start frame ' + last.startFrame + '.', true); return; }
+    var before = snap();
+    var startFrame = last.startFrame;
     last.endFrame = cur;
-    afterChange(LABEL[sel] + ' recharge complete at frame ' + cur + ' (' + (times[cur - 1] - times[last.startFrame - 1]).toFixed(3) + ' s).');
+    commit(before, LABEL[sel] + ' recharge complete at frame ' + cur + ' (' + (times[cur - 1] - times[startFrame - 1]).toFixed(3) + ' s).');
   }
 
   function deleteCycle(slot, i) {
     var c = marks[slot][i];
     if (!c) return;
+    var before = snap();
     marks[slot].splice(i, 1);
-    afterChange('Deleted ' + LABEL[slot] + ' cycle starting at frame ' + c.startFrame + '.');
+    picked = null; editing = false;
+    commit(before, 'Deleted ' + LABEL[slot] + ' cycle starting at frame ' + c.startFrame + '.');
   }
 
   function clearEnd(slot, i) {
     var c = marks[slot][i];
     if (!c) return;
+    var before = snap();
     c.endFrame = null;
-    afterChange('Cleared end of ' + LABEL[slot] + ' cycle; it is open again.');
+    picked = null; editing = false;
+    commit(before, 'Cleared end of ' + LABEL[slot] + ' cycle; it is open again.');
+  }
+
+  // Allowed frame range for the picked marker, given its neighbours in the same slot.
+  // A start must stay after the previous cycle's end and before its own end.
+  // An end must stay after its own start and before the next cycle's start.
+  function bounds(p) {
+    var list = marks[p.slot], c = list[p.i], prev = list[p.i - 1], next = list[p.i + 1];
+    if (p.part === 'start') {
+      var lo = 1;
+      if (prev) lo = prev.endFrame != null ? prev.endFrame + 1 : prev.startFrame + 1;
+      return { lo: lo, hi: c.endFrame != null ? c.endFrame - 1 : total };
+    }
+    return { lo: c.startFrame + 1, hi: next ? next.startFrame - 1 : total };
+  }
+
+  // Moves the picked start or end to a frame.
+  //   opts.clamp:  stop at the neighbouring limit instead of refusing
+  //   opts.noUndo: used during a drag, where the whole drag is one undo step
+  // Returns true when the marker moved.
+  function moveMarker(p, frame, opts) {
+    opts = opts || {};
+    var c = markOf(p), old = frameOf(p), b = bounds(p);
+    var name = LABEL[p.slot] + ' ' + p.part;
+    if (!isFinite(frame)) { setStatus('Type a frame number, then Enter.', true); return false; }
+    var target = Math.round(frame), clamped = false;
+    if (target < b.lo || target > b.hi) {
+      if (!opts.clamp) {
+        setStatus(name + ' must stay between frames ' + b.lo + ' and ' + b.hi + '.', true);
+        return false;
+      }
+      target = Math.max(b.lo, Math.min(b.hi, target));
+      clamped = true;
+      if (target === old) { setStatus(name + ' is already at its limit (frame ' + old + ').', true); return false; }
+    }
+    if (target === old) return false;
+    var before = opts.noUndo ? null : snap();
+    if (p.part === 'start') c.startFrame = target; else c.endFrame = target;
+    goto(target);
+    var msg = name + ' now at frame ' + target + ' (' + times[target - 1].toFixed(3) + ' s).' +
+      (clamped ? ' Stopped by the neighbouring cycle.' : '');
+    if (opts.noUndo) afterChange(msg); else commit(before, msg);
+    return true;
+  }
+
+  function nudge(dir, amount) {
+    if (picked) moveMarker(picked, frameOf(picked) + dir * amount, { clamp: true });
+  }
+
+  function setHere() {
+    if (picked) moveMarker(picked, cur, { clamp: false });
+  }
+
+  function pick(p, edit) {
+    picked = p;
+    sel = p.slot;
+    editing = !!edit;
+    goto(frameOf(p));
+    setStatus(LABEL[p.slot] + ' ' + p.part + ' selected at frame ' + frameOf(p) + '. , and . nudge it, M sets it here, Esc deselects.');
+    refresh();
+  }
+
+  function deselect() {
+    picked = null; editing = false;
+    setStatus('Marker deselected.');
+    refresh();
+  }
+
+  function selectSlot(s) {
+    picked = null; editing = false;
+    sel = s;
+    setStatus('Selected ' + LABEL[s] + '.');
+    refresh();
+  }
+
+  function commitEdit(text) {
+    if (!picked || !editing) return;
+    var n = parseInt(text, 10);
+    if (isNaN(n)) { setStatus('Type a frame number, then Enter. Esc cancels.', true); return; }
+    editing = false;
+    if (!moveMarker(picked, n, { clamp: false })) refresh();
   }
 
   function afterChange(msg) {
     saveMarks();
-    renderLists();
-    renderTicks();
+    refresh();
     setStatus(msg);
+  }
+
+  function validatePick() {
+    if (!picked) return;
+    var c = markOf(picked);
+    if (!c || (picked.part === 'end' && c.endFrame == null)) { picked = null; editing = false; }
   }
 
   function parseCycles(list) {
@@ -323,6 +493,7 @@ ul.cycles li:first-child{border-top:none}
     return { marks: out, skipped: skipped };
   }
 
+  // Times are recomputed from the frame timestamps on every export and autosave.
   function exportCycles() {
     var out = [];
     SLOTS.forEach(function (s) {
@@ -361,11 +532,13 @@ ul.cycles li:first-child{border-top:none}
     if (!data || !Array.isArray(data.cycles)) { setStatus('JSON has no cycles array.', true); return; }
     if (countMarks(marks) > 0 && !confirm('Replace the current marks with the imported ones?')) return;
     var r = parseCycles(data.cycles);
+    var before = snap();
     marks = r.marks;
+    picked = null; editing = false;
     var msg = 'Imported ' + countMarks(marks) + ' cycle(s)';
     if (r.skipped) msg += ', skipped ' + r.skipped + ' invalid';
     if (data.recording && data.recording !== zipName) msg += ' (file was made for ' + data.recording + ')';
-    afterChange(msg + '.');
+    commit(before, msg + '.');
   }
 
   // ---- autosave (per recording, localStorage) -----------------------------
@@ -388,16 +561,40 @@ ul.cycles li:first-child{border-top:none}
   }
 
   // ---- rendering -----------------------------------------------------------
-  function selectSlot(s) {
-    sel = s;
+  function refresh() {
+    validatePick();
     renderSlots();
-    setStatus('Selected ' + LABEL[s] + '.');
+    renderLists();
+    renderTicks();
+    renderPicker();
+    $('undoBtn').disabled = !past.length;
+    $('redoBtn').disabled = !future.length;
   }
 
   function renderSlots() {
     document.querySelectorAll('.slots button').forEach(function (b) {
       b.classList.toggle('sel', b.dataset.slot === sel);
     });
+  }
+
+  function renderPicker() {
+    var on = !!picked;
+    if (on) {
+      var f = frameOf(picked);
+      $('pickInfo').textContent = LABEL[picked.slot] + ' ' + picked.part + ' at frame ' + f +
+        ' (' + times[f - 1].toFixed(3) + ' s). Click its frame number to type a new one.';
+    } else {
+      $('pickInfo').textContent = 'No marker selected. Click a frame number or a tick to select one.';
+    }
+    document.querySelectorAll('#picker button').forEach(function (b) { b.disabled = !on; });
+  }
+
+  function markCtl(s, i, part, frame) {
+    if (editing && isPicked(s, i, part)) {
+      return '<input class="frameedit" type="text" inputmode="numeric" value="' + frame + '" aria-label="' + part + ' frame">';
+    }
+    return '<button class="link mk' + (isPicked(s, i, part) ? ' picked' : '') + '" data-act="pick" data-part="' + part +
+      '" title="Select, jump here and type a new frame">' + (part === 'start' ? 'start #' : '#') + frame + '</button>';
   }
 
   function renderLists() {
@@ -420,19 +617,22 @@ ul.cycles li:first-child{border-top:none}
         var li = document.createElement('li');
         li.dataset.slot = s;
         li.dataset.i = i;
+        if (picked && picked.slot === s && picked.i === i) li.className = 'hasPick';
         var endPart = en == null
           ? '<em class="muted">open</em>'
-          : '<button class="link" data-act="jump" data-f="' + c.endFrame + '">#' + c.endFrame + '</button> <span class="num">' + en.toFixed(3) + ' s</span>';
+          : markCtl(s, i, 'end', c.endFrame) + ' <span class="num">' + en.toFixed(3) + ' s</span>';
         var dur = en == null ? 'open' : (en - st).toFixed(3) + ' s';
         li.innerHTML =
           '<div class="row"><span class="idx">' + (i + 1) + '</span>' +
-          '<button class="link" data-act="jump" data-f="' + c.startFrame + '">start #' + c.startFrame + '</button>' +
+          markCtl(s, i, 'start', c.startFrame) +
           '<span class="num">' + st.toFixed(3) + ' s</span> &rarr; ' + endPart + '</div>' +
           '<div class="row"><span class="num muted">duration ' + dur + '</span><span style="flex:1"></span>' +
           (isLast && en != null ? '<button class="small" data-act="clearend">Clear end</button> ' : '') +
           '<button class="small" data-act="del">Delete</button></div>';
         ul.appendChild(li);
       });
+      var inp = ul.querySelector('input.frameedit');
+      if (inp) { inp.focus(); inp.select(); }
     });
   }
 
@@ -452,41 +652,61 @@ ul.cycles li:first-child{border-top:none}
     var cursor = document.createElement('div');
     cursor.className = 'cursor';
     box.appendChild(cursor);
-    function addTick(n, slot, isEnd) {
+    function addTick(n, slot, part, i) {
       var d = document.createElement('div');
-      d.className = 'tick' + (isEnd ? ' end' : '');
+      d.className = 'tick' + (part === 'end' ? ' end' : '') + (isPicked(slot, i, part) ? ' picked' : '');
       d.style.left = pos(n);
       d.style.setProperty('--c', 'var(--' + slot + ')');
-      d.title = LABEL[slot] + (isEnd ? ' complete' : ' start') + ' #' + n;
-      d.dataset.f = n;
+      d.title = LABEL[slot] + (part === 'end' ? ' complete' : ' start') + ' #' + n + ' (click to select, drag to move)';
+      d.dataset.slot = slot;
+      d.dataset.i = i;
+      d.dataset.part = part;
       box.appendChild(d);
     }
     SLOTS.forEach(function (s) {
-      marks[s].forEach(function (c) {
-        addTick(c.startFrame, s, false);
-        if (c.endFrame != null) addTick(c.endFrame, s, true);
+      marks[s].forEach(function (c, i) {
+        addTick(c.startFrame, s, 'start', i);
+        if (c.endFrame != null) addTick(c.endFrame, s, 'end', i);
       });
     });
     updateCursor();
   }
 
-  function renderAll() {
-    renderSlots();
-    renderLists();
-    renderTicks();
-  }
-
   // ---- events --------------------------------------------------------------
   document.addEventListener('keydown', function (e) {
-    if (!zip || e.ctrlKey || e.metaKey || e.altKey) return;
+    if (!zip) return;
     var t = e.target;
     if (t && (t.tagName === 'TEXTAREA' || (t.tagName === 'INPUT' && t.type !== 'range'))) return;
+    var k = e.key.toLowerCase();
+
+    if (e.ctrlKey || e.metaKey) {
+      if (e.altKey) return;
+      if (k === 'z' && !e.shiftKey) { e.preventDefault(); undo(); }
+      else if (k === 'y' || (k === 'z' && e.shiftKey)) { e.preventDefault(); redo(); }
+      return;
+    }
+    if (e.altKey) {
+      if (picked && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
+        e.preventDefault();
+        nudge(e.key === 'ArrowLeft' ? -1 : 1, e.shiftKey ? 10 : 1);
+      }
+      return;
+    }
     if (e.key === 'ArrowLeft') { e.preventDefault(); goto(cur - (e.shiftKey ? 60 : 1)); return; }
     if (e.key === 'ArrowRight') { e.preventDefault(); goto(cur + (e.shiftKey ? 60 : 1)); return; }
     if (e.key === 'Home') { e.preventDefault(); goto(1); return; }
     if (e.key === 'End') { e.preventDefault(); goto(total); return; }
+    if (e.key === 'Escape') { if (picked) deselect(); return; }
     if (e.key === '1' || e.key === '2' || e.key === '3') { selectSlot(SLOTS[+e.key - 1]); return; }
-    var k = e.key.toLowerCase();
+    if (k === ',' || k === '.' || k === '<' || k === '>') {
+      if (!picked) return;
+      e.preventDefault();
+      var dir = (k === ',' || k === '<') ? -1 : 1;
+      var big = k === '<' || k === '>' || e.shiftKey;
+      nudge(dir, big ? 10 : 1);
+      return;
+    }
+    if (k === 'm') { if (picked) { e.preventDefault(); setHere(); } return; }
     if (k === 'i') { e.preventDefault(); markStart(); }
     else if (k === 'o') { e.preventDefault(); markEnd(); }
   });
@@ -508,6 +728,8 @@ ul.cycles li:first-child{border-top:none}
   $('slider').addEventListener('input', function (e) { goto(+e.target.value); });
   $('exportBtn').addEventListener('click', exportJson);
   $('importBtn').addEventListener('click', function () { $('jsonInput').click(); });
+  $('undoBtn').addEventListener('click', undo);
+  $('redoBtn').addEventListener('click', redo);
   $('jsonInput').addEventListener('change', function (e) {
     var f = e.target.files[0];
     if (f) importJson(f);
@@ -518,21 +740,61 @@ ul.cycles li:first-child{border-top:none}
     b.addEventListener('click', function () { selectSlot(b.dataset.slot); });
   });
 
+  document.querySelectorAll('#picker [data-nudge]').forEach(function (b) {
+    b.addEventListener('click', function () {
+      var n = parseInt(b.dataset.nudge, 10);
+      nudge(n < 0 ? -1 : 1, Math.abs(n));
+    });
+  });
+  $('setHere').addEventListener('click', setHere);
+  $('deselect').addEventListener('click', deselect);
+
   document.querySelectorAll('ul.cycles').forEach(function (ul) {
     ul.addEventListener('click', function (e) {
       var b = e.target.closest('button[data-act]');
       if (!b) return;
       var li = b.closest('li');
       var slot = li.dataset.slot, i = +li.dataset.i;
-      if (b.dataset.act === 'jump') goto(+b.dataset.f);
+      if (b.dataset.act === 'pick') pick({ slot: slot, i: i, part: b.dataset.part }, true);
       else if (b.dataset.act === 'del') deleteCycle(slot, i);
       else if (b.dataset.act === 'clearend') clearEnd(slot, i);
     });
+    ul.addEventListener('keydown', function (e) {
+      if (!e.target.classList || !e.target.classList.contains('frameedit')) return;
+      if (e.key === 'Enter') { e.preventDefault(); commitEdit(e.target.value); }
+      else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); editing = false; setStatus('Edit cancelled.'); refresh(); }
+    });
+    ul.addEventListener('focusout', function (e) {
+      if (editing && e.target.classList && e.target.classList.contains('frameedit')) { editing = false; refresh(); }
+    });
   });
 
-  $('ticks').addEventListener('click', function (e) {
+  // Click selects and jumps; press-and-drag moves the marker, snapping to frames.
+  $('ticks').addEventListener('pointerdown', function (e) {
     var t = e.target.closest('.tick');
-    if (t) goto(+t.dataset.f);
+    if (!t || e.button !== 0 || !zip) return;
+    e.preventDefault();
+    var p = { slot: t.dataset.slot, i: +t.dataset.i, part: t.dataset.part };
+    var before = snap();
+    pick(p, false);
+
+    function move(ev) {
+      var r = $('ticks').getBoundingClientRect();
+      var inner = r.width - 16;
+      if (inner <= 0) return;
+      var frac = Math.max(0, Math.min(1, (ev.clientX - r.left - 8) / inner));
+      moveMarker(p, 1 + Math.round(frac * (total - 1)), { clamp: true, noUndo: true });
+    }
+    function up() {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', up);
+      window.removeEventListener('pointercancel', up);
+      if (JSON.stringify(before) !== JSON.stringify(marks)) pushUndo(before);
+      refresh();
+    }
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+    window.addEventListener('pointercancel', up);
   });
 })();
 </script>

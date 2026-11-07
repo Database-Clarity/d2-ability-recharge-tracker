@@ -1,0 +1,75 @@
+{
+  "recording": "D2Ability-HUD-20261107-153154.zip",
+  "cycles": [
+    {
+      "slot": "grenade",
+      "startFrame": 165,
+      "startTime": 3.58251,
+      "endFrame": 10256,
+      "endTime": 223.012813
+    },
+    {
+      "slot": "grenade",
+      "startFrame": 10354,
+      "startTime": 225.241043,
+      "endFrame": null,
+      "endTime": null
+    },
+    {
+      "slot": "melee",
+      "startFrame": 293,
+      "startTime": 6.352492,
+      "endFrame": 2453,
+      "endTime": 54.223992
+    },
+    {
+      "slot": "melee",
+      "startFrame": 2737,
+      "startTime": 60.373211,
+      "endFrame": 4953,
+      "endTime": 108.269631
+    },
+    {
+      "slot": "melee",
+      "startFrame": 5017,
+      "startTime": 109.804184,
+      "endFrame": 7159,
+      "endTime": 157.68652
+    },
+    {
+      "slot": "melee",
+      "startFrame": 7841,
+      "startTime": 172.140508,
+      "endFrame": 10109,
+      "endTime": 220.053963
+    },
+    {
+      "slot": "melee",
+      "startFrame": 10211,
+      "startTime": 222.068622,
+      "endFrame": null,
+      "endTime": null
+    },
+    {
+      "slot": "class",
+      "startFrame": 515,
+      "startTime": 11.385383,
+      "endFrame": 3520,
+      "endTime": 77.291431
+    },
+    {
+      "slot": "class",
+      "startFrame": 3748,
+      "startTime": 82.253144,
+      "endFrame": 6732,
+      "endTime": 148.171288
+    },
+    {
+      "slot": "class",
+      "startFrame": 8041,
+      "startTime": 176.392804,
+      "endFrame": null,
+      "endTime": null
+    }
+  ]
+}

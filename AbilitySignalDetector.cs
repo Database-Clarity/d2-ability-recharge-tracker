@@ -126,7 +126,59 @@ internal static class AbilitySignalDetector
             fillPixels > 0 && blankPixels / (float)fillPixels > 0.65f,
             fillPixels == 0 ? null : fillLuminance / fillPixels,
             twin,
-            fillPixels == 0 ? null : MeanSaturation(fillRed, fillGreen, fillBlue));
+            fillPixels == 0 ? null : MeanSaturation(fillRed, fillGreen, fillBlue),
+            ReadBottomBarOpacity(pixelData, stride, width, height, bottomPadding));
+    }
+
+    // The recharge-start bar is a near-white line drawn semi-transparently over the slot's bottom border. Measured on
+    // dark backgrounds it reaches about 0.9 luminance at about 60% opacity; the thin idle border is about 15–20%.
+    private const float BarLuminance = 0.9f;
+
+    /// <summary>
+    /// Opacity of the brightest narrow horizontal line at the slot's bottom border, relative to the slot just above it:
+    /// (peak − background) / (bar luminance − background). Unlike a fixed contrast threshold, it stays the same when a
+    /// bright scene or effect shows through the slot. Row medians across the slot reject scenery covering part of
+    /// the width. A bright band wider than a bar, or one running off the bottom of the search area, is not a bar (0).
+    /// </summary>
+    internal static unsafe float ReadBottomBarOpacity(byte* pixels, int stride, int width, int height, int padding)
+    {
+        var left = (int)(width * 0.12f);
+        var right = Math.Max(left + 1, (int)(width * 0.88f));
+        var backgroundTop = (int)(height * 0.78f);
+        var searchTop = (int)(height * 0.85f);
+        var rows = height + padding - backgroundTop;
+        if (rows <= searchTop - backgroundTop + 1) { return 0; }
+        Span<float> column = right - left <= 512 ? stackalloc float[right - left] : new float[right - left];
+        Span<float> profile = rows <= 256 ? stackalloc float[rows] : new float[rows];
+        for (var row = 0; row < rows; row++)
+        {
+            var line = pixels + (backgroundTop + row) * stride;
+            for (var x = left; x < right; x++) { column[x - left] = GetLuminance(line + x * 4); }
+            profile[row] = Median(column);
+        }
+
+        var background = Median(profile[..(searchTop - backgroundTop)].ToArray());
+        var search = profile[(searchTop - backgroundTop)..];
+        var peak = 0;
+        for (var row = 1; row < search.Length; row++)
+        {
+            if (search[row] > search[peak]) { peak = row; }
+        }
+
+        var excess = search[peak] - background;
+        if (excess <= 0) { return 0; }
+        var low = peak;
+        var high = peak;
+        while (low > 0 && search[low - 1] - background >= excess / 2) { low--; }
+        while (high < search.Length - 1 && search[high + 1] - background >= excess / 2) { high++; }
+        if (high - low + 1 > Math.Max(4, (int)Math.Ceiling(height * 0.08)) || high == search.Length - 1) { return 0; }
+        return excess / Math.Max(0.1f, BarLuminance - background);
+    }
+
+    private static float Median(Span<float> values)
+    {
+        values.Sort();
+        return values.Length % 2 == 1 ? values[values.Length / 2] : (values[values.Length / 2 - 1] + values[values.Length / 2]) / 2;
     }
 
     // Saturation of the mean fill colour: the gray recharge bar is neutral, the charged fill is strongly tinted.
