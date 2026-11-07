@@ -65,6 +65,8 @@ internal sealed class TrackerSettings
     public bool CheckForUpdatesOnStartup { get; set; } = true;
     /// <summary>Where HUD recordings are saved; null uses the default under Documents.</summary>
     public string? RecordingFolder { get; set; }
+    /// <summary>Record the HUD for the whole of each repeat test.</summary>
+    public bool RecordRepeatTests { get; set; }
     public string? LastChangelogVersion { get; set; }
     public int CaptureRate { get; set; } = 120;
     public AbilityKind TestAbility { get; set; } = AbilityKind.Grenade;

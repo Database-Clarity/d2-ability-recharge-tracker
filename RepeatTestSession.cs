@@ -12,15 +12,18 @@ internal enum RepeatTestPhase
     Failed
 }
 
+/// <summary>One completed repeat-test cycle: measured total and its 10–90% regression, each with its uncertainty.</summary>
+internal readonly record struct RepeatCycle(TimeSpan Duration, TimeSpan? Uncertainty, TimeSpan? Regression, TimeSpan? RegressionUncertainty);
+
 internal sealed class RepeatTestSession
 {
     private DateTime? _nextUseAt;
     private DateTime? _automaticUseDeadline;
     private readonly List<TimeSpan> _durations = [];
     private readonly List<TimeSpan> _regressionDurations = [];
-    private readonly List<(TimeSpan Duration, TimeSpan? Regression)> _cycles = [];
+    private readonly List<RepeatCycle> _cycles = [];
     /// <summary>Each completed cycle of the current (or last) test, in order.</summary>
-    public IReadOnlyList<(TimeSpan Duration, TimeSpan? Regression)> Cycles => _cycles;
+    public IReadOnlyList<RepeatCycle> Cycles => _cycles;
     private readonly List<MeasurementHistoryEntry> _validatedCycles = [];
     private MeasurementHistoryEntry? _validatedSummary;
     public Guid RunId { get; private set; }
@@ -139,7 +142,7 @@ internal sealed class RepeatTestSession
     }
 
     public void RecordRecharge(AbilityKind ability, TimeSpan duration, DateTime timestamp, TimeSpan? regression = null,
-        MeasurementHistoryEntry? validated = null)
+        MeasurementHistoryEntry? validated = null, TimeSpan? uncertainty = null, TimeSpan? regressionUncertainty = null)
     {
         if (ability != Ability || Phase != RepeatTestPhase.WaitingForRecharge || duration <= TimeSpan.Zero)
         {
@@ -147,7 +150,8 @@ internal sealed class RepeatTestSession
         }
 
         _durations.Add(duration);
-        _cycles.Add((duration, regression is { } r && r > TimeSpan.Zero ? r : null));
+        var fittedCycle = regression is { } r && r > TimeSpan.Zero ? r : (TimeSpan?)null;
+        _cycles.Add(new RepeatCycle(duration, uncertainty, fittedCycle, fittedCycle is null ? null : regressionUncertainty));
         if (regression is { } fitted && fitted > TimeSpan.Zero) _regressionDurations.Add(fitted);
         if (validated is not null && validated.Ability == ability && validated.DurationSeconds == duration.TotalSeconds)
             _validatedCycles.Add(validated);

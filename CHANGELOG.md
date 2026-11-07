@@ -40,3 +40,6 @@ Add a concise, single-line bullet for each notable user-facing change in the sam
 - Repeat test has its own **Overlay** switch.
 - Settings › Troubleshooting › **Recordings folder ▾** can open, change or reset the folder HUD recordings are saved to.
 - History groups each repeat test's cycles under its mean row; click the mean's **Result** cell to show or hide them.
+- Repeat test can record the HUD for the whole test with its **Record HUD** switch; the recording stops when the test ends.
+- Repeat test shows mean, SD and range for both measured and regression totals above the cycle list, and each listed cycle shows its ± uncertainty.
+- The whole window now repaints as one image, so live values no longer flicker.

@@ -45,6 +45,10 @@ internal sealed partial class MainForm : AppWindow
     private readonly BufferedLabel _testStatus = new();
     private readonly TextBox _testCycleList = new();
     private readonly ToggleSwitch _testOverlaySwitch = new();
+    private readonly ToggleSwitch _testRecordSwitch = new();
+    private readonly BufferedLabel _testStatistics = new();
+    // The HUD recording a repeat test started, stopped when that test ends.
+    private Task<AbilityHudRecordingResult>? _testRecording;
     private int _shownTestCycles = -1;
     private readonly BufferedLabel _hudRecordingStatus = new();
     private readonly Button _captureFolderButton = new();
@@ -463,7 +467,23 @@ internal sealed partial class MainForm : AppWindow
         _testOverlaySwitch.Text = "Overlay";
         _testOverlaySwitch.Height = TrackerTheme.ControlHeight;
         _testOverlaySwitch.Click += (_, _) => SetOverlayVisible(!_settings.OverlayVisible);
-        Place(test, _testOverlaySwitch, 2, 2, 2);
+        _testRecordSwitch.Name = "RepeatTestRecordToggle";
+        _testRecordSwitch.Text = "Record HUD";
+        _testRecordSwitch.Height = TrackerTheme.ControlHeight;
+        _testRecordSwitch.Checked = _settings.RecordRepeatTests;
+        _testRecordSwitch.Click += (_, _) =>
+        {
+            _settings.RecordRepeatTests = !_settings.RecordRepeatTests;
+            _testRecordSwitch.Checked = _settings.RecordRepeatTests;
+            SaveSettings();
+        };
+        _toolTip.SetToolTip(_testRecordSwitch, "Record the ability HUD from the start of each test until it ends (saved to the recordings folder).");
+        var testSwitches = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Margin = Padding.Empty, Padding = Padding.Empty };
+        _testOverlaySwitch.Margin = new Padding(3, 3, 16, 3);
+        _testRecordSwitch.Margin = new Padding(3, 3, 3, 3);
+        testSwitches.Controls.Add(_testOverlaySwitch);
+        testSwitches.Controls.Add(_testRecordSwitch);
+        Place(test, testSwitches, 2, 2, 2);
         // Every cycle's result as it completes, so a run can be followed without waiting for the summary.
         _testCycleList.Name = "RepeatTestCycles";
         _testCycleList.Multiline = true;
@@ -477,7 +497,14 @@ internal sealed partial class MainForm : AppWindow
         _testCycleList.Height = 150;
         _testCycleList.TabStop = false;
         _testCycleList.AccessibleName = "Repeat test cycle results";
-        Place(test, _testCycleList, 0, 5, 4);
+        _testStatistics.Name = "RepeatTestStatistics";
+        _testStatistics.AutoSize = false;
+        _testStatistics.Height = 40;
+        _testStatistics.ForeColor = TrackerTheme.Text;
+        _testStatistics.TextAlign = ContentAlignment.MiddleLeft;
+        _testStatistics.Text = DescribeTestStatistics([]);
+        Place(test, _testStatistics, 0, 5, 4);
+        Place(test, _testCycleList, 0, 6, 4);
         foreach (var control in new Control[] { _testAbilityPicker, _abilityUseBindingButton })
         {
             control.Margin = new Padding(3, 3, 29, 3);
@@ -1351,7 +1378,8 @@ internal sealed partial class MainForm : AppWindow
                             var validated = RecordValidatedMeasurement(slot.Kind, tracker, timestamp);
                             var completingRepeat = _repeatTest.Ability == slot.Kind &&
                                 _repeatTest.Phase == RepeatTestPhase.WaitingForRecharge;
-                            _repeatTest.RecordRecharge(slot.Kind, duration, timestamp, tracker.LastRegressionDuration, validated);
+                            _repeatTest.RecordRecharge(slot.Kind, duration, timestamp, tracker.LastRegressionDuration, validated,
+                                tracker.LastUncertainty, tracker.LastRegressionUncertainty);
                             if (completingRepeat && _repeatTest.ValidatedSummary is { } summary)
                                 SaveHistoryEntry(summary, _repeatHistorySessionId);
                         }
@@ -1457,6 +1485,18 @@ internal sealed partial class MainForm : AppWindow
         }
     }
 
+    // Paint the whole window off-screen as one composited image: live values change several times a second, and
+    // per-control double buffering alone still let neighbouring controls flash as they repainted.
+    protected override CreateParams CreateParams
+    {
+        get
+        {
+            var parameters = base.CreateParams;
+            parameters.ExStyle |= 0x02000000; // WS_EX_COMPOSITED
+            return parameters;
+        }
+    }
+
     private void UpdateStatus()
     {
         Dictionary<AbilityKind, AbilitySlotTracker> trackers;
@@ -1466,7 +1506,7 @@ internal sealed partial class MainForm : AppWindow
         AbilityKind? testAbility;
         RepeatTestPhase testPhase;
         string testStatus;
-        (TimeSpan Duration, TimeSpan? Regression)[] testCycles;
+        RepeatCycle[] testCycles;
         lock (_captureSync)
         {
             trackers = _trackers.ToDictionary(p => p.Key, p => p.Value.DisplaySnapshot());
@@ -1547,12 +1587,14 @@ internal sealed partial class MainForm : AppWindow
                     (running.EstimatedDuration is { } predicted ? $" · predicted {predicted.TotalSeconds:F2} s" : string.Empty);
             }
             if (_testStatus.Text != testText) _testStatus.Text = testText;
+            StopTestRecordingIfDone(testActive);
 
             if (testCycles.Length != _shownTestCycles)
             {
                 // Rewritten only when a cycle completes, so the list never flickers or loses its scroll position mid-cycle.
                 _shownTestCycles = testCycles.Length;
                 _testCycleList.Text = DescribeTestCycles(testCycles);
+                _testStatistics.Text = DescribeTestStatistics(testCycles);
                 _testCycleList.SelectionStart = _testCycleList.TextLength;
                 _testCycleList.ScrollToCaret();
             }
@@ -1660,7 +1702,7 @@ internal sealed partial class MainForm : AppWindow
         }
     }
 
-    internal static string DescribeTestCycles(IReadOnlyList<(TimeSpan Duration, TimeSpan? Regression)> cycles)
+    internal static string DescribeTestCycles(IReadOnlyList<RepeatCycle> cycles)
     {
         if (cycles.Count == 0)
         {
@@ -1670,20 +1712,30 @@ internal sealed partial class MainForm : AppWindow
         var lines = new List<string>();
         for (var index = 0; index < cycles.Count; index++)
         {
-            var (duration, regression) = cycles[index];
-            lines.Add($"#{index + 1,-3} {duration.TotalSeconds,8:F3} s" +
-                (regression is { } fitted ? $"   regression {fitted.TotalSeconds:F2} s" : string.Empty));
-        }
-
-        if (cycles.Count > 1)
-        {
-            var seconds = cycles.Select(cycle => cycle.Duration.TotalSeconds).ToArray();
-            var mean = seconds.Average();
-            var deviation = Math.Sqrt(seconds.Sum(value => (value - mean) * (value - mean)) / (seconds.Length - 1));
-            lines.Add($"mean {mean:F3} s · SD {deviation:F3} s · range {seconds.Min():F3}–{seconds.Max():F3} s");
+            var cycle = cycles[index];
+            static string Spread(TimeSpan? spread) => spread is { } value ? $" ± {value.TotalSeconds:F3}" : string.Empty;
+            lines.Add($"#{index + 1,-3} {cycle.Duration.TotalSeconds,8:F3}{Spread(cycle.Uncertainty)} s" +
+                (cycle.Regression is { } fitted
+                    ? $"   regression {fitted.TotalSeconds:F3}{Spread(cycle.RegressionUncertainty)} s"
+                    : "   regression —"));
         }
 
         return string.Join(Environment.NewLine, lines);
+    }
+
+    /// <summary>Mean, SD and range of the measured and regression totals so far (two lines; blank until two cycles).</summary>
+    internal static string DescribeTestStatistics(IReadOnlyList<RepeatCycle> cycles)
+    {
+        static string Stats(string label, double[] seconds)
+        {
+            if (seconds.Length < 2) return $"{label}: —";
+            var mean = seconds.Average();
+            var deviation = Math.Sqrt(seconds.Sum(value => (value - mean) * (value - mean)) / (seconds.Length - 1));
+            return $"{label}: mean {mean:F3} s · SD {deviation:F3} s · range {seconds.Min():F3}–{seconds.Max():F3} s (n={seconds.Length})";
+        }
+
+        return Stats("Measured", [.. cycles.Select(cycle => cycle.Duration.TotalSeconds)]) + "\n" +
+            Stats("Regression", [.. cycles.Where(cycle => cycle.Regression is not null).Select(cycle => cycle.Regression!.Value.TotalSeconds)]);
     }
 
     private void UpdateOverlayToggleText()
@@ -2143,7 +2195,28 @@ internal sealed partial class MainForm : AppWindow
         }
 
         SaveSettings();
+        if (_settings.RecordRepeatTests && _hudRecordingTask is null)
+        {
+            ToggleHudRecording();
+            _testRecording = _hudRecordingTask;
+        }
+
         UpdateStatus();
+    }
+
+    /// <summary>Stops the recording a repeat test started, once that test is no longer running.</summary>
+    private void StopTestRecordingIfDone(bool testActive)
+    {
+        if (testActive || _testRecording is not { } recording)
+        {
+            return;
+        }
+
+        _testRecording = null;
+        if (ReferenceEquals(_hudRecordingTask, recording) && _hudRecorder is { IsAccepting: true })
+        {
+            ToggleHudRecording();
+        }
     }
 
     private AbilityKind GetSelectedTestAbility() =>

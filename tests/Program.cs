@@ -244,7 +244,8 @@ if (args.Length == 2 && args[0] == "--ui-smoke")
                             64.20 + index * 0.02, 0.02, 0.16, MeasurementSource.Event, now, null, null, RepeatTestId: repeat.RunId);
                         repeat.ObserveState(AbilityKind.Grenade, AbilityState.Recharging, now);
                         repeat.RecordRecharge(AbilityKind.Grenade, TimeSpan.FromSeconds(entry.DurationSeconds), now,
-                            TimeSpan.FromSeconds(entry.RegressionSeconds!.Value), entry);
+                            TimeSpan.FromSeconds(entry.RegressionSeconds!.Value), entry,
+                            TimeSpan.FromSeconds(entry.UncertaintySeconds), TimeSpan.FromSeconds(entry.RegressionUncertaintySeconds!.Value));
                         if (index < 2) Assert(repeat.TryGetDueUse(now, true, out _), "Sample repeat must advance without sending input.");
                     }
                     navigation.Controls.OfType<Button>().Single(button => button.Text == "Repeat test").PerformClick();

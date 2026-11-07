@@ -51,6 +51,13 @@ internal static class HudReplay
                 _open[slot] = null; // measurement abandoned
             }
 
+            if (completed && tracker.LastDuration is { } measured && Environment.GetEnvironmentVariable("HUD_REGRESSION") == "1")
+            {
+                // Regression totals against the event-timed duration, for checking the regression uncertainty.
+                Console.WriteLine($"REG slot={slot} source={tracker.LastSource} duration={measured.TotalSeconds:F4} " +
+                    $"regression={tracker.LastRegressionDuration?.TotalSeconds:F4} sigma={tracker.LastRegressionUncertainty?.TotalSeconds:F4}");
+            }
+
             if (completed && _open[slot] is { } index && tracker.LastDuration is { } duration && tracker.LastStartedAt is { } started)
             {
                 found[index] = new Detected(NearestFrame(times, started), NearestFrame(times, started + duration),
