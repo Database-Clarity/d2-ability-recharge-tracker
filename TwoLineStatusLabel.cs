@@ -2,6 +2,13 @@ namespace D2AbilityTracker;
 
 internal sealed class TwoLineStatusLabel : Label
 {
+    public TwoLineStatusLabel()
+    {
+        // Rows repaint several times a second while measuring; paint off-screen so they never flash.
+        DoubleBuffered = true;
+        SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer, true);
+    }
+
     protected override void OnPaint(PaintEventArgs e)
     {
         e.Graphics.Clear(BackColor);
@@ -13,5 +20,15 @@ internal sealed class TwoLineStatusLabel : Label
                 ForeColor, TextFormatFlags.Left | TextFormatFlags.VerticalCenter |
                 TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
         }
+    }
+}
+
+/// <summary>A label that repaints off-screen, for text that changes several times a second.</summary>
+internal sealed class BufferedLabel : Label
+{
+    public BufferedLabel()
+    {
+        DoubleBuffered = true;
+        SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer, true);
     }
 }

@@ -18,6 +18,9 @@ internal sealed class RepeatTestSession
     private DateTime? _automaticUseDeadline;
     private readonly List<TimeSpan> _durations = [];
     private readonly List<TimeSpan> _regressionDurations = [];
+    private readonly List<(TimeSpan Duration, TimeSpan? Regression)> _cycles = [];
+    /// <summary>Each completed cycle of the current (or last) test, in order.</summary>
+    public IReadOnlyList<(TimeSpan Duration, TimeSpan? Regression)> Cycles => _cycles;
     private readonly List<MeasurementHistoryEntry> _validatedCycles = [];
     private MeasurementHistoryEntry? _validatedSummary;
     public Guid RunId { get; private set; }
@@ -95,6 +98,7 @@ internal sealed class RepeatTestSession
         TargetCycles = targetCycles;
         UseBinding = useBinding;
         _durations.Clear();
+        _cycles.Clear();
         _regressionDurations.Clear();
         _validatedCycles.Clear();
         _validatedSummary = null;
@@ -143,6 +147,7 @@ internal sealed class RepeatTestSession
         }
 
         _durations.Add(duration);
+        _cycles.Add((duration, regression is { } r && r > TimeSpan.Zero ? r : null));
         if (regression is { } fitted && fitted > TimeSpan.Zero) _regressionDurations.Add(fitted);
         if (validated is not null && validated.Ability == ability && validated.DurationSeconds == duration.TotalSeconds)
             _validatedCycles.Add(validated);

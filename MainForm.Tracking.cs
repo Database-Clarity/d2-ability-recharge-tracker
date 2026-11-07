@@ -47,10 +47,12 @@ internal sealed partial class MainForm
         _trackRow = BuildTrackRow();
         _abilityRows = BuildAbilityRows();
         _emptyState = BuildEmptyState();
-        stack.Controls.Add(_statusBanner);
-        stack.Controls.Add(_trackRow);
-        stack.Controls.Add(_abilityRows);
-        stack.Controls.Add(_emptyState);
+        // Explicit rows: automatic placement skips hidden controls, so the recording row would land last when shown.
+        stack.Controls.Add(_statusBanner, 0, 0);
+        stack.Controls.Add(_trackRow, 0, 1);
+        stack.Controls.Add(_recordingIndicator!, 0, 2);
+        stack.Controls.Add(_abilityRows, 0, 3);
+        stack.Controls.Add(_emptyState, 0, 4);
         _trackingActions = BuildTrackingActions();
         BuildTrackingMenus();
         var page = new Panel { Name = "TrackingPage", Dock = DockStyle.Fill, Margin = Padding.Empty };
@@ -111,20 +113,20 @@ internal sealed partial class MainForm
         _stopRecordingButton.Margin = new Padding(0, 4, 5, 0);
         _stopRecordingButton.Click += (_, _) => ToggleHudRecording();
         _toolTip.SetToolTip(_stopRecordingButton, "Stop the HUD recording and save it.");
+        // Its own row under the track selector, so nothing on the track row can cover it.
         _recordingIndicator = new FlowLayoutPanel
         {
-            Dock = DockStyle.Right,
+            Name = "RecordingIndicator",
             AutoSize = true,
             AutoSizeMode = AutoSizeMode.GrowAndShrink,
             WrapContents = false,
-            Margin = Padding.Empty,
+            Margin = new Padding(0, 0, 0, 4),
             Padding = Padding.Empty,
             Visible = false
         };
         _recordingIndicator.Controls.Add(_recordingChip);
         _recordingIndicator.Controls.Add(_stopRecordingButton);
         row.Controls.Add(selector);
-        row.Controls.Add(_recordingIndicator);
         return row;
     }
 
@@ -434,7 +436,9 @@ internal sealed partial class MainForm
 
     private void ShowRecordingIndicator(bool recording)
     {
-        if (_recordingIndicator is not null && _recordingIndicator.Visible != recording)
+        // Assign unconditionally: Visible reads false while the Tracking page is hidden (a recording is usually
+        // stopped from Settings), so comparing against it would leave the indicator showing when the user comes back.
+        if (_recordingIndicator is not null)
         {
             _recordingIndicator.Visible = recording;
         }

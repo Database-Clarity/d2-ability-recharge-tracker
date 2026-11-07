@@ -234,6 +234,17 @@ internal static class TrackerTheme
         DwmSetWindowAttribute(handle, 35, ref caption, sizeof(int));
     }
 
+    /// <summary>Gives a native control (such as a multiline TextBox) dark scroll bars.</summary>
+    internal static void DarkScrollBars(Control control)
+    {
+        void Apply() => SetWindowTheme(control.Handle, "DarkMode_Explorer", null);
+        if (control.IsHandleCreated) Apply();
+        control.HandleCreated += (_, _) => Apply();
+    }
+
+    [DllImport("uxtheme.dll", CharSet = CharSet.Unicode)]
+    private static extern int SetWindowTheme(IntPtr hwnd, string? subAppName, string? subIdList);
+
     [DllImport("dwmapi.dll")]
     private static extern int DwmSetWindowAttribute(IntPtr hwnd, int attribute, ref int value, int size);
 }

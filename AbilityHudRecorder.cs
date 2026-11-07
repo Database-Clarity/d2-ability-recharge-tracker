@@ -103,8 +103,9 @@ internal sealed class AbilityHudRecorder : IDisposable
     public static string DefaultFolder => System.IO.Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "D2AbilityTracker", "HUD recordings");
 
-    public static string DefaultPath(DateTime localTime) =>
-        System.IO.Path.Combine(DefaultFolder, $"D2Ability-HUD-{localTime:yyyyMMdd-HHmmss}.zip");
+    public static string DefaultPath(DateTime localTime, string? folder = null) =>
+        System.IO.Path.Combine(string.IsNullOrWhiteSpace(folder) ? DefaultFolder : folder,
+            $"D2Ability-HUD-{localTime:yyyyMMdd-HHmmss}.zip");
 
     public static Rectangle GetCaptureBounds(IEnumerable<AbilitySlotSettings> slots) =>
         GetCaptureBounds(slots
@@ -137,6 +138,9 @@ internal sealed class AbilityHudRecorder : IDisposable
     /// <summary>True when a frame captured at <paramref name="timestamp"/> keeps the recording at about 60 FPS.</summary>
     public bool IsDue(DateTime timestamp) => IsAccepting && _testPacer.IsDue(timestamp.Ticks);
     public bool IsDue() => IsAccepting && _pacer.IsDue(Stopwatch.GetTimestamp());
+    /// <summary>Like <see cref="IsDue()"/>, without consuming the slot.</summary>
+    public bool IsDuePeek() => IsAccepting && _pacer.Peek(Stopwatch.GetTimestamp());
+    public bool HasFrames => _firstFrame is not null;
 
     /// <summary>
     /// Copies a captured frame and queues it for encoding; never blocks the capture loop. Until the first

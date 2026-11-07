@@ -31,3 +31,12 @@ Add a concise, single-line bullet for each notable user-facing change in the sam
 - **Mark charged** beside Track (global **F9**, rebindable in Settings › Shortcuts) resets tracked abilities and learns their current charged appearance.
 - Capture runs at a higher, steadier rate with deadline pacing, accurate presentation timestamps, and recording performance diagnostics.
 - The recording annotator is now online at https://database-clarity.github.io/d2-ability-recharge-tracker/annotator/ with editable markers (select, nudge, drag or type a frame) and undo/redo.
+- Capture no longer drops to about half the set rate: when a capture tick lands just before the desktop composes a new frame, the tracker briefly waits for that frame instead of skipping to the next tick. HUD recordings keep only newly composed frames (no duplicates).
+- The app starts with detection paused; press **Resume detection** (F8) to begin.
+- Tracking and Repeat test results no longer flash while measuring.
+- Estimated results no longer get cut off: the row shows "± … s (estimated)", and the second line explains the estimate.
+- The HUD recording chip no longer stays on "Finishing HUD recording…" after a recording is stopped from Settings, and it sits on its own row instead of under **Mark charged**.
+- Repeat test lists every cycle's result as it completes, with a running mean, SD and range, and shows the current cycle's time, progress and prediction.
+- Repeat test has its own **Overlay** switch.
+- Settings › Troubleshooting › **Recordings folder ▾** can open, change or reset the folder HUD recordings are saved to.
+- History groups each repeat test's cycles under its mean row; click the mean's **Result** cell to show or hide them.

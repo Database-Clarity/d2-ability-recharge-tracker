@@ -159,6 +159,19 @@ internal sealed class MeasurementHistoryView : UserControl
         };
         _abilityFilter.SelectedIndexChanged += (_, _) => RefreshMeasurements();
         _measurements.SelectionChanged += (_, _) => LoadSelectedNote();
+        _measurements.CellClick += (_, args) =>
+        {
+            if (args.RowIndex < 0 || _measurements.Columns[args.ColumnIndex].Name != "Result" ||
+                _measurements.Rows[args.RowIndex].Tag is not Guid id ||
+                _history.Measurements.FirstOrDefault(item => item.Id == id) is not { } clicked ||
+                clicked.RepeatTestId != clicked.Id)
+            {
+                return;
+            }
+
+            if (!_expandedTests.Remove(id)) _expandedTests.Add(id);
+            RefreshMeasurements(id);
+        };
         _newSession.Click += (_, _) => NewSession();
         _toggleActive.Click += (_, _) => ToggleActive();
         _sessionMore.Click += (_, _) => ShowMenu(_sessionMenu, _sessionMore);
@@ -283,7 +296,7 @@ internal sealed class MeasurementHistoryView : UserControl
         foreach (var bar in _measurements.Controls.OfType<ScrollBar>())
             _ = new ScrollBarSkin(bar);
         AddTextColumn("Ability", "Ability", 58);
-        AddTextColumn("Result", "Result", 68);
+        AddTextColumn("Result", "Result", 86);
         AddTextColumn("Session", "Session", 100);
         AddTextColumn("Measured", "Measured ±", 108);
         AddTextColumn("Regression", "Regression ±", 108);
@@ -582,6 +595,30 @@ internal sealed class MeasurementHistoryView : UserControl
         UpdateActionStates();
     }
 
+    private readonly HashSet<Guid> _expandedTests = [];
+
+    /// <summary>
+    /// Newest first, with each repeat test's cycles placed (oldest first) right after the test's mean row. Cycles
+    /// whose test has no mean (stopped early) stay where their time puts them.
+    /// </summary>
+    internal static MeasurementHistoryEntry[] GroupRepeatTests(IEnumerable<MeasurementHistoryEntry> measurements)
+    {
+        var all = measurements.ToArray();
+        var summaries = all.Where(item => item.Id == item.RepeatTestId).Select(item => item.Id).ToHashSet();
+        var cycles = all.Where(item => item.RepeatTestId is { } test && item.Id != test && summaries.Contains(test))
+            .GroupBy(item => item.RepeatTestId!.Value)
+            .ToDictionary(group => group.Key, group => group.OrderBy(item => item.MeasuredAt).ToArray());
+        var ordered = new List<MeasurementHistoryEntry>();
+        foreach (var item in all.Where(item => !(item.RepeatTestId is { } test && item.Id != test && summaries.Contains(test)))
+                     .OrderByDescending(item => item.MeasuredAt))
+        {
+            ordered.Add(item);
+            if (summaries.Contains(item.Id) && cycles.TryGetValue(item.Id, out var members)) ordered.AddRange(members);
+        }
+
+        return [.. ordered];
+    }
+
     private void RefreshMeasurements(Guid? preferredMeasurementId = null)
     {
         var sessionsView = _mode.SelectedIndex == SessionsView;
@@ -592,11 +629,18 @@ internal sealed class MeasurementHistoryView : UserControl
             .Where(measurement => sessionsView
                 ? sessionId is not null && measurement.SessionId == sessionId
                 : ability is null || measurement.Ability == ability)
-            .OrderByDescending(measurement => measurement.MeasuredAt)
             .ToArray();
+        records = GroupRepeatTests(records);
         _measurements.Rows.Clear();
+        var cycleNumbers = new Dictionary<Guid, int>();
         foreach (var measurement in records)
         {
+            var isSummary = measurement.Id == measurement.RepeatTestId;
+            var groupId = measurement.RepeatTestId;
+            var grouped = !isSummary && groupId is { } owner0 && records.Any(item => item.Id == owner0);
+            var cycleNumber = groupId is { } test && !isSummary
+                ? cycleNumbers[test] = cycleNumbers.GetValueOrDefault(test) + 1
+                : 0;
             var regression = measurement.RegressionSeconds is { } seconds ? $"{seconds:F2}" : "—";
             var regressionUncertainty = measurement.RegressionUncertaintySeconds is { } regressionSpread
                 ? $" ± {regressionSpread:F3} s"
@@ -604,7 +648,8 @@ internal sealed class MeasurementHistoryView : UserControl
             var sessionName = measurement.SessionId is { } owner && sessionNames.TryGetValue(owner, out var name) ? name : null;
             var index = _measurements.Rows.Add(
                 AbilityName(measurement.Ability),
-                measurement.Id == measurement.RepeatTestId ? $"Mean · {measurement.CycleCount}" :
+                isSummary ? $"{(_expandedTests.Contains(measurement.Id) ? "▾" : "▸")} Mean · {measurement.CycleCount}" :
+                    grouped ? $"    Cycle {cycleNumber}" :
                     measurement.RepeatTestId is not null ? "Cycle" : "Single",
                 sessionName ?? "Unsorted",
                 $"{measurement.DurationSeconds:F2} ± {measurement.UncertaintySeconds:F3} s",
@@ -617,17 +662,25 @@ internal sealed class MeasurementHistoryView : UserControl
             foreach (DataGridViewColumn column in _measurements.Columns)
                 if (column.Tag is string customName)
                     row.Cells[column.Index].Value = measurement.CustomValues?.GetValueOrDefault(customName) ?? "";
-            if (measurement.Id == measurement.RepeatTestId)
+            if (grouped)
+            {
+                // Cycles sit under their repeat test's mean row and show when it is expanded.
+                row.Visible = _expandedTests.Contains(groupId!.Value);
+                row.DefaultCellStyle.ForeColor = TrackerTheme.Muted;
+            }
+
+            if (isSummary)
             {
                 row.DefaultCellStyle.ForeColor = TrackerTheme.Accent;
-                row.Cells["Result"].ToolTipText = $"Repeat-test mean of {measurement.CycleCount} validated cycles. Uncertainty combines the mean per-cycle uncertainty floor with the standard error from cycle scatter.";
+                var clickHint = _expandedTests.Contains(measurement.Id) ? " Click to hide its cycles." : " Click to show its cycles.";
+                row.Cells["Result"].ToolTipText = $"Repeat-test mean of {measurement.CycleCount} validated cycles. Uncertainty combines the mean per-cycle uncertainty floor with the standard error from cycle scatter." + clickHint;
                 row.Cells["Regression"].ToolTipText = $"Regression mean uses {measurement.RegressionCycleCount}/{measurement.CycleCount} cycles with validated 10–90% fits.";
             }
         }
 
         var preferredRow = _measurements.Rows.Cast<DataGridViewRow>()
-            .FirstOrDefault(row => preferredMeasurementId is { } id && row.Tag is Guid rowId && rowId == id)
-            ?? _measurements.Rows.Cast<DataGridViewRow>().FirstOrDefault();
+            .FirstOrDefault(row => row.Visible && preferredMeasurementId is { } id && row.Tag is Guid rowId && rowId == id)
+            ?? _measurements.Rows.Cast<DataGridViewRow>().FirstOrDefault(row => row.Visible);
         if (preferredRow is not null)
         {
             preferredRow.Selected = true;

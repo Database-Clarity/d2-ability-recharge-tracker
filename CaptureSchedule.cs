@@ -28,6 +28,7 @@ internal sealed class FramePacer(long interval)
 {
     private long? _next;
     public long Skipped { get; private set; }
+    public bool Peek(long now) => _next is not { } deadline || now >= deadline;
     public bool IsDue(long now)
     {
         if (_next is { } deadline && now < deadline) { Skipped++; return false; }

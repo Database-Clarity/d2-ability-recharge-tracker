@@ -35,15 +35,18 @@ internal sealed partial class MainForm : AppWindow
     private readonly Button _changelogButton = new();
     private readonly FlatNumericUpDown _captureRatePicker = new();
     private readonly FlatComboBox _anchorPicker = new();
-    private readonly Label _measuredCaptureRate = new();
+    private readonly BufferedLabel _measuredCaptureRate = new();
     private string? _lastDisplayDeviceName;
     private AbilityKind? _soloBeforeTest;
     private readonly FlatComboBox _testAbilityPicker = new();
     private readonly FlatNumericUpDown _testCyclesPicker = new();
     private readonly FlatNumericUpDown _testDelayPicker = new();
     private readonly FlatNumericUpDown _testHoldPicker = new();
-    private readonly Label _testStatus = new();
-    private readonly Label _hudRecordingStatus = new();
+    private readonly BufferedLabel _testStatus = new();
+    private readonly TextBox _testCycleList = new();
+    private readonly ToggleSwitch _testOverlaySwitch = new();
+    private int _shownTestCycles = -1;
+    private readonly BufferedLabel _hudRecordingStatus = new();
     private readonly Button _captureFolderButton = new();
     private string? _lastRecordingPath;
     private readonly RepeatTestSession _repeatTest = new();
@@ -125,7 +128,8 @@ internal sealed partial class MainForm : AppWindow
             _inputListenerError = exception.Message;
         }
 
-        SetMonitoring(true);
+        // Start paused: detection begins when the user resumes it (F8 by default).
+        SetMonitoring(false);
         Shown += async (_, _) =>
         {
             var updateCheck = UpdateChecker.IsReleaseBuild && _settings.CheckForUpdatesOnStartup
@@ -455,6 +459,25 @@ internal sealed partial class MainForm : AppWindow
         testResult.Controls.Add(_testStatus);
         testResult.Controls.Add(copyTestPanel);
         Place(test, testResult, 0, 4, 4);
+        _testOverlaySwitch.Name = "RepeatTestOverlayToggle";
+        _testOverlaySwitch.Text = "Overlay";
+        _testOverlaySwitch.Height = TrackerTheme.ControlHeight;
+        _testOverlaySwitch.Click += (_, _) => SetOverlayVisible(!_settings.OverlayVisible);
+        Place(test, _testOverlaySwitch, 2, 2, 2);
+        // Every cycle's result as it completes, so a run can be followed without waiting for the summary.
+        _testCycleList.Name = "RepeatTestCycles";
+        _testCycleList.Multiline = true;
+        _testCycleList.ReadOnly = true;
+        _testCycleList.ScrollBars = ScrollBars.Vertical;
+        TrackerTheme.DarkScrollBars(_testCycleList);
+        _testCycleList.BorderStyle = BorderStyle.None;
+        _testCycleList.BackColor = TrackerTheme.Background;
+        _testCycleList.ForeColor = TrackerTheme.Text;
+        _testCycleList.Font = new Font(FontFamily.GenericMonospace, 9);
+        _testCycleList.Height = 150;
+        _testCycleList.TabStop = false;
+        _testCycleList.AccessibleName = "Repeat test cycle results";
+        Place(test, _testCycleList, 0, 5, 4);
         foreach (var control in new Control[] { _testAbilityPicker, _abilityUseBindingButton })
         {
             control.Margin = new Padding(3, 3, 29, 3);
@@ -495,9 +518,17 @@ internal sealed partial class MainForm : AppWindow
         _recordHudButton.Text = "Record HUD";
         _recordHudButton.Click += (_, _) => ToggleHudRecording();
         _toolTip.SetToolTip(_recordHudButton, "Record the tracked ability slots at 60 FPS for troubleshooting.");
-        _captureFolderButton.Text = "Open recordings folder";
-        _captureFolderButton.Click += (_, _) => OpenCaptureFolder();
-        _toolTip.SetToolTip(_captureFolderButton, Path.GetDirectoryName(AbilityHudRecorder.DefaultPath(DateTime.Now)));
+        _captureFolderButton.Name = "RecordingsFolder";
+        _captureFolderButton.Text = "Recordings folder ▾";
+        var folderMenu = TrackerTheme.Menu("RecordingsFolderMenu");
+        folderMenu.Items.Add(new ToolStripMenuItem("Open folder", null, (_, _) => OpenCaptureFolder()));
+        folderMenu.Items.Add(new ToolStripMenuItem("Change folder…", null, (_, _) => BeginInvoke(ChooseRecordingFolder)));
+        var defaultFolderItem = new ToolStripMenuItem("Use default folder", null, (_, _) => SetRecordingFolder(null));
+        folderMenu.Items.Add(defaultFolderItem);
+        folderMenu.Opening += (_, _) => defaultFolderItem.Enabled = _settings.RecordingFolder is not null;
+        _captureFolderButton.ContextMenuStrip = folderMenu;
+        _captureFolderButton.Click += (_, _) => ShowMenu(folderMenu, _captureFolderButton);
+        _toolTip.SetToolTip(_captureFolderButton, $"Recordings are saved to {RecordingFolder}");
         _hudRecordingStatus.AutoSize = false;
         _hudRecordingStatus.Height = 30;
         _hudRecordingStatus.AutoEllipsis = true;
@@ -743,7 +774,7 @@ internal sealed partial class MainForm : AppWindow
 
             Task<AbilityHudRecordingResult>? recordingTask = null;
             recorder = new AbilityHudRecorder(bounds, Screen.FromRectangle(bounds).DeviceName,
-                AbilityHudRecorder.DefaultPath(DateTime.Now),
+                AbilityHudRecorder.DefaultPath(DateTime.Now, _settings.RecordingFolder),
                 progress => QueueHudRecordingProgress(progress, recordingTask), recordedSlots);
             recordingTask = recorder.Completion;
         }
@@ -812,15 +843,47 @@ internal sealed partial class MainForm : AppWindow
         }
     }
 
+    private string RecordingFolder => string.IsNullOrWhiteSpace(_settings.RecordingFolder)
+        ? AbilityHudRecorder.DefaultFolder
+        : _settings.RecordingFolder;
+
+    private void ChooseRecordingFolder()
+    {
+        using var dialog = new FolderBrowserDialog
+        {
+            Description = "Choose where HUD recordings are saved",
+            UseDescriptionForTitle = true,
+            ShowNewFolderButton = true,
+            InitialDirectory = Directory.Exists(RecordingFolder) ? RecordingFolder : AbilityHudRecorder.DefaultFolder
+        };
+        if (dialog.ShowDialog(this) != DialogResult.OK || string.IsNullOrWhiteSpace(dialog.SelectedPath))
+        {
+            return;
+        }
+
+        SetRecordingFolder(string.Equals(Path.TrimEndingDirectorySeparator(Path.GetFullPath(dialog.SelectedPath)),
+            Path.TrimEndingDirectorySeparator(Path.GetFullPath(AbilityHudRecorder.DefaultFolder)), StringComparison.OrdinalIgnoreCase)
+            ? null
+            : dialog.SelectedPath);
+    }
+
+    private void SetRecordingFolder(string? folder)
+    {
+        _settings.RecordingFolder = folder;
+        SaveSettings();
+        _toolTip.SetToolTip(_captureFolderButton, $"Recordings are saved to {RecordingFolder}");
+        _hudRecordingStatus.Text = $"New recordings will be saved to {RecordingFolder}";
+    }
+
     internal void SetLastRecordingPath(string path)
     {
         _lastRecordingPath = path;
-        _toolTip.SetToolTip(_captureFolderButton, $"Latest recording: {path}");
+        _toolTip.SetToolTip(_captureFolderButton, $"Recordings are saved to {RecordingFolder} · latest: {Path.GetFileName(path)}");
     }
 
     private void OpenCaptureFolder()
     {
-        var path = Path.GetDirectoryName(_lastRecordingPath ?? AbilityHudRecorder.DefaultPath(DateTime.Now))!;
+        var path = RecordingFolder;
         try
         {
             Directory.CreateDirectory(path);
@@ -889,7 +952,7 @@ internal sealed partial class MainForm : AppWindow
     private void CaptureHudRecordingFrame(IntPtr desktopDeviceContext, DesktopDuplicationCapture duplication, DateTime tickTimestamp)
     {
         var recorder = _hudRecorder;
-        if (recorder is null || !recorder.IsDue())
+        if (recorder is null || !recorder.IsDuePeek())
         {
             if (recorder is null && _hudRecordingSurface is not null)
             {
@@ -915,11 +978,21 @@ internal sealed partial class MainForm : AppWindow
             if (duplication.TryCapture(recorder.DeviceName, bounds, surface, out var timestamp))
             {
                 fresh = duplication.LastCaptureWasNewFrame;
+                // An unchanged desktop frame would be a duplicate; wait for the next composed frame instead.
+                if (!fresh && recorder.HasFrames)
+                {
+                    return;
+                }
             }
             else
             {
                 surface.Capture(desktopDeviceContext, bounds);
                 timestamp = DateTime.UtcNow;
+            }
+
+            if (!recorder.IsDue())
+            {
+                return;
             }
 
             recorder.Submit(surface.Pixels, surface.Stride, timestamp, RecordingTrackerState(), fresh);
@@ -1095,6 +1168,7 @@ internal sealed partial class MainForm : AppWindow
         var lastUiUpdate = rateWindowStart;
         var capturedFrames = 0;
         var nextFrame = Stopwatch.GetTimestamp();
+        var deadline = nextFrame;
         var overload = new CaptureOverloadBackoff();
         try
         {
@@ -1111,7 +1185,7 @@ internal sealed partial class MainForm : AppWindow
                     capturedFrames = 0;
                     rateWindowStart = Stopwatch.GetTimestamp();
                     cancellationToken.WaitHandle.WaitOne(50);
-                    nextFrame = Stopwatch.GetTimestamp();
+                    nextFrame = deadline = Stopwatch.GetTimestamp();
                     continue;
                 }
 
@@ -1123,16 +1197,28 @@ internal sealed partial class MainForm : AppWindow
                 }
 
                 var workStarted = Stopwatch.GetTimestamp();
-                if (CaptureFrame(desktop.DeviceContext, duplication))
+                var captured = CaptureFrame(desktop.DeviceContext, duplication);
+                if (captured)
                 {
                     capturedFrames++;
                     Interlocked.Exchange(ref _lastCapturedFrame, Stopwatch.GetTimestamp());
                 }
 
                 now = Stopwatch.GetTimestamp();
-                // Keep the deadline phase and skip missed deadlines without catch-up bursts.
-                nextFrame = CaptureSchedule.NextFrame(nextFrame, now, Volatile.Read(ref _targetCaptureRate), Stopwatch.Frequency);
-                nextFrame = Math.Max(nextFrame, now + overload.Delay(now - workStarted, Stopwatch.Frequency / Volatile.Read(ref _targetCaptureRate)));
+                var interval = Stopwatch.Frequency / Volatile.Read(ref _targetCaptureRate);
+                if (!captured && _tickAwaitingFrame && now - deadline < interval)
+                {
+                    // The deadline came just before the desktop composed its next frame. Waiting a whole interval
+                    // would skip that frame (aliasing the capture rate down to about half), so poll for it briefly.
+                    nextFrame = now + Stopwatch.Frequency / 1000;
+                }
+                else
+                {
+                    // Keep the deadline phase and skip missed deadlines without catch-up bursts.
+                    deadline = CaptureSchedule.NextFrame(deadline, now, Volatile.Read(ref _targetCaptureRate), Stopwatch.Frequency);
+                    deadline = Math.Max(deadline, now + overload.Delay(now - workStarted, interval));
+                    nextFrame = deadline;
+                }
 
                 if (now - rateWindowStart >= Stopwatch.Frequency)
                 {
@@ -1187,6 +1273,8 @@ internal sealed partial class MainForm : AppWindow
     }
 
     private bool _highResolutionCaptureTimer;
+    // Set by a capture tick that found no newly composed desktop frame (DXGI) for any area.
+    private bool _tickAwaitingFrame;
 
     private bool CaptureFrame(IntPtr desktopDeviceContext, DesktopDuplicationCapture duplication)
     {
@@ -1195,6 +1283,7 @@ internal sealed partial class MainForm : AppWindow
         double captureMs = 0, detectionMs = 0;
         string? fallbackReason = null;
         var recorderForDiagnostics = _hudRecorder;
+        _tickAwaitingFrame = false;
         duplication.BeginTick();
         var testAbilityCaptured = false;
         var timestamp = DateTime.UtcNow;
@@ -1229,7 +1318,12 @@ internal sealed partial class MainForm : AppWindow
                     }
 
                     captureMs += Stopwatch.GetElapsedTime(captureClock).TotalMilliseconds;
-                    if (duplicated && !duplication.LastCaptureWasNewFrame) continue;
+                    if (duplicated && !duplication.LastCaptureWasNewFrame)
+                    {
+                        _tickAwaitingFrame = true;
+                        continue;
+                    }
+
                     var detectionClock = Stopwatch.GetTimestamp();
                     capturedAny = true;
                     foreach (var slot in batch.Slots)
@@ -1372,6 +1466,7 @@ internal sealed partial class MainForm : AppWindow
         AbilityKind? testAbility;
         RepeatTestPhase testPhase;
         string testStatus;
+        (TimeSpan Duration, TimeSpan? Regression)[] testCycles;
         lock (_captureSync)
         {
             trackers = _trackers.ToDictionary(p => p.Key, p => p.Value.DisplaySnapshot());
@@ -1381,6 +1476,7 @@ internal sealed partial class MainForm : AppWindow
             testAbility = _repeatTest.Ability;
             testPhase = _repeatTest.Phase;
             testStatus = _repeatTest.Status(DateTime.UtcNow);
+            testCycles = [.. _repeatTest.Cycles];
         }
         {
             var errors = RouteCaptureErrors(captureErrors, capturedKinds);
@@ -1407,67 +1503,10 @@ internal sealed partial class MainForm : AppWindow
                     _toolTip.SetToolTip(statusLabel, rowError);
                 }
 
-                if (!IsTracked(kind))
-                {
-                    statusLabel.Text = "Skipped\n";
-                    statusLabel.ForeColor = TrackerTheme.Muted;
-                    continue;
-                }
-
-                if (!_monitoring)
-                {
-                    statusLabel.Text = "Paused · " + PausedMeasurementStatus(tracker);
-                    statusLabel.ForeColor = TrackerTheme.Muted;
-                    continue;
-                }
-
-                if (rowError is not null)
-                {
-                    // Only failures specific to this slot are shown in red on its row.
-                    statusLabel.Text = $"Capture failed\n{rowError.ReplaceLineEndings(" ")}";
-                    statusLabel.ForeColor = TrackerTheme.Red;
-                    continue;
-                }
-
-                if (captureErrors.TryGetValue(kind, out var sharedError))
-                {
-                    // Global failures are explained once by the banner; rows keep their last result.
-                    statusLabel.Text = UnavailableMeasurementStatus(tracker,
-                        sharedError == GameWindowUnavailableError ? "Waiting for game"
-                            : _captureLoopError is not null ? "Capture stopped" : "Not capturing",
-                        string.Empty);
-                    statusLabel.ForeColor = TrackerTheme.Muted;
-                    continue;
-                }
-
-                if (slot.Region is not null && stalled)
-                {
-                    statusLabel.Text = UnavailableMeasurementStatus(tracker);
-                    statusLabel.ForeColor = TrackerTheme.Muted;
-                    continue;
-                }
-
-                statusLabel.Text = MeasurementStatus(tracker, slot.Region is not null);
-                statusLabel.ForeColor = tracker.State switch
-                {
-                    AbilityState.Consumed => TrackerTheme.Orange,
-                    AbilityState.Recharging => TrackerTheme.Accent,
-                    AbilityState.Complete => TrackerTheme.Green,
-                    _ => TrackerTheme.Muted
-                };
-                if (tracker.TrackingWarning is { } warning)
-                {
-                    statusLabel.Text = $"{FormatDuration(tracker.CurrentDuration)}\n{warning.Replace("Mark charged", WithShortcut("Mark charged", MarkChargedBinding)).ReplaceLineEndings(" ")}";
-                    statusLabel.ForeColor = TrackerTheme.Orange;
-                }
-                else if (tracker.State == AbilityState.Recharging && tracker.DisplayProgress is { } progress)
-                {
-                    statusLabel.Text = $"Recharging · {FormatDuration(tracker.CurrentDuration)} · {progress:P0}\n";
-                    if (tracker.EstimatedDuration is { } estimated && tracker.EstimateUncertainty is { } spread)
-                    {
-                        statusLabel.Text += $"Estimated {estimated.TotalSeconds:F2} ± {spread.TotalSeconds:F2} s";
-                    }
-                }
+                var (statusText, statusColor) = DescribeRow(kind, tracker, slot, rowError, captureErrors, stalled);
+                // One assignment per refresh: setting an interim text first made the rows flash.
+                if (statusLabel.Text != statusText) statusLabel.Text = statusText;
+                if (statusLabel.ForeColor != statusColor) statusLabel.ForeColor = statusColor;
             }
 
             _markChargedButton.Text = WithShortcut("Mark charged", MarkChargedBinding);
@@ -1497,9 +1536,27 @@ internal sealed partial class MainForm : AppWindow
             var soloNote = testActive && _soloBeforeTest is not null && testAbility is { } soloTest
                 ? $"Tracking {KindName(soloTest)} only during the test · "
                 : string.Empty;
-            _testStatus.Text = testPhase == RepeatTestPhase.Idle
+            var testText = testPhase == RepeatTestPhase.Idle
                 ? "Ready · start the test, then manually use the ability once. Cycle results appear here."
                 : soloNote + testStatus;
+            if (testPhase == RepeatTestPhase.WaitingForRecharge && testAbility is { } measuring &&
+                trackers.TryGetValue(measuring, out var running) && running.State == AbilityState.Recharging)
+            {
+                testText += $"\nCurrent cycle: {FormatDuration(running.CurrentDuration)}" +
+                    (running.DisplayProgress is { } shown ? $" · {shown:P0}" : string.Empty) +
+                    (running.EstimatedDuration is { } predicted ? $" · predicted {predicted.TotalSeconds:F2} s" : string.Empty);
+            }
+            if (_testStatus.Text != testText) _testStatus.Text = testText;
+
+            if (testCycles.Length != _shownTestCycles)
+            {
+                // Rewritten only when a cycle completes, so the list never flickers or loses its scroll position mid-cycle.
+                _shownTestCycles = testCycles.Length;
+                _testCycleList.Text = DescribeTestCycles(testCycles);
+                _testCycleList.SelectionStart = _testCycleList.TextLength;
+                _testCycleList.ScrollToCaret();
+            }
+
             _testAbilityPicker.Enabled = !testActive && _bindingCaptureTarget != BindingCaptureTarget.AbilityUse;
             _testCyclesPicker.Enabled = !testActive;
             _testDelayPicker.Enabled = !testActive;
@@ -1603,9 +1660,38 @@ internal sealed partial class MainForm : AppWindow
         }
     }
 
+    internal static string DescribeTestCycles(IReadOnlyList<(TimeSpan Duration, TimeSpan? Regression)> cycles)
+    {
+        if (cycles.Count == 0)
+        {
+            return "Cycle results appear here as each recharge completes.";
+        }
+
+        var lines = new List<string>();
+        for (var index = 0; index < cycles.Count; index++)
+        {
+            var (duration, regression) = cycles[index];
+            lines.Add($"#{index + 1,-3} {duration.TotalSeconds,8:F3} s" +
+                (regression is { } fitted ? $"   regression {fitted.TotalSeconds:F2} s" : string.Empty));
+        }
+
+        if (cycles.Count > 1)
+        {
+            var seconds = cycles.Select(cycle => cycle.Duration.TotalSeconds).ToArray();
+            var mean = seconds.Average();
+            var deviation = Math.Sqrt(seconds.Sum(value => (value - mean) * (value - mean)) / (seconds.Length - 1));
+            lines.Add($"mean {mean:F3} s · SD {deviation:F3} s · range {seconds.Min():F3}–{seconds.Max():F3} s");
+        }
+
+        return string.Join(Environment.NewLine, lines);
+    }
+
     private void UpdateOverlayToggleText()
     {
         _overlaySwitch.Checked = _settings.OverlayVisible;
+        _testOverlaySwitch.Checked = _settings.OverlayVisible;
+        _testOverlaySwitch.Hint = OverlayToggleBinding?.ToString() ?? string.Empty;
+        _testOverlaySwitch.AccessibleName = WithShortcut("Show overlay", OverlayToggleBinding);
         _overlaySwitch.Hint = OverlayToggleBinding?.ToString() ?? string.Empty;
         _overlaySwitch.AccessibleName = WithShortcut("Show overlay", OverlayToggleBinding);
         var tip = WithShortcut(_settings.OverlayVisible ? "Overlay shown · click to hide" : "Overlay hidden · click to show",
@@ -2560,10 +2646,72 @@ internal sealed partial class MainForm : AppWindow
         _ => kind.ToString()
     };
 
+    private (string Text, Color Color) DescribeRow(AbilityKind kind, AbilitySlotTracker tracker, AbilitySlotSettings slot,
+        string? rowError, IReadOnlyDictionary<AbilityKind, string> captureErrors, bool stalled)
+    {
+        if (!IsTracked(kind))
+        {
+            return ("Skipped\n", TrackerTheme.Muted);
+        }
+
+        if (!_monitoring)
+        {
+            return ("Paused · " + PausedMeasurementStatus(tracker), TrackerTheme.Muted);
+        }
+
+        if (rowError is not null)
+        {
+            // Only failures specific to this slot are shown in red on its row.
+            return ($"Capture failed\n{rowError.ReplaceLineEndings(" ")}", TrackerTheme.Red);
+        }
+
+        if (captureErrors.TryGetValue(kind, out var sharedError))
+        {
+            // Global failures are explained once by the banner; rows keep their last result.
+            return (UnavailableMeasurementStatus(tracker,
+                sharedError == GameWindowUnavailableError ? "Waiting for game"
+                    : _captureLoopError is not null ? "Capture stopped" : "Not capturing",
+                string.Empty), TrackerTheme.Muted);
+        }
+
+        if (slot.Region is not null && stalled)
+        {
+            return (UnavailableMeasurementStatus(tracker), TrackerTheme.Muted);
+        }
+
+        if (tracker.TrackingWarning is { } warning)
+        {
+            return ($"{FormatDuration(tracker.CurrentDuration)}\n{warning.Replace("Mark charged", WithShortcut("Mark charged", MarkChargedBinding)).ReplaceLineEndings(" ")}",
+                TrackerTheme.Orange);
+        }
+
+        var color = tracker.State switch
+        {
+            AbilityState.Consumed => TrackerTheme.Orange,
+            AbilityState.Recharging => TrackerTheme.Accent,
+            AbilityState.Complete => TrackerTheme.Green,
+            _ => TrackerTheme.Muted
+        };
+        if (tracker.State == AbilityState.Recharging && tracker.DisplayProgress is { } progress)
+        {
+            var text = $"Recharging · {FormatDuration(tracker.CurrentDuration)} · {progress:P0}\n";
+            if (tracker.EstimatedDuration is { } estimated && tracker.EstimateUncertainty is { } spread)
+            {
+                text += $"Estimated {estimated.TotalSeconds:F2} ± {spread.TotalSeconds:F2} s";
+            }
+
+            return (text, color);
+        }
+
+        return (MeasurementStatus(tracker, slot.Region is not null), color);
+    }
+
     private static string RegressionSuffix(AbilitySlotTracker tracker) =>
         tracker.LastRegressionDuration is { } fitted && tracker.LastRegressionUncertainty is { } spread
             ? $"regression {fitted.TotalSeconds:F2} ± {spread.TotalSeconds:F2} s"
-            : string.Empty;
+            : tracker.LastSource == MeasurementSource.Estimated && tracker.LastDuration is not null
+                ? "Estimated from the fitted fill rate: tracking began mid-recharge"
+                : string.Empty;
 
     private static string MeasurementSuffix(AbilitySlotTracker tracker) =>
         (tracker.LastUncertainty, tracker.LastSource) switch

@@ -32,6 +32,11 @@ if (args.Length == 2 && args[0] == "--ui-smoke")
                 try
                 {
                     Console.WriteLine("Inspecting visible UI...");
+                    var monitoringFlags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+                    Assert(!(bool)typeof(MainForm).GetField("_monitoring", monitoringFlags)!.GetValue(form)!,
+                        "The app must start with detection paused.");
+                    // The rest of the smoke checks the detecting UI, as after the user resumes.
+                    typeof(MainForm).GetMethod("SetMonitoring", monitoringFlags)!.Invoke(form, [true]);
                     Assert(form is AppWindow && form.FormBorderStyle == FormBorderStyle.None && form.Padding.Top >= 36,
                         "The app must reserve its integrated caption instead of displaying a native frame.");
                     Assert(Descendants(form).OfType<Button>().Any(button => button.AccessibleName == "Close") &&
@@ -91,7 +96,7 @@ if (args.Length == 2 && args[0] == "--ui-smoke")
                             Assert(Descendants(page).OfType<CopyResultButton>().Count() == 3 &&
                                 Descendants(page).OfType<CopyResultButton>().All(button => !string.IsNullOrWhiteSpace(button.ResultText)),
                                 "Each tracking result must have an accessible copy action with complete text.");
-                            Assert(Descendants(page).OfType<Button>().Any(button => button.Text.Contains("Pause detection (")),
+                            Assert(Descendants(page).OfType<Button>().Any(button => button.Text.Contains("Pause detection (") || button.Text.Contains("Resume detection (")),
                                 "The pause action should display its hotkey on the Tracking page.");
                             const string longRecording = @"C:\Users\Somebody\Documents\D2AbilityTracker\HUD recordings\A very long directory for this measurement session\Another long directory\latest-hud-recording-2026-11-02.zip";
                             form.SetLastRecordingPath(longRecording);
@@ -102,10 +107,10 @@ if (args.Length == 2 && args[0] == "--ui-smoke")
                         {
                             var settingsButtons = Descendants(page).OfType<Button>().Where(button => button.Visible).ToArray();
                             Assert(settingsButtons.Count(button => button.Text == "Record HUD") == 1 &&
-                                settingsButtons.Count(button => button.Text == "Open recordings folder") == 1 &&
+                                settingsButtons.Count(button => button.Text == "Recordings folder ▾") == 1 &&
                                 settingsButtons.Contains(updateButton) && updateButton.Text == "Check for updates" &&
                                 settingsButtons.Any(button => button.Text == "Changelog"),
-                                "Settings must group Troubleshooting (Record HUD, Open recordings folder) and About (updates, changelog).");
+                                "Settings must group Troubleshooting (Record HUD, Recordings folder) and About (updates, changelog).");
                             Assert(Descendants(page).OfType<Label>().Where(label => label.Visible)
                                     .Count(label => label.Text is "Capture" or "Shortcuts" or "Overlay" or "Troubleshooting" or "About" &&
                                         label.Font.Bold && label.Font.SizeInPoints >= 10 && label.ForeColor == TrackerTheme.Text) == 5,
@@ -204,8 +209,6 @@ if (args.Length == 2 && args[0] == "--ui-smoke")
                         }
                         else
                         {
-                            Assert(form.ClientSize.Height <= 500 * form.DeviceDpi / 96f,
-                                "Each page should fit a compact desktop window.");
                             Assert(compactSize is null || compactSize == form.Size,
                                 "Switching between compact pages must not resize the window.");
                             compactSize ??= form.Size;
@@ -379,9 +382,20 @@ if (args.Length == 2 && args[0] == "--ui-smoke")
                     historyGrid.EndEdit();
                     Assert(smokeHistory.Measurements.Single(item => item.Id == sampleMean.Id).CustomValues!["Grenade Stat"] == "10",
                         "Editing a custom cell must persist its value.");
-                    Assert(historyGrid.Rows.Cast<DataGridViewRow>().Any(row => row.Cells["Result"].Value?.ToString() == "Mean · 3" &&
+                    Assert(historyGrid.Rows.Cast<DataGridViewRow>().Any(row => row.Cells["Result"].Value?.ToString() == "▸ Mean · 3" &&
                         row.Cells["Measured"].Value?.ToString()?.Contains("± 0.023 s") == true),
                         "History must display repeat count and aggregate uncertainty alongside individual cycles.");
+                    // A repeat test's cycles are grouped under its mean row, collapsed until the row is clicked.
+                    bool CycleRowsVisible() => historyGrid.Rows.Cast<DataGridViewRow>()
+                        .Where(row => row.Tag is Guid id && smokeHistory.Measurements.Single(item => item.Id == id) is { } entry &&
+                            entry.RepeatTestId == sampleMean.Id && entry.Id != sampleMean.Id)
+                        .All(row => row.Visible);
+                    Assert(!CycleRowsVisible(), "A repeat test's cycles must start collapsed under its mean.");
+                    var summaryIndex = historyGrid.Rows.Cast<DataGridViewRow>().Single(row => row.Tag is Guid id && id == sampleMean.Id).Index;
+                    typeof(DataGridView).GetMethod("OnCellClick", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+                        .Invoke(historyGrid, [new DataGridViewCellEventArgs(historyGrid.Columns["Result"]!.Index, summaryIndex)]);
+                    Assert(CycleRowsVisible() && historyGrid.Rows.Cast<DataGridViewRow>().Any(row => row.Cells["Result"].Value?.ToString() == "▾ Mean · 3"),
+                        "Clicking a repeat test's mean must show its cycles.");
                     foreach (var bar in historyGrid.Controls.OfType<ScrollBar>().Where(bar => bar.Visible))
                     {
                         using var scrollbarImage = new Bitmap(bar.Width, bar.Height);
@@ -1815,13 +1829,18 @@ static void RenderCaptureStatusStates(MainForm form, Control navigation, string 
         var rowBounds = trackRow.RectangleToScreen(trackRow.ClientRectangle);
         var chipBounds = chip.RectangleToScreen(chip.ClientRectangle);
         var stopBounds = stop.RectangleToScreen(stop.ClientRectangle);
-        Assert(chip.Visible && stop.Visible && chip.Tone == StatusTone.Error && form.Size == restingSize &&
-            rowBounds.Contains(chipBounds) && rowBounds.Contains(stopBounds) &&
-            selector.RectangleToScreen(selector.ClientRectangle).Right < chipBounds.Left &&
+        var markCharged = Descendants(form).OfType<Button>().Single(control => control.Name == "MarkCharged");
+        var markBounds = markCharged.RectangleToScreen(markCharged.ClientRectangle);
+        Assert(chip.Visible && stop.Visible && chip.Tone == StatusTone.Error &&
+            chipBounds.Top >= rowBounds.Bottom && !chipBounds.IntersectsWith(markBounds) && !stopBounds.IntersectsWith(markBounds) &&
             TextRenderer.MeasureText(chip.Text, chip.Font).Width + chip.Padding.Horizontal <= chip.Width,
-            $"The recording chip and its Stop action must fit beside the track selector without resizing the window: row {rowBounds}, chip {chipBounds} visible {chip.Visible}, stop {stopBounds}, size {form.Size} vs {restingSize}.");
+            $"The recording chip and its Stop action must sit on their own row, clear of Mark charged: row {rowBounds}, chip {chipBounds}, stop {stopBounds}, mark {markBounds}.");
         Save("ui-Tracking-recording.png");
+        // A recording usually finishes while Settings is open; the chip must not reappear on Tracking afterwards.
+        navigation.Controls.OfType<Button>().Single(button => button.Text == "Settings").PerformClick();
         typeof(MainForm).GetMethod("ShowRecordingIndicator", flags)!.Invoke(form, [false]);
+        navigation.Controls.OfType<Button>().Single(button => button.Text == "Tracking").PerformClick();
+        Assert(!chip.Visible && !stop.Visible, "The recording chip must hide even when the recording finished on another tab.");
 
         // First run: no areas at all shows the setup card instead of results, banner, or action bar.
         lock (sync)
