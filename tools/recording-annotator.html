@@ -1,0 +1,540 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Recording Annotator</title>
+<style>
+:root{
+  --bg:#121417; --panel:#1b1f24; --line:#2a3038; --text:#e6e9ee; --muted:#8b94a1;
+  --btn:#262c34; --btn-line:#3a424d; --accent:#4aa3ff; --err:#ff8a8a;
+  --grenade:#f0a04b; --melee:#ff5d6c; --class:#5aa9ff;
+}
+body{margin:0;background:var(--bg);color:var(--text);font:14px/1.4 system-ui,"Segoe UI",sans-serif}
+header.bar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:10px 14px;border-bottom:1px solid var(--line);background:var(--panel)}
+header.bar h1{font-size:16px;margin:0 8px 0 0;font-weight:600}
+button,.btn{background:var(--btn);color:var(--text);border:1px solid var(--btn-line);border-radius:6px;padding:6px 10px;cursor:pointer;font:inherit}
+button:hover,.btn:hover{border-color:#566070}
+button:disabled{opacity:.4;cursor:default}
+button.sel{outline:2px solid var(--accent);outline-offset:1px}
+button.link{background:none;border:none;color:var(--accent);padding:0;text-decoration:underline}
+.muted{color:var(--muted)}
+.help{color:var(--muted);padding:7px 14px;font-size:12px;border-bottom:1px solid var(--line)}
+kbd{background:#2a3038;border:1px solid #3a424d;border-bottom-width:2px;border-radius:4px;padding:0 5px;font:12px ui-monospace,Consolas,monospace;color:var(--text)}
+#empty{margin:40px auto;max-width:560px;padding:60px 20px;text-align:center;color:var(--muted);border:2px dashed var(--btn-line);border-radius:12px}
+#main{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:14px;padding:14px}
+@media (max-width:900px){#main{grid-template-columns:1fr}}
+.stage{background:#000;border-radius:8px;display:flex;align-items:center;justify-content:center;min-height:300px;overflow:hidden}
+#frameImg{display:block;width:100%;height:auto;max-height:68vh;object-fit:contain;image-rendering:pixelated}
+.meta{display:flex;gap:18px;flex-wrap:wrap;margin-bottom:8px;color:var(--muted)}
+.meta b{color:var(--text);font-variant-numeric:tabular-nums}
+.scrub{margin-top:10px}
+#slider{width:100%;margin:0}
+.ticks{position:relative;height:14px;margin-top:2px}
+.tick{position:absolute;top:0;bottom:0;width:3px;margin-left:-1px;background:var(--c);border-radius:1px;cursor:pointer}
+.tick.end{width:2px;opacity:.55}
+.cursor{position:absolute;top:-3px;bottom:-3px;width:2px;margin-left:-1px;background:#fff;pointer-events:none}
+.status{min-height:1.4em;color:var(--muted);margin-top:10px}
+.status.err{color:var(--err)}
+.side section{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin-bottom:10px}
+.side h2{font-size:13px;margin:0 0 8px;font-weight:600;display:flex;justify-content:space-between}
+.slots{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-bottom:10px}
+.slots button{border-left:4px solid var(--c);text-align:left}
+ul.cycles{list-style:none;margin:0;padding:0}
+ul.cycles li{padding:7px 0;border-top:1px solid var(--line)}
+ul.cycles li:first-child{border-top:none}
+.row{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+.num{font-variant-numeric:tabular-nums}
+.idx{color:var(--muted);min-width:1.4em}
+.small{font-size:12px;padding:2px 7px}
+</style>
+</head>
+<body>
+<header class="bar">
+  <h1>Recording Annotator</h1>
+  <label class="btn" for="zipInput">Open .zip</label>
+  <input type="file" id="zipInput" accept=".zip,application/zip" hidden>
+  <button id="importBtn" disabled>Import JSON</button>
+  <button id="exportBtn" disabled>Export JSON</button>
+  <input type="file" id="jsonInput" accept=".json,application/json" hidden>
+  <span id="recName" class="muted"></span>
+</header>
+<div class="help">
+  <kbd>1</kbd><kbd>2</kbd><kbd>3</kbd> select Grenade / Melee / Class &middot;
+  <kbd>I</kbd> mark recharge start &middot; <kbd>O</kbd> mark recharge complete &middot;
+  <kbd>&larr;</kbd><kbd>&rarr;</kbd> 1 frame &middot; <kbd>Shift</kbd>+<kbd>&larr;</kbd><kbd>&rarr;</kbd> 60 frames &middot;
+  <kbd>Home</kbd>/<kbd>End</kbd> first/last &middot; marks autosave per recording
+</div>
+
+<div id="empty">Drop a recording .zip here, or use Open .zip. Nothing is uploaded; the file stays on this computer.</div>
+
+<main id="main" hidden>
+  <section>
+    <div class="meta">
+      <span>Frame <b id="frameNo">-</b> / <span id="frameTotal">-</span></span>
+      <span>Time <b id="frameTime">-</b> s</span>
+      <span>Captured <b id="frameUtc">-</b></span>
+      <span id="loadState"></span>
+    </div>
+    <div class="stage"><img id="frameImg" alt="Current recording frame"></div>
+    <div class="scrub">
+      <input type="range" id="slider" min="1" max="1" value="1" aria-label="Frame position">
+      <div id="ticks" class="ticks" title="Marks: solid = start, faded = complete"></div>
+    </div>
+    <div id="status" class="status"></div>
+  </section>
+
+  <aside class="side">
+    <div class="slots">
+      <button data-slot="grenade" style="--c:var(--grenade)">1 Grenade</button>
+      <button data-slot="melee" style="--c:var(--melee)">2 Melee</button>
+      <button data-slot="class" style="--c:var(--class)">3 Class</button>
+    </div>
+    <section style="--c:var(--grenade)"><h2><span>Grenade cycles</span><span id="count-grenade">0</span></h2><ul class="cycles" id="list-grenade"></ul></section>
+    <section style="--c:var(--melee)"><h2><span>Melee cycles</span><span id="count-melee">0</span></h2><ul class="cycles" id="list-melee"></ul></section>
+    <section style="--c:var(--class)"><h2><span>Class cycles</span><span id="count-class">0</span></h2><ul class="cycles" id="list-class"></ul></section>
+  </aside>
+</main>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<script>
+(function () {
+  'use strict';
+
+  var SLOTS = ['grenade', 'melee', 'class'];
+  var LABEL = { grenade: 'Grenade', melee: 'Melee', class: 'Class' };
+  var KEEP_BEHIND = 20, KEEP_AHEAD = 40, PREFETCH = 8;
+
+  var zip = null, zipName = '', total = 0, times = [], utcs = [];
+  var cur = 1, sel = 'grenade', marks = emptyMarks();
+  var cache = new Map(); // frame number -> { promise: Promise<objectURL> }
+
+  function $(id) { return document.getElementById(id); }
+  function emptyMarks() { return { grenade: [], melee: [], class: [] }; }
+  function countMarks(m) { return SLOTS.reduce(function (a, s) { return a + m[s].length; }, 0); }
+  function r6(v) { return Math.round(v * 1e6) / 1e6; }
+  function baseName() { return zipName.replace(/\.zip$/i, ''); }
+  function fname(n) { return 'frames/' + String(n).padStart(6, '0') + '.png'; }
+
+  function setStatus(msg, isErr) {
+    var s = $('status');
+    s.textContent = msg;
+    s.classList.toggle('err', !!isErr);
+  }
+
+  // ---- frames.csv parsing -------------------------------------------------
+  // Header written by AbilityHudRecorder: frame,elapsed_ms,utc,grenade_state,...
+  function parseUtc(s) {
+    var m = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(\.\d+)?(Z|[+-]\d{2}:\d{2})$/.exec(s || '');
+    if (!m) return NaN;
+    var base = Date.parse(m[1] + m[3]);
+    return base + (m[2] ? Number('0' + m[2]) * 1000 : 0);
+  }
+
+  function parseCsv(text) {
+    var lines = text.split(/\r?\n/).filter(function (l) { return l.trim().length > 0; });
+    if (lines.length < 2) throw new Error('frames.csv has no frame rows');
+    var header = lines[0].split(',').map(function (h) { return h.trim(); });
+    var iF = header.indexOf('frame'), iU = header.indexOf('utc'), iE = header.indexOf('elapsed_ms');
+    if (iF < 0) throw new Error('frames.csv has no frame column');
+    var rows = lines.slice(1).map(function (l) { return l.split(','); });
+    var utcMs = rows.map(function (r) { return parseUtc(r[iU]); });
+    var secs;
+    if (utcMs.every(isFinite)) {
+      secs = utcMs.map(function (v) { return (v - utcMs[0]) / 1000; });
+    } else if (iE >= 0) {
+      var e0 = parseFloat(rows[0][iE]);
+      secs = rows.map(function (r) { return (parseFloat(r[iE]) - e0) / 1000; });
+    } else {
+      throw new Error('frames.csv has no usable capture time');
+    }
+    var frames = rows.map(function (r) { return parseInt(r[iF], 10); });
+    if (frames.some(function (f, i) { return f !== i + 1; })) throw new Error('frame numbers are not 1..N');
+    return { times: secs, utcs: rows.map(function (r) { return r[iU] || ''; }) };
+  }
+
+  // ---- opening a recording ------------------------------------------------
+  async function openZip(file) {
+    if (typeof JSZip === 'undefined') { setStatus('JSZip did not load from cdnjs. Check the network.', true); return; }
+    setStatus('Reading ' + file.name + '...');
+    var parsed;
+    try {
+      var z = await JSZip.loadAsync(file);
+      var entry = z.file('frames.csv');
+      if (!entry) throw new Error('no frames.csv in this zip');
+      parsed = parseCsv(await entry.async('string'));
+      zip = z;
+    } catch (e) {
+      setStatus('Could not open: ' + e.message, true);
+      return;
+    }
+    clearCache();
+    zipName = file.name;
+    total = parsed.times.length;
+    times = parsed.times;
+    utcs = parsed.utcs;
+    marks = emptyMarks();
+
+    var saved = readSaved();
+    var restored = 0;
+    if (saved) {
+      var r = parseCycles(saved);
+      marks = r.marks;
+      restored = countMarks(marks);
+    }
+
+    cur = 1;
+    $('slider').max = total;
+    $('slider').value = 1;
+    $('empty').hidden = true;
+    $('main').hidden = false;
+    $('exportBtn').disabled = false;
+    $('importBtn').disabled = false;
+    $('recName').textContent = zipName;
+    renderAll();
+    showFrame();
+    setStatus(restored ? 'Opened ' + total + ' frames. Restored ' + restored + ' saved cycle(s).' : 'Opened ' + total + ' frames.');
+  }
+
+  // ---- frame cache (blob URLs, decoded by the browser only when shown) ----
+  function clearCache() {
+    cache.forEach(function (e) { e.promise.then(function (u) { URL.revokeObjectURL(u); }, function () {}); });
+    cache.clear();
+  }
+
+  function getUrl(n) {
+    var e = cache.get(n);
+    if (!e) {
+      var f = zip.file(fname(n));
+      if (!f) return Promise.reject(new Error('missing ' + fname(n)));
+      e = { promise: f.async('blob').then(function (b) { return URL.createObjectURL(b); }) };
+      cache.set(n, e);
+    }
+    return e.promise;
+  }
+
+  function trimCache() {
+    var lo = cur - KEEP_BEHIND, hi = cur + KEEP_AHEAD;
+    cache.forEach(function (e, k) {
+      if (k < lo || k > hi) {
+        cache.delete(k);
+        e.promise.then(function (u) { URL.revokeObjectURL(u); }, function () {});
+      }
+    });
+  }
+
+  function showFrame() {
+    trimCache();
+    var n = cur;
+    $('frameNo').textContent = n;
+    $('frameTotal').textContent = total;
+    $('frameTime').textContent = times[n - 1].toFixed(3);
+    $('frameUtc').textContent = utcs[n - 1] || '-';
+    $('slider').value = n;
+    updateCursor();
+    $('loadState').textContent = 'Loading...';
+    getUrl(n).then(function (u) {
+      if (n !== cur) return;
+      $('frameImg').src = u;
+      $('loadState').textContent = '';
+    }).catch(function (err) {
+      if (n !== cur) return;
+      $('loadState').textContent = '';
+      setStatus('Frame ' + n + ': ' + err.message, true);
+    });
+    for (var k = n + 1; k <= Math.min(total, n + PREFETCH); k++) getUrl(k).catch(function () {});
+    for (var j = n - 1; j >= Math.max(1, n - 3); j--) getUrl(j).catch(function () {});
+  }
+
+  function goto(n) {
+    if (!zip) return;
+    n = Math.round(n);
+    if (!isFinite(n)) return;
+    cur = Math.max(1, Math.min(total, n));
+    showFrame();
+  }
+
+  // ---- marks ---------------------------------------------------------------
+  function markStart() {
+    if (!zip) return;
+    var list = marks[sel];
+    var last = list[list.length - 1];
+    if (last && last.endFrame == null) {
+      var prev = list[list.length - 2];
+      if (prev && cur <= prev.endFrame) { setStatus(LABEL[sel] + ' start must be after frame ' + prev.endFrame + '.', true); return; }
+      last.startFrame = cur; // re-mark the open start
+    } else {
+      if (last && cur <= last.endFrame) { setStatus(LABEL[sel] + ' start must be after frame ' + last.endFrame + '.', true); return; }
+      list.push({ startFrame: cur, endFrame: null });
+    }
+    afterChange(LABEL[sel] + ' recharge start marked at frame ' + cur + '.');
+  }
+
+  function markEnd() {
+    if (!zip) return;
+    var list = marks[sel];
+    var last = list[list.length - 1];
+    if (!last || last.endFrame != null) { setStatus('No open ' + LABEL[sel] + ' start. Press S on the start frame first.', true); return; }
+    if (cur <= last.startFrame) { setStatus('End must be after the start frame ' + last.startFrame + '.', true); return; }
+    last.endFrame = cur;
+    afterChange(LABEL[sel] + ' recharge complete at frame ' + cur + ' (' + (times[cur - 1] - times[last.startFrame - 1]).toFixed(3) + ' s).');
+  }
+
+  function deleteCycle(slot, i) {
+    var c = marks[slot][i];
+    if (!c) return;
+    marks[slot].splice(i, 1);
+    afterChange('Deleted ' + LABEL[slot] + ' cycle starting at frame ' + c.startFrame + '.');
+  }
+
+  function clearEnd(slot, i) {
+    var c = marks[slot][i];
+    if (!c) return;
+    c.endFrame = null;
+    afterChange('Cleared end of ' + LABEL[slot] + ' cycle; it is open again.');
+  }
+
+  function afterChange(msg) {
+    saveMarks();
+    renderLists();
+    renderTicks();
+    setStatus(msg);
+  }
+
+  function parseCycles(list) {
+    var out = emptyMarks(), skipped = 0;
+    list.forEach(function (c) {
+      var ok = c && SLOTS.indexOf(c.slot) >= 0 && Number.isInteger(c.startFrame) &&
+        c.startFrame >= 1 && c.startFrame <= total &&
+        (c.endFrame == null || (Number.isInteger(c.endFrame) && c.endFrame > c.startFrame && c.endFrame <= total));
+      if (!ok) { skipped++; return; }
+      out[c.slot].push({ startFrame: c.startFrame, endFrame: c.endFrame == null ? null : c.endFrame });
+    });
+    SLOTS.forEach(function (s) {
+      out[s].sort(function (a, b) { return a.startFrame - b.startFrame; });
+      var kept = [];
+      out[s].forEach(function (c) {
+        var prev = kept[kept.length - 1];
+        if (!prev || (prev.endFrame != null && c.startFrame > prev.endFrame)) kept.push(c);
+        else skipped++;
+      });
+      out[s] = kept;
+    });
+    return { marks: out, skipped: skipped };
+  }
+
+  function exportCycles() {
+    var out = [];
+    SLOTS.forEach(function (s) {
+      marks[s].forEach(function (c) {
+        out.push({
+          slot: s,
+          startFrame: c.startFrame,
+          startTime: r6(times[c.startFrame - 1]),
+          endFrame: c.endFrame,
+          endTime: c.endFrame == null ? null : r6(times[c.endFrame - 1])
+        });
+      });
+    });
+    return out;
+  }
+
+  function exportJson() {
+    if (!zip) return;
+    var payload = { recording: zipName, cycles: exportCycles() };
+    var blob = new Blob([JSON.stringify(payload, null, 2) + '\n'], { type: 'application/json' });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement('a');
+    a.href = url;
+    a.download = baseName() + '.annotations.json';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+    setStatus('Exported ' + payload.cycles.length + ' cycle(s).');
+  }
+
+  async function importJson(file) {
+    if (!zip) { setStatus('Open the recording first, then import its annotations.', true); return; }
+    var data;
+    try { data = JSON.parse(await file.text()); } catch (e) { setStatus('Not valid JSON.', true); return; }
+    if (!data || !Array.isArray(data.cycles)) { setStatus('JSON has no cycles array.', true); return; }
+    if (countMarks(marks) > 0 && !confirm('Replace the current marks with the imported ones?')) return;
+    var r = parseCycles(data.cycles);
+    marks = r.marks;
+    var msg = 'Imported ' + countMarks(marks) + ' cycle(s)';
+    if (r.skipped) msg += ', skipped ' + r.skipped + ' invalid';
+    if (data.recording && data.recording !== zipName) msg += ' (file was made for ' + data.recording + ')';
+    afterChange(msg + '.');
+  }
+
+  // ---- autosave (per recording, localStorage) -----------------------------
+  function storageKey() { return 'recording-annotator:' + zipName; }
+
+  function saveMarks() {
+    if (!zipName) return;
+    try {
+      localStorage.setItem(storageKey(), JSON.stringify({ recording: zipName, cycles: exportCycles() }));
+    } catch (e) { /* storage unavailable; marks stay in memory */ }
+  }
+
+  function readSaved() {
+    try {
+      var raw = localStorage.getItem(storageKey());
+      if (!raw) return null;
+      var d = JSON.parse(raw);
+      return Array.isArray(d.cycles) ? d.cycles : null;
+    } catch (e) { return null; }
+  }
+
+  // ---- rendering -----------------------------------------------------------
+  function selectSlot(s) {
+    sel = s;
+    renderSlots();
+    setStatus('Selected ' + LABEL[s] + '.');
+  }
+
+  function renderSlots() {
+    document.querySelectorAll('.slots button').forEach(function (b) {
+      b.classList.toggle('sel', b.dataset.slot === sel);
+    });
+  }
+
+  function renderLists() {
+    SLOTS.forEach(function (s) {
+      var list = marks[s];
+      var ul = $('list-' + s);
+      $('count-' + s).textContent = list.length;
+      ul.innerHTML = '';
+      if (!list.length) {
+        var empty = document.createElement('li');
+        empty.className = 'muted';
+        empty.textContent = 'No cycles yet.';
+        ul.appendChild(empty);
+        return;
+      }
+      list.forEach(function (c, i) {
+        var st = times[c.startFrame - 1];
+        var en = c.endFrame == null ? null : times[c.endFrame - 1];
+        var isLast = i === list.length - 1;
+        var li = document.createElement('li');
+        li.dataset.slot = s;
+        li.dataset.i = i;
+        var endPart = en == null
+          ? '<em class="muted">open</em>'
+          : '<button class="link" data-act="jump" data-f="' + c.endFrame + '">#' + c.endFrame + '</button> <span class="num">' + en.toFixed(3) + ' s</span>';
+        var dur = en == null ? 'open' : (en - st).toFixed(3) + ' s';
+        li.innerHTML =
+          '<div class="row"><span class="idx">' + (i + 1) + '</span>' +
+          '<button class="link" data-act="jump" data-f="' + c.startFrame + '">start #' + c.startFrame + '</button>' +
+          '<span class="num">' + st.toFixed(3) + ' s</span> &rarr; ' + endPart + '</div>' +
+          '<div class="row"><span class="num muted">duration ' + dur + '</span><span style="flex:1"></span>' +
+          (isLast && en != null ? '<button class="small" data-act="clearend">Clear end</button> ' : '') +
+          '<button class="small" data-act="del">Delete</button></div>';
+        ul.appendChild(li);
+      });
+    });
+  }
+
+  function pos(n) {
+    var p = total > 1 ? (n - 1) / (total - 1) : 0;
+    return 'calc(8px + (100% - 16px) * ' + p + ')';
+  }
+
+  function updateCursor() {
+    var c = $('ticks').querySelector('.cursor');
+    if (c && total) c.style.left = pos(cur);
+  }
+
+  function renderTicks() {
+    var box = $('ticks');
+    box.innerHTML = '';
+    var cursor = document.createElement('div');
+    cursor.className = 'cursor';
+    box.appendChild(cursor);
+    function addTick(n, slot, isEnd) {
+      var d = document.createElement('div');
+      d.className = 'tick' + (isEnd ? ' end' : '');
+      d.style.left = pos(n);
+      d.style.setProperty('--c', 'var(--' + slot + ')');
+      d.title = LABEL[slot] + (isEnd ? ' complete' : ' start') + ' #' + n;
+      d.dataset.f = n;
+      box.appendChild(d);
+    }
+    SLOTS.forEach(function (s) {
+      marks[s].forEach(function (c) {
+        addTick(c.startFrame, s, false);
+        if (c.endFrame != null) addTick(c.endFrame, s, true);
+      });
+    });
+    updateCursor();
+  }
+
+  function renderAll() {
+    renderSlots();
+    renderLists();
+    renderTicks();
+  }
+
+  // ---- events --------------------------------------------------------------
+  document.addEventListener('keydown', function (e) {
+    if (!zip || e.ctrlKey || e.metaKey || e.altKey) return;
+    var t = e.target;
+    if (t && (t.tagName === 'TEXTAREA' || (t.tagName === 'INPUT' && t.type !== 'range'))) return;
+    if (e.key === 'ArrowLeft') { e.preventDefault(); goto(cur - (e.shiftKey ? 60 : 1)); return; }
+    if (e.key === 'ArrowRight') { e.preventDefault(); goto(cur + (e.shiftKey ? 60 : 1)); return; }
+    if (e.key === 'Home') { e.preventDefault(); goto(1); return; }
+    if (e.key === 'End') { e.preventDefault(); goto(total); return; }
+    if (e.key === '1' || e.key === '2' || e.key === '3') { selectSlot(SLOTS[+e.key - 1]); return; }
+    var k = e.key.toLowerCase();
+    if (k === 'i') { e.preventDefault(); markStart(); }
+    else if (k === 'o') { e.preventDefault(); markEnd(); }
+  });
+
+  $('zipInput').addEventListener('change', function (e) {
+    var f = e.target.files[0];
+    if (f) openZip(f);
+    e.target.value = '';
+  });
+
+  window.addEventListener('dragover', function (e) { e.preventDefault(); });
+  window.addEventListener('drop', function (e) {
+    e.preventDefault();
+    var files = e.dataTransfer ? Array.prototype.slice.call(e.dataTransfer.files) : [];
+    var f = files.find(function (x) { return /\.zip$/i.test(x.name); });
+    if (f) openZip(f); else setStatus('Drop a .zip recording.', true);
+  });
+
+  $('slider').addEventListener('input', function (e) { goto(+e.target.value); });
+  $('exportBtn').addEventListener('click', exportJson);
+  $('importBtn').addEventListener('click', function () { $('jsonInput').click(); });
+  $('jsonInput').addEventListener('change', function (e) {
+    var f = e.target.files[0];
+    if (f) importJson(f);
+    e.target.value = '';
+  });
+
+  document.querySelectorAll('.slots button').forEach(function (b) {
+    b.addEventListener('click', function () { selectSlot(b.dataset.slot); });
+  });
+
+  document.querySelectorAll('ul.cycles').forEach(function (ul) {
+    ul.addEventListener('click', function (e) {
+      var b = e.target.closest('button[data-act]');
+      if (!b) return;
+      var li = b.closest('li');
+      var slot = li.dataset.slot, i = +li.dataset.i;
+      if (b.dataset.act === 'jump') goto(+b.dataset.f);
+      else if (b.dataset.act === 'del') deleteCycle(slot, i);
+      else if (b.dataset.act === 'clearend') clearEnd(slot, i);
+    });
+  });
+
+  $('ticks').addEventListener('click', function (e) {
+    var t = e.target.closest('.tick');
+    if (t) goto(+t.dataset.f);
+  });
+})();
+</script>
+</body>
+</html>

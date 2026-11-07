@@ -92,7 +92,8 @@ internal readonly record struct AbilitySignal(
     bool PixelEvidence = false,
     bool Blank = false,
     float? FillLuminance = null,
-    TwinReading? Twin = null);
+    TwinReading? Twin = null,
+    float? FillSaturation = null);
 
 internal enum MeasurementSource
 {
@@ -196,6 +197,13 @@ internal sealed class AbilitySlotTracker
     private DateTime? _softEndCandidate;
     private DateTime? _softEndPreviousFrame;
     private bool _dipping;
+    private readonly List<FillSample> _fillHistory = [];
+    private DateTime? _firstStartAt;
+    private float _pulseMaximum;
+    private float? _pulseDipMinimum;
+    private DateTime? _episodeOnset;
+    private float? _postChargeBorderMinimum;
+    private bool _recastFlashSeen;
     private readonly RechargeModel _model = new();
     private readonly SlotBorderLearner _borders = new();
     private DateTime? _lastBoundaryAt;
@@ -213,10 +221,30 @@ internal sealed class AbilitySlotTracker
     internal const float ProgressOffset = 0.0264f;
     private const double EndGapForModel = 0.1;
 
+    // The gray recharge bar vanishes before the charged fill is confirmed, so the end is found by looking back.
+    private const double EndLookback = 1.5;
+    private const int FadeLookbackFrames = 8;
+    private const float GrayBarDropThreshold = 0.09f;
+    private const float GrayBarFadeFraction = 0.7f;
+    private const float TintOnsetThreshold = 0.03f;
+    private const float TintStepThreshold = 0.02f;
+    private const double MinimumRechargeSeconds = 1;
+    private const float RecastBarStep = 0.025f;
+    // Ability-use animations pulse the border before the real recharge-start bar, after a dip back to thin.
+    private const double PulseWindowSeconds = 1.5;
+    private const double PulseDipSeconds = 0.25;
+    private const float PulseStep = 0.012f;
+    private const float ThinBorder = 0.02f;
+    private const float BarBorder = 0.028f;
+
+    private readonly record struct FillSample(DateTime Time, DateTime? Previous, float Luminance, float Saturation);
+
     public AbilityKind Kind { get; }
     public AbilityState State { get; private set; } = AbilityState.Unknown;
     public bool IsCharged { get; private set; }
     public TimeSpan? LastDuration { get; private set; }
+    /// <summary>How far the last measurement moved the observed start earlier (a late start flash).</summary>
+    public TimeSpan LastStartShift { get; private set; }
     public TimeSpan? LastUncertainty { get; private set; }
     public MeasurementSource? LastSource { get; private set; }
     /// <summary>Total recharge time fitted from samples between 10% and 90% charge.</summary>
@@ -296,6 +324,13 @@ internal sealed class AbilitySlotTracker
         _softEndCandidate = null;
         _softEndPreviousFrame = null;
         _dipping = false;
+        _fillHistory.Clear();
+        _firstStartAt = null;
+        _pulseDipMinimum = null;
+        _episodeOnset = null;
+        _postChargeBorderMinimum = null;
+        _recastFlashSeen = false;
+        _pendingRecast = null;
         _lastReadyAt = null;
         IsCharged = false;
         CurrentDuration = null;
@@ -303,6 +338,92 @@ internal sealed class AbilitySlotTracker
     }
 
     public bool Observe(AbilitySignal signal, DateTime timestamp)
+    {
+        TrackRecast(signal, timestamp);
+        var completed = ObserveCore(signal, timestamp);
+        return ConfirmRecast(signal, timestamp) || completed;
+    }
+
+    /// <summary>
+    /// An ability recast right after the charge returned (too soon for the charged fill to be confirmed) shows as a
+    /// new bottom-bar flash while the old recharge is still open. The close is provisional: the gray bar's end must
+    /// be found before that brief charge, and the slot must then keep recharging (never confirmed charged) for a
+    /// second. A completion animation looks alike at first, but the slot goes on to stay charged, so it is left to
+    /// the normal completion.
+    /// </summary>
+    private void TrackRecast(AbilitySignal signal, DateTime timestamp)
+    {
+        if (_pendingRecast is not null || !signal.PixelEvidence || _rechargeStarted is not { } started ||
+            _episodeOnset is not { } onset || _postChargeBorderMinimum is not { } minimum || !_recastFlashSeen ||
+            signal.BottomBorderThickness < minimum + RecastBarStep ||
+            !(LastDuration is { } expected ? timestamp - started >= expected * 0.8 : _lastProgress is >= 0.8f) ||
+            !TryFindGrayBarEnd(onset, out var end, out var previous, requireCue: true))
+        {
+            return;
+        }
+
+        _pendingRecast = new PendingRecast(started, timestamp, _lastObservedAt, signal.BottomBorderThickness, end,
+            previous);
+    }
+
+    private bool ConfirmRecast(AbilitySignal signal, DateTime timestamp)
+    {
+        if (_pendingRecast is not { } pending)
+        {
+            return false;
+        }
+
+        if (_rechargeStarted != pending.Started || IsCharged)
+        {
+            _pendingRecast = null;
+            return false;
+        }
+
+        if (timestamp - pending.Flash < RecastConfirmation)
+        {
+            return false;
+        }
+
+        _pendingRecast = null;
+        _completionPreviousFrame = pending.EndPrevious;
+        FinishFromEvent(signal, pending.Started, pending.End);
+        _useObservedAt = null;
+        BeginRecharge(pending.Flash, pending.FlashPrevious, pending.Border);
+        _cycleUseAt = null;
+        State = AbilityState.Recharging;
+        CurrentDuration = Elapsed(timestamp, pending.Flash);
+        return true;
+    }
+
+    private readonly record struct PendingRecast(DateTime Started, DateTime Flash, DateTime? FlashPrevious,
+        float Border, DateTime End, DateTime? EndPrevious);
+    private PendingRecast? _pendingRecast;
+    private static readonly TimeSpan RecastConfirmation = TimeSpan.FromSeconds(1);
+
+    private void BeginRecharge(DateTime timestamp, DateTime? previousObservation, float border)
+    {
+        _consumedBorderBaseline = null;
+        _rechargeStarted = timestamp;
+        _firstStartAt = timestamp;
+        _pulseMaximum = border;
+        _pulseDipMinimum = null;
+        _episodeOnset = null;
+        _postChargeBorderMinimum = null;
+        _recastFlashSeen = false;
+        _startPreviousFrame = previousObservation;
+        _softEndCandidate = null;
+        _completionCandidateSince = null;
+        ChargeProgress = 0;
+        TrackingWarning = null;
+        MeasurementDiscarded = false;
+        _recovering = false;
+        _lastProgress = null;
+        _lastProgressAt = null;
+        _progressSamples = 0;
+        ResetModel();
+    }
+
+    private bool ObserveCore(AbilitySignal signal, DateTime timestamp)
     {
         var previousObservation = _lastObservedAt;
         _lastObservedAt = timestamp;
@@ -333,6 +454,13 @@ internal sealed class AbilitySlotTracker
         }
 
         _previousFillLuminance = signal.FillLuminance;
+        if (signal.PixelEvidence && signal.FillLuminance is { } fillLuminance && signal.FillSaturation is { } fillSaturation)
+        {
+            _fillHistory.Add(new FillSample(timestamp, previousObservation, fillLuminance, fillSaturation));
+            var oldest = timestamp - TimeSpan.FromSeconds(EndLookback + 0.5);
+            var stale = _fillHistory.FindLastIndex(sample => sample.Time < oldest);
+            if (stale >= 0) { _fillHistory.RemoveRange(0, stale + 1); }
+        }
 
         if (signal.FillHue is { } hue)
         {
@@ -373,7 +501,12 @@ internal sealed class AbilitySlotTracker
 
         if (signal.Charged) { _readyCandidateSince ??= timestamp; }
         else { _readyCandidateSince = null; }
-        var confirmedReady = signal.Charged && (!signal.PixelEvidence ||
+        // A briefly charged-looking fill while the bar was last seen well short of full is scenery, not the end.
+        var implausiblyEarly = _rechargeStarted is not null && signal.PixelEvidence && _lastProgress is < 0.6f &&
+            _lastProgressAt is { } progressSeenAt && timestamp - progressSeenAt < TimeSpan.FromSeconds(2) &&
+            timestamp - _readyCandidateSince < TimeSpan.FromSeconds(0.75) &&
+            (LastDuration is not { } previousDuration || timestamp - _rechargeStarted < previousDuration / 2);
+        var confirmedReady = signal.Charged && !implausiblyEarly && (!signal.PixelEvidence ||
             timestamp - _readyCandidateSince >= TimeSpan.FromMilliseconds(150));
         IsCharged = confirmedReady;
         if (confirmedReady && _rechargeStarted is null)
@@ -405,23 +538,27 @@ internal sealed class AbilitySlotTracker
         {
             _cycleUseAt = _useObservedAt;
             _useObservedAt = null;
-            _consumedBorderBaseline = null;
-            _rechargeStarted = timestamp;
-            _startPreviousFrame = previousObservation;
-            _softEndCandidate = null;
-            _completionCandidateSince = null;
-            ChargeProgress = 0;
-            TrackingWarning = null;
-            MeasurementDiscarded = false;
-            _recovering = false;
-            _lastProgress = null;
-            _lastProgressAt = null;
-            _progressSamples = 0;
-            ResetModel();
+            BeginRecharge(timestamp, previousObservation, signal.BottomBorderThickness);
         }
 
         if (_rechargeStarted is { } started)
         {
+            if (signal.PixelEvidence)
+            {
+                TrackStartPulse(signal, timestamp, previousObservation);
+                started = _rechargeStarted ?? started;
+                TrackChargedEpisode(signal, started);
+            }
+
+            if (signal.PixelEvidence && confirmedReady && !startFlash && _readyCandidateSince is { } onset &&
+                (onset - started).TotalSeconds >= MinimumRechargeSeconds &&
+                TryFindGrayBarEnd(onset, out var barEnd, out var barEndPrevious))
+            {
+                _completionPreviousFrame = barEndPrevious;
+                FinishFromEvent(signal, started, barEnd);
+                return true;
+            }
+
             var modelAccepted = ObserveModel(signal, timestamp, started);
             CurrentDuration = Elapsed(timestamp, started);
             if (modelAccepted)
@@ -574,6 +711,127 @@ internal sealed class AbilitySlotTracker
     private TimeSpan Elapsed(DateTime timestamp, DateTime started) =>
         timestamp - started + TimeSpan.FromSeconds(_startShiftSeconds);
 
+    /// <summary>
+    /// Finds when the gray recharge bar disappeared from the recent fill history, looking back from the charged
+    /// fill's onset: the last frame where fill luminance mostly finished falling from its gray plateau, or, when the
+    /// scene hides that, where the neutral gray first took on the charged tint and stayed tinted until the onset.
+    /// Falls back to the onset itself. The caller only asks once the charged fill is confirmed, so scene changes
+    /// earlier in a recharge are not mistaken for the end.
+    /// </summary>
+    private bool TryFindGrayBarEnd(DateTime onset, out DateTime end, out DateTime? previous, bool requireCue = false)
+    {
+        end = onset;
+        previous = null;
+        var window = _fillHistory.Where(sample => sample.Time >= onset - TimeSpan.FromSeconds(EndLookback) &&
+            sample.Time <= onset).ToList();
+        if (window.Count == 0) { return false; }
+        var cue = -1;
+        for (var i = 1; i < window.Count; i++)
+        {
+            var plateau = 0f;
+            for (var back = Math.Max(0, i - FadeLookbackFrames); back < i; back++)
+            {
+                plateau = Math.Max(plateau, window[back].Luminance);
+            }
+
+            // The gray bar stays gone until the charged fill appears; a dip that rebounds is scenery.
+            if (window[i].Luminance < plateau - GrayBarDropThreshold &&
+                window[i - 1].Luminance >= plateau - GrayBarDropThreshold &&
+                window.Skip(i).All(sample => sample.Luminance < plateau - GrayBarDropThreshold)) { cue = i; }
+        }
+
+        if (cue >= 0)
+        {
+            var plateau = 0f;
+            for (var back = Math.Max(0, cue - FadeLookbackFrames); back < cue; back++)
+            {
+                plateau = Math.Max(plateau, window[back].Luminance);
+            }
+
+            var floor = window.Skip(cue).Min(sample => sample.Luminance);
+            var target = plateau - GrayBarFadeFraction * (plateau - floor);
+            while (cue < window.Count - 1 && window[cue].Luminance > target) { cue++; }
+        }
+
+        // The neutral gray taking on a tint that then lasts until the charged onset (a passing tint, such as a red
+        // screen flash, does not last). Tint is a fallback: it can appear while the gray bar is still fading,
+        // so it must not override an observed luminance disappearance.
+        var tint = window.Count - 1;
+        var neutral = window.Min(sample => sample.Saturation) + TintOnsetThreshold;
+        if (window[tint].Saturation >= neutral)
+        {
+            while (tint > 0 && window[tint - 1].Saturation >= neutral) { tint--; }
+            if (tint > 0 && window[tint].Saturation - window[tint - 1].Saturation >= TintStepThreshold &&
+                cue < 0)
+            {
+                cue = tint;
+            }
+        }
+
+        if (cue < 0 && requireCue) { return false; }
+        if (cue < 0) { cue = window.Count - 1; }
+
+        end = window[cue].Time;
+        if (cue > 0) { previous = window[cue - 1].Time; }
+        else if (_fillHistory.FindLastIndex(sample => sample.Time < window[0].Time) is var before and >= 0)
+        {
+            previous = _fillHistory[before].Time;
+        }
+
+        return true;
+    }
+
+    // A thickening that thins back and then rises again just after the start was the use pulse; the later rise is
+    // the recharge-start bar.
+    private void TrackStartPulse(AbilitySignal signal, DateTime timestamp, DateTime? previousObservation)
+    {
+        if (_firstStartAt is not { } first || (timestamp - first).TotalSeconds > PulseWindowSeconds)
+        {
+            return;
+        }
+
+        var border = signal.BottomBorderThickness;
+        if (_pulseDipMinimum is not { } dip)
+        {
+            _pulseMaximum = Math.Max(_pulseMaximum, border);
+            // Reference pulses return to thin within 0.17–0.22 s; real bars do so at 0.27 s or later.
+            // This timing guard has little margin: do not broaden it to handle sustained animation pulses.
+            if (border <= _pulseMaximum - PulseStep && border <= ThinBorder &&
+                (timestamp - first).TotalSeconds <= PulseDipSeconds) { _pulseDipMinimum = border; }
+            return;
+        }
+
+        _pulseDipMinimum = Math.Min(dip, border);
+        if (border >= _pulseDipMinimum + PulseStep && border >= BarBorder)
+        {
+            _rechargeStarted = timestamp;
+            _startPreviousFrame = previousObservation;
+            _pulseMaximum = border;
+            _pulseDipMinimum = null;
+            ResetModel();
+            _lastProgress = null;
+            _lastProgressAt = null;
+            _progressSamples = 0;
+        }
+    }
+
+    // Remembers a charged fill that appeared mid-recharge and the thinnest border seen since it left.
+    private void TrackChargedEpisode(AbilitySignal signal, DateTime started)
+    {
+        if (signal.Charged && _readyCandidateSince is { } onset && (onset - started).TotalSeconds >= MinimumRechargeSeconds)
+        {
+            _episodeOnset = onset;
+            _postChargeBorderMinimum = null;
+            _recastFlashSeen = false;
+        }
+        else if (_episodeOnset is not null && !signal.Charged)
+        {
+            _postChargeBorderMinimum = Math.Min(_postChargeBorderMinimum ?? signal.BottomBorderThickness,
+                signal.BottomBorderThickness);
+            _recastFlashSeen |= signal.UseFlash;
+        }
+    }
+
     private void SetCompletionCandidate(DateTime timestamp, DateTime? previousObservation)
     {
         if (_completionCandidateSince is null)
@@ -677,6 +935,7 @@ internal sealed class AbilitySlotTracker
 
     private void Complete(AbilitySignal signal, TimeSpan duration, TimeSpan uncertainty, MeasurementSource source)
     {
+        LastStartShift = TimeSpan.FromSeconds(_startShiftSeconds);
         // The inverse slope measures a full charge without depending on either event timestamp.
         if (_model.FinalRegression() is { } regression)
         {

@@ -1,0 +1,54 @@
+{
+  "recording": "D2Ability-HUD-20261107-124028.zip",
+  "cycles": [
+    {
+      "slot": "grenade",
+      "startFrame": 349,
+      "startTime": 7.624614,
+      "endFrame": 3942,
+      "endTime": 88.350656
+    },
+    {
+      "slot": "grenade",
+      "startFrame": 4216,
+      "startTime": 94.796106,
+      "endFrame": null,
+      "endTime": null
+    },
+    {
+      "slot": "melee",
+      "startFrame": 187,
+      "startTime": 4.276138,
+      "endFrame": 2471,
+      "endTime": 53.986013
+    },
+    {
+      "slot": "melee",
+      "startFrame": 2607,
+      "startTime": 57.058402,
+      "endFrame": null,
+      "endTime": null
+    },
+    {
+      "slot": "class",
+      "startFrame": 276,
+      "startTime": 6.043787,
+      "endFrame": 2026,
+      "endTime": 43.829278
+    },
+    {
+      "slot": "class",
+      "startFrame": 2082,
+      "startTime": 45.070667,
+      "endFrame": 3702,
+      "endTime": 82.803569
+    },
+    {
+      "slot": "class",
+      "startFrame": 3766,
+      "startTime": 84.139225,
+      "endFrame": null,
+      "endTime": null
+    }
+  ]
+}

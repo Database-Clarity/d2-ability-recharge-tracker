@@ -40,6 +40,9 @@ internal static class AbilitySignalDetector
         var flashPixels = 0;
         var blankPixels = 0;
         var fillLuminance = 0f;
+        var fillRed = 0;
+        var fillGreen = 0;
+        var fillBlue = 0;
         Span<int> hues = stackalloc int[24];
         hues.Clear();
 
@@ -65,6 +68,9 @@ internal static class AbilitySignalDetector
                         var minimum = Math.Min(red, Math.Min(green, blue));
                         var saturation = maximum == 0 ? 0f : (maximum - minimum) / (float)maximum;
                         fillLuminance += GetLuminance(pixel);
+                        fillRed += red;
+                        fillGreen += green;
+                        fillBlue += blue;
                         if (maximum - minimum < 35 && GetLuminance(pixel) > 0.72f) { flashPixels++; }
                         if (GetLuminance(pixel) < 0.18f) { blankPixels++; }
                         if (saturation >= ChargedSaturationThreshold && maximum - minimum >= 40)
@@ -119,7 +125,16 @@ internal static class AbilitySignalDetector
             true,
             fillPixels > 0 && blankPixels / (float)fillPixels > 0.65f,
             fillPixels == 0 ? null : fillLuminance / fillPixels,
-            twin);
+            twin,
+            fillPixels == 0 ? null : MeanSaturation(fillRed, fillGreen, fillBlue));
+    }
+
+    // Saturation of the mean fill colour: the gray recharge bar is neutral, the charged fill is strongly tinted.
+    private static float MeanSaturation(int red, int green, int blue)
+    {
+        var maximum = Math.Max(red, Math.Max(green, blue));
+        var minimum = Math.Min(red, Math.Min(green, blue));
+        return maximum == 0 ? 0 : (maximum - minimum) / (float)maximum;
     }
 
     public static int BottomPadding(int height) => Math.Max(3, (int)Math.Ceiling(height * 0.1));

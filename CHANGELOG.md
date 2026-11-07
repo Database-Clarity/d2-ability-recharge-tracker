@@ -25,3 +25,5 @@ Add a concise, single-line bullet for each notable user-facing change in the sam
 - History splits into **Sessions** (one session at a time with **New session…**, **Make active** / **End session**, **Rename…**, **Delete…** and its own export) and **All measurements** (every result with a Session column and **Add to session ▾** for any session).
 - Custom columns now belong to a session; existing columns are copied to the sessions that use them, and moved results keep their values.
 - Deleting a session keeps its measurements as Unsorted, and **Make active** can reopen an ended session.
+- Recharge completions are timed from the frame the gray recharge bar disappears, fixing durations that ran up to about 0.7 s long, and quick recasts or use animations no longer drop or shift cycles.
+- A recording annotator (`tools/recording-annotator.html`) marks recharge start and end frames in HUD recordings for accuracy checks.

@@ -645,6 +645,12 @@ if (args.Length == 2 && args[0] == "--ui-smoke")
     return;
 }
 
+if (args.Length > 0 && args[0] is "--replay-hud" or "--extract-hud-fixtures")
+{
+    HudReplay.Run(args);
+    return;
+}
+
 if (args.Length > 0 && args[0] == "--replay")
 {
     FootageReplay.Run(args);
@@ -652,6 +658,13 @@ if (args.Length > 0 && args[0] == "--replay")
 }
 
 var start = DateTime.UnixEpoch;
+if (args.Length == 1 && args[0] == "--replay-hud-signals")
+{
+    HudSequences.Run(report: true);
+    return;
+}
+
+HudSequences.Run();
 ChangelogTests.Run();
 MeasurementHistoryTests.Run();
 RepeatSummaryTests.Run();

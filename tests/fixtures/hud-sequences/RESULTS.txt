@@ -1,0 +1,71 @@
+Recharge refinement results
+
+Implementation relative to the pre-existing uncommitted tree:
+- AbilityState.cs: prefer sustained luminance disappearance over an earlier tint onset;
+  tint is now only a fallback. Remove unused PendingRecast.Baseline. Clarify pulse guard margin.
+- tests/HudReplay.cs: add streaming fixture generation alongside the existing replay harness.
+- tests/HudSequences.cs: compressed signal replay, strict annotated endpoint/count tests,
+  six real pixel crop checks, region snapshots, and diagnostic signal replay.
+- tests/Program.cs: dispatch generator/diagnostic modes and run fixtures in the existing suite.
+- tests/fixtures/hud-sequences/: traces, six PNG crops and metadata, source annotation copies,
+  minimal region snapshots and regeneration/limitations documentation.
+- AbilitySignalDetector.cs: preserved previous agent's mean-fill saturation work (no new rule).
+- tools/: preserved previous agent's work unchanged.
+
+Before -> after, absolute errors in frames (mean/max):
+123051 starts 2.9/26 -> 2.9/26; completions 2.0/8 -> 1.3/6.
+124028 starts 1.7/8 -> 1.7/8; completions 1.0/4 -> 0.0/0.
+Both: zero false starts, missed starts or missed completions before and after.
+Changed rows only:
+123051 melee2 completion: annotation 5204; 5196 (-8) -> 5210 (+6).
+123051 class1 completion: annotation 4495; 4491 (-4) -> 4493 (-2).
+124028 grenade1 completion: annotation 3942; 3938 (-4) -> 3942 (0).
+
+Robustness and threshold margins:
+The simplification follows the user's disappearance definition: tint can start during the gray
+bar's fade, so it should not override a directly observed luminance drop. No thresholds added.
+The same priority change improves the non-sword endpoints in both clips independently; no
+threshold was chosen from the sword cycle. It does not fix invisible or sustained start flashes.
+
+Leave-one-recording-out sanity check: replayed fixed signals with pulse dip windows .22, .24,
+.26 and .28 seconds. Clip 123051 is unchanged at all four. Clip 124028 loses the melee2 pulse
+correction at .22 (start 2594 instead of 2607); .24/.26/.28 match .25. Thus choosing .22 on the
+first recording alone fails the second. This is a sensitivity sanity check, not a claim of
+statistically independent validation or threshold training. The supplied measured pulse/real-bar
+separation (.17-.22 vs >=.27 seconds) gives only ~20-30 ms margin at .25. Retain .25; do not
+broaden it based on the two clips. Sustained class pulses remain unresolved.
+
+Other sensitivity checks, one parameter at a time on complete signal histories of both clips:
+- GrayBarDropThreshold .09: unchanged at .07 and .11 (tested +/- .02 luminance margin).
+- GrayBarFadeFraction .7: .6 and .8 leave all non-sword endpoints unchanged; sword completion
+  moves to 5208 and 5212 respectively. Tested +/- .1; sword remains intrinsically fragile.
+- RecastConfirmation 1 second: .75 and 1.25 preserve all endpoints/counts (tested +/- .25 s).
+These tests freeze detector inputs; final full PNG replays verify the selected production rule.
+
+Remaining heuristic constants without a measured generalization margin:
+EndLookback 1.5 s; fade plateau lookback 8 captured frames; tint onset .03 and step .02;
+minimum recharge 1 s; recast border step .025 and near-end gate 80%; pulse window 1.5 s,
+pulse rise/drop .012, thin border .02 and bar border .028; charged confirmation 150 ms.
+The 8-frame fade window is capture-rate dependent. Border measures are normalized by slot
+height, but brightness/contrast thresholds and scene contamination are still heuristic.
+Pre-existing pixel thresholds (including saturation .32 and charged-patch coverage .65), model
+calibration and start-shift logic were not retuned. No measured cross-recording safety margin
+is claimed for them. Recast still relies on lack of confirmed charge, not positive new-cycle
+progress, so a long completion flash/occlusion can fool it. Only one true quick recast is available.
+
+Known residuals: 123051 melee3 start +26, sword completion +6; 124028 class starts -8/-4.
+No special cases were added to reduce these. Gray disappearance can be hidden by scene light,
+and tint fallback can still fire early. Annotations can themselves lag a few frames.
+Best additional footage: repeated quick recasts vs long completion flashes, uses with no recharge,
+sustained class use pulses, bright/white scenes obscuring starts, dark scenes and red damage
+flashes at completion, several HUD scales and capture rates, and sword swaps during recharge.
+
+Validation completed:
+- dotnet format D2AbilityTracker.csproj, then --verify-no-changes: passed.
+- dotnet format tests/D2AbilityTracker.Tests.csproj, then --verify-no-changes: passed.
+- dotnet build tests/D2AbilityTracker.Tests.csproj (includes app): 0 warnings, 0 errors.
+- dotnet run --project tests/D2AbilityTracker.Tests.csproj: existing suite and new HUD tests pass.
+- Final full streamed PNG replays and generator runs with saved regions reproduce the after results.
+- git diff --check: passed.
+Fixture directory: approximately 1.49 MB (1.42 MiB), including documentation and source copies.
+No app launch, visible UI, commits, pushes, recording extraction or source annotation edits.
