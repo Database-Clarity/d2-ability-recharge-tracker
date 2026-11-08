@@ -14,7 +14,7 @@ internal enum StatusTone
 internal sealed record StatusMessage(string Text, StatusTone Tone);
 
 /// <summary>Single-line state banner shown above the ability results.</summary>
-internal sealed class StatusBanner : Label
+internal sealed class StatusBanner : LiveLabel
 {
     private StatusTone _tone;
 
@@ -54,7 +54,7 @@ internal sealed class StatusBanner : Label
 }
 
 /// <summary>Compact rounded capture-health indicator for the navigation row.</summary>
-internal sealed class StatusPill : Label
+internal sealed class StatusPill : LiveLabel
 {
     private StatusTone _tone;
 

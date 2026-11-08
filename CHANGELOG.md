@@ -44,3 +44,4 @@ Add a concise, single-line bullet for each notable user-facing change in the sam
 - Repeat test shows mean, SD and range for both measured and regression totals above the cycle list, and each listed cycle shows its ± uncertainty.
 - The whole window now repaints as one image, so live values no longer flicker.
 - Fixes v0.1.38's main window flickering as a whole or failing to appear: the whole-window repaint change is reverted.
+- Live text (ability rows, Repeat test status, capture status, recording status) no longer flickers: Windows no longer draws it unbuffered each time it changes.

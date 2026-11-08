@@ -666,6 +666,12 @@ if (args.Length > 0 && args[0] is "--replay-hud" or "--extract-hud-fixtures")
     return;
 }
 
+if (args.Length == 1 && args[0] == "--label-probe")
+{
+    foreach (var probe in LabelProbe.Run(() => new BufferedLabel()).Concat(LabelProbe.Run(() => new Label()))) Console.WriteLine(probe);
+    return;
+}
+
 if (args.Length > 0 && args[0] == "--sweep-hud")
 {
     Environment.ExitCode = HudReplay.Sweep(args);
@@ -686,6 +692,17 @@ if (args.Length == 1 && args[0] == "--replay-hud-signals")
 }
 
 HudSequences.Run();
+// Live text must not draw itself, unbuffered, the moment it changes (that showed as flicker on every tab).
+foreach (var probe in LabelProbe.Run(() => new TwoLineStatusLabel()).Concat(LabelProbe.Run(() => new BufferedLabel()))
+    .Concat(LabelProbe.Run(() => new StatusPill())).Concat(LabelProbe.Run(() => new StatusBanner())))
+{
+    // Every immediate (unbuffered) draw the native control asks for must be dropped; auto-sized labels may resize.
+    var requested = System.Text.RegularExpressions.Regex.Matches(probe, "0x202B").Count;
+    var dropped = int.Parse(System.Text.RegularExpressions.Regex.Match(probe, @"dropped (\d+)").Groups[1].Value);
+    Assert(requested == dropped && (probe.Contains("parent []") || probe.StartsWith(nameof(StatusPill))),
+        $"Live labels must not paint unbuffered during a text change: {probe}");
+}
+
 ChangelogTests.Run();
 MeasurementHistoryTests.Run();
 RepeatSummaryTests.Run();
