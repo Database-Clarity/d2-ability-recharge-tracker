@@ -39,7 +39,7 @@ internal sealed class StatusBanner : LiveLabel
         }
     }
 
-    protected override void OnPaint(PaintEventArgs e)
+    protected override void Render(PaintEventArgs e)
     {
         var tone = TrackerTheme.ToneColor(_tone);
         e.Graphics.Clear(TrackerTheme.Surface);
@@ -78,7 +78,7 @@ internal sealed class StatusPill : LiveLabel
         }
     }
 
-    protected override void OnPaint(PaintEventArgs e)
+    protected override void Render(PaintEventArgs e)
     {
         var tone = TrackerTheme.ToneColor(_tone);
         e.Graphics.Clear(Parent?.BackColor ?? TrackerTheme.Background);

@@ -17,7 +17,42 @@ internal class LiveLabel : Label
     public LiveLabel()
     {
         DoubleBuffered = true;
-        SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer, true);
+        SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.Opaque, true);
+    }
+
+    protected override void OnPaintBackground(PaintEventArgs pevent)
+    {
+        // The whole control, background included, is drawn in OnPaint from one off-screen image.
+    }
+
+    /// <summary>
+    /// Renders the control into a private off-screen image and copies it to the screen in one step. Framework double
+    /// buffering was not taking effect for these labels on the user's system: rows were seen half-drawn on screen.
+    /// </summary>
+    protected sealed override void OnPaint(PaintEventArgs e)
+    {
+        if (Width <= 0 || Height <= 0) return;
+        using var image = new Bitmap(Width, Height, System.Drawing.Imaging.PixelFormat.Format32bppRgb);
+        using (var graphics = Graphics.FromImage(image))
+        {
+            graphics.Clear(EffectiveBackColor());
+            Render(new PaintEventArgs(graphics, ClientRectangle));
+        }
+
+        e.Graphics.DrawImageUnscaled(image, 0, 0);
+    }
+
+    /// <summary>Draws the control's content; the default draws it as a standard label.</summary>
+    protected virtual void Render(PaintEventArgs e) => base.OnPaint(e);
+
+    private Color EffectiveBackColor()
+    {
+        for (Control? control = this; control is not null; control = control.Parent)
+        {
+            if (control.BackColor.A == 255) return control.BackColor;
+        }
+
+        return TrackerTheme.Background;
     }
 
     protected override void WndProc(ref Message m)
@@ -61,7 +96,7 @@ internal class LiveLabel : Label
 internal sealed class TwoLineStatusLabel : LiveLabel
 {
 
-    protected override void OnPaint(PaintEventArgs e)
+    protected override void Render(PaintEventArgs e)
     {
         e.Graphics.Clear(BackColor);
         var lines = Text.ReplaceLineEndings("\n").Split('\n', 2);

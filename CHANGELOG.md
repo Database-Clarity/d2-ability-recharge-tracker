@@ -45,3 +45,4 @@ Add a concise, single-line bullet for each notable user-facing change in the sam
 - The whole window now repaints as one image, so live values no longer flicker.
 - Fixes v0.1.38's main window flickering as a whole or failing to appear: the whole-window repaint change is reverted.
 - Live text (ability rows, Repeat test status, capture status, recording status) no longer flickers: Windows no longer draws it unbuffered each time it changes.
+- Live text now renders off-screen in one step: v0.1.40 still showed rows half-drawn while measuring.
