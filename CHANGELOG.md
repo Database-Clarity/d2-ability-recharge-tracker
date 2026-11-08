@@ -43,3 +43,4 @@ Add a concise, single-line bullet for each notable user-facing change in the sam
 - Repeat test can record the HUD for the whole test with its **Record HUD** switch; the recording stops when the test ends.
 - Repeat test shows mean, SD and range for both measured and regression totals above the cycle list, and each listed cycle shows its ± uncertainty.
 - The whole window now repaints as one image, so live values no longer flicker.
+- Fixes v0.1.38's main window flickering as a whole or failing to appear: the whole-window repaint change is reverted.

@@ -1485,18 +1485,6 @@ internal sealed partial class MainForm : AppWindow
         }
     }
 
-    // Paint the whole window off-screen as one composited image: live values change several times a second, and
-    // per-control double buffering alone still let neighbouring controls flash as they repainted.
-    protected override CreateParams CreateParams
-    {
-        get
-        {
-            var parameters = base.CreateParams;
-            parameters.ExStyle |= 0x02000000; // WS_EX_COMPOSITED
-            return parameters;
-        }
-    }
-
     private void UpdateStatus()
     {
         Dictionary<AbilityKind, AbilitySlotTracker> trackers;
